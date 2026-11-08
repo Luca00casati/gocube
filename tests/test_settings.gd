@@ -68,3 +68,18 @@ func test_clock_follows_the_computer() -> void:
 	var t := Time.get_time_dict_from_system()
 	check_eq(day.clock_text(true), "%02d:%02d" % [t.hour, t.minute], "game clock = computer clock")
 	day.free()
+
+
+func test_volume_buses() -> void:
+	var before := Settings.effects_volume
+	Settings.effects_volume = 0.5
+	Settings.apply()
+	var bus := AudioServer.get_bus_index("Effects")
+	check(bus >= 0, "Effects bus exists")
+	check_near(AudioServer.get_bus_volume_db(bus), linear_to_db(0.5), 0.01, "effects volume applied")
+	check(AudioServer.get_bus_index("Ambience") >= 0, "Ambience bus exists")
+	Settings.effects_volume = 0.0
+	Settings.apply()
+	check(AudioServer.is_bus_mute(bus), "0% mutes")
+	Settings.effects_volume = before
+	Settings.apply()

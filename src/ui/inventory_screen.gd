@@ -29,6 +29,7 @@ func _ready() -> void:
 	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(center)
 	var panel := PanelContainer.new()
+	ContainerScreen.style_panel(panel)
 	center.add_child(panel)
 	var columns := HBoxContainer.new()
 	columns.add_theme_constant_override("separation", 24)
@@ -113,6 +114,7 @@ func _make_slot(i: int) -> Button:
 	b.vertical_icon_alignment = VERTICAL_ALIGNMENT_CENTER
 	b.alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	b.add_theme_font_size_override("font_size", 13)
+	ContainerScreen.style_slot(b)
 	b.pressed.connect(_on_slot.bind(i))
 	_slot_buttons[i] = b
 	return b

@@ -20,6 +20,7 @@ var _lowpass_index := -1
 func _ready() -> void:
 	for i in POOL_SIZE:
 		var p := AudioStreamPlayer3D.new()
+		p.bus = &"Effects"
 		p.max_distance = MAX_DISTANCE
 		p.unit_size = 6.0
 		add_child(p)
@@ -102,6 +103,7 @@ func _ambience_player(kind: String) -> AudioStreamPlayer:
 		wav.loop_begin = 0
 		wav.loop_end = wav.data.size() / 2  # 16-bit mono frames
 	var p := AudioStreamPlayer.new()
+	p.bus = &"Ambience"
 	p.stream = stream
 	p.volume_db = AMBIENCE_DB
 	add_child(p)

@@ -6,6 +6,7 @@ extends Node
 const PORT := 24711
 const LAMP_BEFORE := Vector3i(5, 20, 5)
 const ORE_AFTER := Vector3i(6, 20, 5)
+const CHEST := Vector3i(5, 22, 5)
 
 
 func _wait_for(cond: Callable, s: float) -> bool:
@@ -34,6 +35,10 @@ func _ready() -> void:
 		var game := await _start({"world_name": "_mp_smoke", "net_mode": "host", "port": PORT, "player_name": "Host"})
 		await _wait_for(func(): return game._loading == null, 30)
 		game._world.set_block(LAMP_BEFORE, Registry.block_index("core:lamp"))
+		game._world.set_block(CHEST, Registry.block_index("core:chest"))
+		game._world.block_entities.click(CHEST, 0, {"id": "core:coal", "count": 4})
+		var g: Dictionary = game._world.raycast(Vector3(8.5, World.TOP_Y, 8.5), Vector3.DOWN, 400)
+		game._mobs.spawn_at(Vector3(8.5, g.position.y + 1, 8.5))
 		print("HOST ready")
 		await _wait_for(func(): return not game._session._peers.is_empty(), 60)
 		await get_tree().create_timer(1.5).timeout
@@ -54,6 +59,27 @@ func _ready() -> void:
 		game._player._frozen = true
 		game._session.request_edit(target, Registry.block_index("core:planks"))
 		results["client edit via host"] = await _wait_for(func(): return w.get_block(target) == Registry.block_index("core:planks"), 5)
+		results["sees the host's creatures"] = await _wait_for(func(): return game._mobs.count() >= 1, 5)
+		# Breaking: the drop appears only once the host has confirmed it.
+		var drops: Node = game._drops_node
+		game._player.pending_drops[target] = "core:planks"
+		game._player._apply_edit(target, 0)
+		var early := drops.get_child_count()
+		results["drop after host confirms"] = early == 0 and await _wait_for(
+				func(): return drops.get_child_count() == 1 and w.get_block(target) == 0, 5)
+		# A chest through the host (stand next to it first: the host checks reach).
+		game._player.global_position = Vector3(CHEST) + Vector3(0.5, 0, 2.5)
+		await get_tree().create_timer(0.3).timeout
+		var seen := {}
+		var held := [null]
+		game._session.container_updated.connect(func(_p, data): seen.merge(data, true))
+		game._session.container_held.connect(func(_p, h): held[0] = h)
+		game._session.open_container(CHEST)
+		var opened: bool = await _wait_for(func(): return seen.get("type") == "chest", 5)
+		results["chest contents from host"] = opened and seen.slots[0] == {"id": "core:coal", "count": 4}
+		game._session.container_click(CHEST, 1, {"id": "core:stick", "count": 2})
+		results["chest click via host"] = await _wait_for(func(): return held[0] == {} \
+				and seen.slots[1] == {"id": "core:stick", "count": 2}, 5)
 	var failed := results.keys().filter(func(k): return not results[k])
 	for k in results:
 		print("%s  %s" % ["PASS" if results[k] else "FAIL", k])

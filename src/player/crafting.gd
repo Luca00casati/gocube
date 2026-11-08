@@ -35,6 +35,21 @@ static func hand_recipes() -> Array[Dictionary]:
 	return out
 
 
+## Smelting: what an input item turns into, {"item": id, "count": n} or {}.
+static func smelting_output(input: String) -> Dictionary:
+	for id in Registry.recipes:
+		var r: Dictionary = Registry.recipes[id]
+		if r.get("type") == "smelting" and r.get("input") == input:
+			return {"item": r.output.item, "count": int(r.output.get("count", 1))}
+	return {}
+
+
+## Seconds an item burns in a furnace ("fuel" on its item or block definition).
+static func fuel_seconds(id: String) -> float:
+	var def = Registry.items.get(id, Registry.blocks.get(id, {}))
+	return float(def.get("fuel", 0.0)) if def is Dictionary else 0.0
+
+
 static func can_craft(recipe: Dictionary, inventory: Inventory) -> bool:
 	for item in recipe.ingredients:
 		if inventory.count_of(item) < recipe.ingredients[item]:

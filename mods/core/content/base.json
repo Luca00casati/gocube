@@ -11,7 +11,9 @@
       "textures": {
         "all": "textures/stone.png"
       },
-      "sound": "core:stone"
+      "sound": "core:stone",
+      "tool": "pickaxe",
+      "requires_tool": true
     },
     "cobblestone": {
       "hardness": 2.0,
@@ -19,7 +21,9 @@
       "textures": {
         "all": "textures/cobblestone.png"
       },
-      "sound": "core:stone"
+      "sound": "core:stone",
+      "tool": "pickaxe",
+      "requires_tool": true
     },
     "dirt": {
       "hardness": 0.5,
@@ -65,7 +69,9 @@
         "bottom": "textures/log_top.png",
         "side": "textures/log_side.png"
       },
-      "sound": "core:wood"
+      "sound": "core:wood",
+      "tool": "axe",
+      "fuel": 15
     },
     "leaves": {
       "hardness": 0.2,
@@ -82,7 +88,11 @@
       "textures": {
         "all": "textures/coal_ore.png"
       },
-      "sound": "core:stone"
+      "sound": "core:stone",
+      "tool": "pickaxe",
+      "requires_tool": true,
+      "drops": "core:coal",
+      "eater_weight": 0.4
     },
     "iron_ore": {
       "hardness": 3.0,
@@ -90,7 +100,10 @@
       "textures": {
         "all": "textures/iron_ore.png"
       },
-      "sound": "core:stone"
+      "sound": "core:stone",
+      "tool": "pickaxe",
+      "requires_tool": true,
+      "eater_weight": 0.25
     },
     "gold_ore": {
       "hardness": 3.0,
@@ -98,7 +111,10 @@
       "textures": {
         "all": "textures/gold_ore.png"
       },
-      "sound": "core:stone"
+      "sound": "core:stone",
+      "tool": "pickaxe",
+      "requires_tool": true,
+      "eater_weight": 0.12
     },
     "crystal_ore": {
       "hardness": 3.0,
@@ -106,7 +122,10 @@
       "textures": {
         "all": "textures/crystal_ore.png"
       },
-      "sound": "core:stone"
+      "sound": "core:stone",
+      "tool": "pickaxe",
+      "requires_tool": true,
+      "eater_weight": 0.06
     },
     "water": {
       "solid": false,
@@ -121,7 +140,8 @@
       "textures": {
         "all": "textures/lamp.png"
       },
-      "sound": "core:stone"
+      "sound": "core:stone",
+      "eater_weight": 0.1
     },
     "water_1": {
       "solid": false,
@@ -171,12 +191,78 @@
       "level": 7,
       "flowing": true,
       "color": "#3f76d6"
+    },
+    "furnace": {
+      "hardness": 3.5,
+      "tool": "pickaxe",
+      "requires_tool": true,
+      "sound": "core:stone",
+      "color": "#6a6a6a",
+      "block_entity": "furnace",
+      "textures": {
+        "side": "textures/furnace_side.png",
+        "top": "textures/furnace_top.png",
+        "bottom": "textures/furnace_top.png"
+      },
+      "eater_weight": 0.15
+    },
+    "chest": {
+      "hardness": 2.5,
+      "tool": "axe",
+      "sound": "core:wood",
+      "color": "#9a7448",
+      "fuel": 15,
+      "block_entity": "chest",
+      "textures": {
+        "side": "textures/chest_side.png",
+        "top": "textures/chest_top.png",
+        "bottom": "textures/planks.png"
+      },
+      "eater_weight": 0.15
     }
   },
   "items": {
     "stick": {
       "max_stack": 64,
-      "texture": "textures/stick.png"
+      "texture": "textures/stick.png",
+      "fuel": 2.5
+    },
+    "coal": {
+      "texture": "textures/coal.png",
+      "fuel": 40
+    },
+    "iron_ingot": {
+      "texture": "textures/iron_ingot.png"
+    },
+    "gold_ingot": {
+      "texture": "textures/gold_ingot.png"
+    },
+    "hide": {
+      "texture": "textures/hide.png"
+    },
+    "wood_pickaxe": {
+      "texture": "textures/wood_pickaxe.png",
+      "tool": "pickaxe",
+      "speed": 2.0,
+      "max_stack": 1
+    },
+    "wood_axe": {
+      "texture": "textures/wood_axe.png",
+      "tool": "axe",
+      "speed": 2.0,
+      "max_stack": 1
+    },
+    "stone_pickaxe": {
+      "texture": "textures/stone_pickaxe.png",
+      "tool": "pickaxe",
+      "speed": 4.0,
+      "max_stack": 1
+    },
+    "stone_axe": {
+      "texture": "textures/stone_axe.png",
+      "tool": "axe",
+      "speed": 4.0,
+      "max_stack": 1
     }
   },
   "recipes": {
@@ -206,6 +292,86 @@
       },
       "output": {
         "item": "core:lamp",
+        "count": 1
+      }
+    },
+    "wood_pickaxe": {
+      "type": "shapeless",
+      "ingredients": {
+        "core:planks": 3,
+        "core:stick": 2
+      },
+      "output": {
+        "item": "core:wood_pickaxe",
+        "count": 1
+      }
+    },
+    "wood_axe": {
+      "type": "shapeless",
+      "ingredients": {
+        "core:planks": 3,
+        "core:stick": 2
+      },
+      "output": {
+        "item": "core:wood_axe",
+        "count": 1
+      }
+    },
+    "stone_pickaxe": {
+      "type": "shapeless",
+      "ingredients": {
+        "core:cobblestone": 3,
+        "core:stick": 2
+      },
+      "output": {
+        "item": "core:stone_pickaxe",
+        "count": 1
+      }
+    },
+    "stone_axe": {
+      "type": "shapeless",
+      "ingredients": {
+        "core:cobblestone": 3,
+        "core:stick": 2
+      },
+      "output": {
+        "item": "core:stone_axe",
+        "count": 1
+      }
+    },
+    "furnace": {
+      "type": "shapeless",
+      "ingredients": {
+        "core:cobblestone": 8
+      },
+      "output": {
+        "item": "core:furnace",
+        "count": 1
+      }
+    },
+    "chest": {
+      "type": "shapeless",
+      "ingredients": {
+        "core:planks": 8
+      },
+      "output": {
+        "item": "core:chest",
+        "count": 1
+      }
+    },
+    "iron_ingot": {
+      "type": "smelting",
+      "input": "core:iron_ore",
+      "output": {
+        "item": "core:iron_ingot",
+        "count": 1
+      }
+    },
+    "gold_ingot": {
+      "type": "smelting",
+      "input": "core:gold_ore",
+      "output": {
+        "item": "core:gold_ingot",
         "count": 1
       }
     }
@@ -346,6 +512,9 @@
       ],
       "hurt": [
         "sounds/hurt.wav"
+      ],
+      "pickup": [
+        "sounds/pickup.wav"
       ]
     },
     "ambience": {

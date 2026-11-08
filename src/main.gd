@@ -45,6 +45,9 @@ var _settings_screen: SettingsScreen
 var _sounds: Sounds
 var _hurt_flash: ColorRect
 var _death_screen: Control
+var _container_screen: ContainerScreen
+var _drops_node: Node3D
+var _mobs: MobManager
 var _restored_player := false  # position came from the save (else: put on the ground)
 
 
@@ -86,6 +89,36 @@ func _ready() -> void:
 	_sounds.name = "Sounds"
 	add_child(_sounds)
 	_session.remote_edit.connect(_on_remote_edit)
+	_session.own_edit_confirmed.connect(func(pos): _player.confirm_break(pos))
+	_session.drops_received.connect(func(at, items):
+		for it in items:
+			spawn_drop(it[0], it[1], at))
+	_drops_node = Node3D.new()
+	_drops_node.name = "Drops"
+	add_child(_drops_node)
+	_mobs = MobManager.new()
+	_mobs.name = "Mobs"
+	_mobs.world = _world
+	_mobs.player_positions = func():
+		if _player == null or _loading:
+			return []
+		return [_player.global_position] + _session.peer_positions()
+	_mobs.day_amount = func(): return _day.day_amount()
+	_mobs.hurt_at.connect(func(at, variant):
+		if variant == "":
+			_sounds.play("core:effects", "hurt", at, -4.0)
+		else:
+			_sounds.play_block(variant, "break", at))
+	_mobs.killed.connect(func(at, attacker, items):
+		if attacker == 0:
+			for it in items:
+				spawn_drop(it[0], it[1], at)
+		else:
+			_session.give_drops(attacker, at, items))
+	if _args.has("no-mobs"):
+		_mobs.process_mode = Node.PROCESS_MODE_DISABLED
+	add_child(_mobs)
+	_session.mobs = _mobs
 	# Offline, pausing stops time too; in multiplayer the world keeps going.
 	_day.process_mode = Node.PROCESS_MODE_PAUSABLE if net_mode == "offline" else Node.PROCESS_MODE_ALWAYS
 	_session.day_cycle = _day
@@ -203,6 +236,16 @@ func _spawn_player(feet: Vector3) -> void:
 	player.splashed.connect(func(at): _sounds.play("core:effects", "splash", at))
 	player.hurt.connect(_on_hurt)
 	player.died.connect(_on_died)
+	player.dropped.connect(func(item, at): spawn_drop(item, 1, at))
+	player.open_block.connect(_open_container)
+	player.mob_picker = _mobs.pick
+	player.attack.connect(func(id):
+		if _world.remote:
+			_session.hit_mob(id)
+		else:
+			_mobs.hit(id, player.global_position, 0))
+	if _world.block_entities:
+		_world.block_entities.spilled.connect(_on_spilled)
 	_hotbar = Hotbar.new()
 	_hotbar.player = player
 	_hotbar.atlas = _world.atlas
@@ -224,12 +267,12 @@ func _exit_tree() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if _player and not _loading and not get_tree().paused and _inventory_screen == null \
-			and _death_screen == null and event.is_action_pressed(&"inventory"):
+			and _death_screen == null and _container_screen == null and event.is_action_pressed(&"inventory"):
 		_open_inventory()
 		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed(&"ui_cancel") and not _loading and not _args.has("bench") \
-			and _settings_screen == null and _death_screen == null:
+			and _settings_screen == null and _death_screen == null and _container_screen == null:
 		set_paused(not get_tree().paused)
 		get_viewport().set_input_as_handled()
 
@@ -250,6 +293,58 @@ func _on_remote_edit(pos: Vector3i, old_block: int, new_block: int) -> void:
 		_sounds.play_block(Registry.block_ids[old_block], "break", at)
 	else:
 		_sounds.play_block(Registry.block_ids[new_block], "place", at)
+
+
+## An item in the world that the local player can pick up. Merges with the
+## same item lying close by.
+func spawn_drop(item: String, count: int, at: Vector3) -> void:
+	for d in _drops_node.get_children():
+		if d.item == item and d.global_position.distance_to(at) < 0.8 and not d.is_queued_for_deletion():
+			d.count += count
+			return
+	var drop := ItemDrop.new()
+	drop.setup(item, count, _world.atlas.icon(item))
+	drop.world = _world
+	drop.player = _player
+	drop.velocity = Vector3(randf_range(-1.5, 1.5), 3.0, randf_range(-1.5, 1.5))
+	drop.picked_up.connect(func(_i, _n): _sounds.play("core:effects", "pickup", _cam.global_position, -8.0))
+	_drops_node.add_child(drop)
+	drop.global_position = at
+
+
+## Host / single player: a chest or furnace was broken; its contents drop for
+## whoever broke it.
+func _on_spilled(pos: Vector3i, items: Array) -> void:
+	var at := Vector3(pos) + Vector3.ONE * 0.5
+	if _world.editor == 0:
+		for it in items:
+			spawn_drop(it[0], it[1], at)
+	else:
+		_session.give_drops(_world.editor, at, items)
+
+
+func _open_container(pos: Vector3i) -> void:
+	if _container_screen or _inventory_screen:
+		return
+	var backend
+	if _world.remote:
+		backend = ContainerScreen.Remote.new(_session, pos)
+	elif _world.block_entities.has_entity(pos):
+		backend = ContainerScreen.Local.new(_world.block_entities, pos)
+	else:
+		return
+	_container_screen = ContainerScreen.new()
+	_container_screen.player = _player
+	_container_screen.atlas = _world.atlas
+	_container_screen.backend = backend
+	_container_screen.closed.connect(func():
+		_container_screen.queue_free()
+		_container_screen = null
+		_player.ui_open = false
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED)
+	_hud.add_child(_container_screen)
+	_player.ui_open = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 
 func _on_hurt(_amount: int) -> void:

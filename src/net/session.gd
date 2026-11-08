@@ -19,6 +19,13 @@ signal welcomed(info: Dictionary)  # client: host accepted us, build the world
 signal ended(reason: String)       # client: connection failed / rejected / lost
 ## Another player changed a block (for sounds): old and new block index.
 signal remote_edit(position: Vector3i, old_block: int, new_block: int)
+## Client: the host applied a block change we asked for (drop what we broke).
+signal own_edit_confirmed(position: Vector3i)
+## Client: items the host gave us to drop at a position ([[id, count], ...]).
+signal drops_received(at: Vector3, items: Array)
+## Client: a container's contents / what we hold after clicking it.
+signal container_updated(position: Vector3i, data: Dictionary)
+signal container_held(position: Vector3i, held: Dictionary)
 
 const Avatar := preload("res://src/player/avatar.gd")
 const Player := preload("res://src/player/player.gd")
@@ -40,6 +47,11 @@ var local_player: Node3D
 var player_name := "Player"
 ## Time of day; the host's is authoritative.
 var day_cycle: DayCycle
+## Creatures: the host simulates them and sends their positions.
+var mobs: MobManager
+const MOB_INTERVAL := 0.1
+const MOB_REACH := 6.0
+var _mob_timer := 0.0
 
 ## Host only: peer id -> {name, position: Vector3, yaw: float}
 var _peers := {}
@@ -52,6 +64,8 @@ var _connect_started := 0
 var _welcomed := false
 var _ended := false
 var _own_edits := {}  # client: positions we asked the host to change (no echo sound)
+var _viewers := {}    # host: container position -> [peer ids looking at it]
+const CONTAINER_REACH := 8.0
 
 
 # --- Setup / teardown ----------------------------------------------------------
@@ -244,7 +258,10 @@ func _request_edit(pos: Vector3i, block: int) -> void:
 			if Player.overlaps_block(state[0] - Vector3(0, Player.EYE_HEIGHT, 0), pos):
 				return
 	var old := world.get_block(pos)
-	if world.set_block(pos, block):  # -> block_changed -> sent to everyone
+	world.editor = id  # spilled container contents go to this player
+	var ok := world.set_block(pos, block)  # -> block_changed -> sent to everyone
+	world.editor = 0
+	if ok:
 		remote_edit.emit(pos, old, block)
 
 
@@ -261,7 +278,9 @@ func _block(pos: Vector3i, block: int) -> void:
 	var old := world.get_block(pos)
 	if not world.apply_remote_block(pos, block):
 		_request_chunk.rpc_id(1, World.chunk_of(pos))  # not loaded here: get the whole chunk
-	elif not _own_edits.erase(pos):
+	elif _own_edits.erase(pos):
+		own_edit_confirmed.emit(pos)
+	else:
 		remote_edit.emit(pos, old, block)
 
 
@@ -272,6 +291,113 @@ func _time(host_time: float) -> void:
 		var drift := absf(wrapf(host_time - day_cycle.time, -0.5, 0.5)) * day_cycle.day_length
 		if drift > 0.5:  # seconds
 			day_cycle.time = host_time
+
+
+# --- Containers and drops (the host owns chests/furnaces) -------------------------
+
+## Host: where every joined player is (for creature spawning).
+func peer_positions() -> Array:
+	return _peers.values().map(func(p): return p.position)
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _mobs_state(states: Dictionary) -> void:
+	if mobs:
+		mobs.apply_states(states)
+
+
+func hit_mob(id: int) -> void:
+	_hit_mob.rpc_id(1, id)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _hit_mob(id: int) -> void:
+	var peer := multiplayer.get_remote_sender_id()
+	if not is_host() or mobs == null or not _peers.has(peer):
+		return
+	var from: Vector3 = _peers[peer].position
+	for mob in mobs.mobs():
+		if mob.id == id and mob.global_position.distance_to(from) <= MOB_REACH:
+			mobs.hit(id, from, peer)
+			return
+
+
+## Host: give a player items to drop at a position (container contents, creature drops).
+func give_drops(peer: int, at: Vector3, items: Array) -> void:
+	if peer != 0 and _peers.has(peer):
+		_drops.rpc_id(peer, at, items)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _drops(at: Vector3, items: Array) -> void:
+	drops_received.emit(at, items)
+
+
+func open_container(pos: Vector3i) -> void:
+	_open_container.rpc_id(1, pos)
+
+
+func container_click(pos: Vector3i, slot: int, held: Dictionary) -> void:
+	_container_click.rpc_id(1, pos, slot, held)
+
+
+func close_container(pos: Vector3i) -> void:
+	_close_container.rpc_id(1, pos)
+
+
+func _container_data(pos: Vector3i) -> Dictionary:
+	var e := world.block_entities.get_entity(pos)
+	return {} if e.is_empty() else {"type": e.type, "slots": e.slots.duplicate(true),
+			"burn": e.burn, "burn_total": e.burn_total, "progress": e.progress}
+
+
+func _can_reach(id: int, pos: Vector3i) -> bool:
+	return _peers.has(id) and (_peers[id].position as Vector3).distance_to(Vector3(pos) + Vector3.ONE * 0.5) <= CONTAINER_REACH
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _open_container(pos: Vector3i) -> void:
+	var id := multiplayer.get_remote_sender_id()
+	if not is_host() or not world.block_entities.has_entity(pos) or not _can_reach(id, pos):
+		return
+	if not _viewers.has(pos):
+		_viewers[pos] = []
+	if id not in _viewers[pos]:
+		_viewers[pos].append(id)
+	if not world.block_entities.changed.is_connected(_on_container_changed):
+		world.block_entities.changed.connect(_on_container_changed)
+	_container.rpc_id(id, pos, _container_data(pos))
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _container_click(pos: Vector3i, slot: int, held: Dictionary) -> void:
+	var id := multiplayer.get_remote_sender_id()
+	if not is_host() or not _can_reach(id, pos):
+		_held.rpc_id(id, pos, held)  # refused: give it back
+		return
+	_held.rpc_id(id, pos, world.block_entities.click(pos, slot, held))
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _close_container(pos: Vector3i) -> void:
+	if _viewers.has(pos):
+		_viewers[pos].erase(multiplayer.get_remote_sender_id())
+
+
+func _on_container_changed(pos: Vector3i) -> void:
+	for id in _viewers.get(pos, []):
+		if _peers.has(id):
+			_container.rpc_id(id, pos, _container_data(pos))
+
+
+@rpc("authority", "call_remote", "reliable")
+func _container(pos: Vector3i, data: Dictionary) -> void:
+	container_updated.emit(pos, data)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _held(pos: Vector3i, held: Dictionary) -> void:
+	container_held.emit(pos, held)
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -310,6 +436,11 @@ func _process(delta: float) -> void:
 		if _time_sync_timer >= TIME_SYNC_SECONDS:
 			_time_sync_timer = 0.0
 			_time.rpc(day_cycle.time)
+	if is_host() and mobs and not _peers.is_empty():
+		_mob_timer += delta
+		if _mob_timer >= MOB_INTERVAL:
+			_mob_timer = 0.0
+			_mobs_state.rpc(mobs.states())
 	_send_timer += delta
 	if _send_timer < STATE_INTERVAL or local_player == null:
 		return

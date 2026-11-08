@@ -43,6 +43,15 @@ func add(id: String, count: int) -> int:
 	return count
 
 
+## Whether at least one more of this item fits somewhere.
+func can_fit(id: String) -> bool:
+	var limit := max_stack(id)
+	for s in slots:
+		if s.is_empty() or (s.id == id and s.count < limit):
+			return true
+	return false
+
+
 func count_of(id: String) -> int:
 	var total := 0
 	for s in slots:

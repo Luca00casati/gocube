@@ -97,6 +97,24 @@ func _ready() -> void:
 		Settings.apply())
 	_row(grid, _label("Smooth lighting"), smooth)
 
+	for entry in [["Master volume", "master_volume"], ["Effects volume", "effects_volume"],
+			["Ambience volume", "ambience_volume"]]:
+		var slider := HSlider.new()
+		slider.min_value = 0.0
+		slider.max_value = 1.0
+		slider.step = 0.05
+		slider.value = Settings.get(entry[1])
+		slider.custom_minimum_size.x = 240
+		var label := _label("")
+		var update := func(v):
+			label.text = "%s: %d%%" % [entry[0], roundi(v * 100)]
+		update.call(slider.value)
+		slider.value_changed.connect(func(v):
+			Settings.set(entry[1], v)
+			update.call(v)
+			Settings.apply())
+		_row(grid, label, slider)
+
 	var clock := CheckBox.new()
 	clock.text = "24-hour clock (07:19 instead of 7:19 AM)"
 	clock.button_pressed = Settings.clock_24h

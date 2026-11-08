@@ -339,6 +339,126 @@ def stick():
     return img
 
 
+# --- items (transparent background) and the furnace / chest blocks ---------------
+
+IRON = ramp("#6e6a66", "#9a948e", "#c6c0b8", "#ece6dc")
+GOLD = ramp("#8a5a08", "#c48a16", "#ecc03a", "#fff0a0")
+COAL = ramp("#121214", "#24242a", "#3a3a44", "#5a5a66")
+HIDE = ramp("#6a4024", "#8a5634", "#a86e46", "#c48a5c")
+
+
+def blank():
+    return Image.new("RGBA", (S, S), (0, 0, 0, 0))
+
+
+def _px(img, x, y, c):
+    if 0 <= x < S and 0 <= y < S:
+        img.putpixel((x, y), tuple(c) + (255,))
+
+
+def coal_lump():
+    img = blank()
+    rnd = random.Random(40)
+    cx, cy = S / 2, S / 2 + 1
+    for y in range(S):
+        for x in range(S):
+            d = math.hypot((x - cx) / 10.5, (y - cy) / 8.5) + 0.12 * fbm(41, x, y, ((8, 1.0),))
+            if d < 1.0:
+                lit = (cx - x + cy - y) / 20.0
+                _px(img, x, y, pick(COAL, 0.45 + lit - d * 0.3 + rnd.uniform(-0.08, 0.08)))
+    return img
+
+
+def ingot(palette):
+    def make():
+        img = blank()
+        for y in range(11, 22):
+            inset = (y - 11) // 3  # slanted ends: a trapezoid seen from the side
+            for x in range(5 + 3 - inset, 27 - 3 + inset):
+                t = 0.9 if y == 11 else (0.15 if y == 21 else 0.55 + (x - 16) / 40)
+                _px(img, x, y, pick(palette, t))
+        return img
+    return make
+
+
+def hide():
+    img = blank()
+    pts = [(6, 8), (12, 4), (20, 5), (27, 9), (25, 17), (28, 25), (19, 27), (12, 26), (5, 24), (7, 16)]
+    poly = Image.new("L", (S, S), 0)
+    from PIL import ImageDraw
+    ImageDraw.Draw(poly).polygon(pts, fill=255)
+    for y in range(S):
+        for x in range(S):
+            if poly.getpixel((x, y)):
+                _px(img, x, y, pick(HIDE, 0.3 + fbm(42, x, y, ((8, 0.6), (16, 0.4))) * 0.6))
+    return img
+
+
+def tool(head_palette, kind):
+    """A handle from bottom-left to top-right with a pickaxe or axe head."""
+    def make():
+        img = blank()
+        for i in range(5, 27):  # handle
+            _px(img, i, S - 1 - i, WOOD[2])
+            _px(img, i + 1, S - 1 - i, WOOD[1])
+        if kind == "pickaxe":
+            # A thick curved head across the handle's top end. The handle runs
+            # along d = (1, -1); the head runs along p = (1, 1) and curves back.
+            cx, cy = 21.5, 10.5
+            for k10 in range(-110, 111):
+                k = k10 / 10.0
+                x = cx + k * 0.75 - k * k * 0.045
+                y = cy + k * 0.75 + k * k * 0.045
+                for w in (-1, 0, 1):
+                    shade = 0.85 if w < 0 else (0.25 if w > 0 else 0.55)
+                    _px(img, int(round(x + w * 0.7)), int(round(y - w * 0.7)), pick(head_palette, shade))
+        else:
+            # an axe blade on one side of the handle's top
+            for y in range(3, 15):
+                for x in range(14, 23):
+                    if (x - 14) + (14 - y) * 0.6 < 9 and (x - 18) ** 2 + (y - 9) ** 2 < 42:
+                        _px(img, x, y, pick(head_palette, 0.25 + (22 - x) / 12))
+        return img
+    return make
+
+
+def furnace_side():
+    base = cobblestone().convert("RGB")
+    img = base.copy()
+    for y in range(17, 28):  # the opening, with embers inside
+        for x in range(9, 23):
+            edge = y == 17 or x in (9, 22)
+            if edge:
+                img.putpixel((x, y), (40, 40, 44))
+            else:
+                glow = max(0.0, 1.0 - (27 - y) / 10) * (0.6 + 0.4 * fbm(43, x, y, ((8, 1.0),)))
+                img.putpixel((x, y), tuple(int(max(0, min(255, v))) for v in (30 + 210 * glow, 18 + 110 * glow * glow, 10 + 30 * glow)))
+    return img
+
+
+def furnace_top():
+    return stone()
+
+
+def chest_side():
+    img = planks()
+    for x in range(S):  # iron band and a latch
+        for y in (10, 11):
+            img.putpixel((x, y), (60, 58, 56) if y == 11 else (110, 106, 100))
+    for y in range(9, 16):
+        for x in range(14, 18):
+            img.putpixel((x, y), (190, 184, 170) if y in (9, 10) else (130, 124, 116))
+    return img
+
+
+def chest_top():
+    img = planks()
+    for x in range(S):
+        img.putpixel((x, 0), (60, 58, 56))
+        img.putpixel((x, S - 1), (60, 58, 56))
+    return img
+
+
 TEXTURES = {
     "stone": stone,
     "cobblestone": cobblestone,
@@ -357,6 +477,18 @@ TEXTURES = {
     "crystal_ore": lambda: ore("crystal", ("#18707c", "#38bcc6", "#b2f6f3"), 24, blobs=4),
     "lamp": lamp,
     "stick": stick,
+    "coal": coal_lump,
+    "iron_ingot": ingot(IRON),
+    "gold_ingot": ingot(GOLD),
+    "hide": hide,
+    "wood_pickaxe": tool(WOOD, "pickaxe"),
+    "stone_pickaxe": tool(STONE, "pickaxe"),
+    "wood_axe": tool(WOOD, "axe"),
+    "stone_axe": tool(STONE, "axe"),
+    "furnace_side": furnace_side,
+    "furnace_top": furnace_top,
+    "chest_side": chest_side,
+    "chest_top": chest_top,
 }
 
 if __name__ == "__main__":

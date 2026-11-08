@@ -117,6 +117,15 @@ func _build_atlas() -> Image:
 
 ## Icon for an inventory slot: a block's side texture, an item's "texture",
 ## or a flat colour.
+## One face's texture of a block (engine face order: +X, -X, +Y, -Y, +Z, -Z).
+func face_texture(block_index: int, face: int) -> Texture2D:
+	var key := "%d/%d" % [block_index, face]
+	if not _icons.has(key):
+		var tiles: PackedInt32Array = block_table[block_index].tiles
+		_icons[key] = ImageTexture.create_from_image(_tiles[tiles[face]])
+	return _icons[key]
+
+
 func icon(id: String) -> Texture2D:
 	if _icons.has(id):
 		return _icons[id]

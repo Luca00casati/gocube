@@ -35,6 +35,10 @@ var fluid_material: ShaderMaterial
 var fluid_ids := {}
 ## Flowing fluids (single player and host; clients get the result as edits).
 var fluids: FluidSim
+## Chests and furnaces (single player and host; clients go through the host).
+var block_entities: BlockEntities
+## Multiplayer peer whose edit is being applied (0 = the local player).
+var editor := 0
 
 
 ## persistent=false runs the world without reading or writing anything (benchmarks).
@@ -72,6 +76,11 @@ func build(world_name: String, distance: int = DEFAULT_VIEW_DISTANCE, new_seed: 
 	fluids.name = "Fluids"
 	fluids.world = self
 	add_child(fluids)
+	block_entities = BlockEntities.new()
+	block_entities.name = "BlockEntities"
+	block_entities.world = self
+	block_entities.deserialize(meta.get("block_entities", {}))
+	add_child(block_entities)
 
 
 ## Client side of a multiplayer game: same seed and block table as the host,
@@ -270,6 +279,8 @@ func save(player: Dictionary = {}) -> void:
 		return
 	if not player.is_empty():
 		meta.player = player
+	if block_entities:
+		meta.block_entities = block_entities.serialize()
 	meta.saved = Time.get_datetime_string_from_system()
 	_write_meta()
 	engine.save_modified()

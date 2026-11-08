@@ -124,6 +124,15 @@ def hurt(rng):
     return norm(lowpass(x, 3000), 0.7)
 
 
+def pickup(rng):
+    """Two short rising tones."""
+    out = []
+    for f in (880, 1320):
+        n = int(0.07 * RATE)
+        out.append(np.sin(2 * np.pi * f * t(0.07)) * env(n, 0.003, 0.025))
+    return norm(np.concatenate(out), 0.45)
+
+
 def loop_crossfade(x, fade):
     """Makes x loop seamlessly: blend its tail into its head."""
     m = int(fade * RATE)
@@ -177,6 +186,7 @@ if __name__ == "__main__":
     for i in range(1, 3):
         save(f"splash_{i}", splash(rng)); count += 1
     save("hurt", hurt(rng)); count += 1
+    save("pickup", pickup(rng)); count += 1
     save("ambience_day", ambience_day(rng)); count += 1
     save("ambience_night", ambience_night(rng)); count += 1
     print("wrote %d sounds to %s" % (count, OUT))

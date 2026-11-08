@@ -14,6 +14,13 @@ extends Node3D
 
 signal footstep(block_id: String, at: Vector3)
 signal block_broken(block_id: String, at: Vector3)
+## Survival: what breaking a block gave (drop it in the world). For multiplayer
+## clients this fires only once the host has confirmed the break (see main).
+signal dropped(item: String, at: Vector3)
+## Right click on a block with a "block_entity" (chest, furnace).
+signal open_block(position: Vector3i)
+## Left click on a creature (main decides: local hit or through the host).
+signal attack(mob_id: int)
 signal block_placed(block_id: String, at: Vector3)
 signal splashed(at: Vector3)
 signal hurt(amount: int)
@@ -55,6 +62,11 @@ const STRIDE := 1.7                # metres walked per footstep sound
 ## Multiplayer client: called with (position: Vector3i, block: int) instead of
 ## editing locally; the host applies the edit and sends it back.
 var edit_handler := Callable()
+## (origin, dir, max_distance) -> {"id", "distance"} or {}: the creature under the crosshair.
+var mob_picker := Callable()
+const ATTACK_REACH := 4.0
+const ATTACK_COOLDOWN := 0.4
+var _attack_cooldown := 0.0
 
 var world: World
 var camera: Camera3D
@@ -82,6 +94,8 @@ var on_floor := false
 ## See set_ready_to_move().
 var _frozen := true
 var selected := 0  # hotbar slot
+## Survival: what a break we asked for will drop, by position, until confirmed.
+var pending_drops := {}
 var _outline: MeshInstance3D
 var _mining_target := Vector3i(1 << 30, 0, 0)
 
@@ -162,6 +176,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseButton and event.pressed:
 		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		elif event.button_index == MOUSE_BUTTON_LEFT and _try_attack():
+			pass
 		elif event.button_index == MOUSE_BUTTON_LEFT and creative:
 			_break_target()  # survival mines over time in _process
 		elif event.button_index == MOUSE_BUTTON_RIGHT:
@@ -322,7 +338,10 @@ func _unstuck() -> void:
 func _process(delta: float) -> void:
 	if autopilot or world == null:
 		return
+	_attack_cooldown = maxf(0.0, _attack_cooldown - delta)
 	var hit := _target()
+	if not _mob_in_front(hit).is_empty():
+		hit = {"hit": false}  # a creature is in the way: no outline, no mining
 	_outline.visible = hit.hit
 	if hit.hit:
 		_outline.global_position = Vector3(hit.position) + Vector3.ONE * 0.5
@@ -341,21 +360,63 @@ func _update_mining(hit: Dictionary, delta: float) -> void:
 	if hit.position != _mining_target:
 		_mining_target = hit.position
 		mining_progress = 0.0
-	mining_progress += delta / mine_seconds(Registry.block_ids[hit.block])
+	mining_progress += delta / mine_seconds(Registry.block_ids[hit.block], selected_item())
 	if mining_progress >= 1.0:
 		mining_progress = 0.0
 		_break_target()
 
 
-static func mine_seconds(block_id: String) -> float:
+## Mining time: hardness x 0.75 s, divided by the held tool's "speed" if it is
+## the block's "tool"; three times as long without one if "requires_tool".
+static func mine_seconds(block_id: String, tool_item: String = "") -> float:
 	var def: Dictionary = Registry.blocks.get(block_id, {})
-	return maxf(MIN_MINE_SECONDS, float(def.get("hardness", 1.0)) * MINE_SECONDS_PER_HARDNESS)
+	var seconds := maxf(MIN_MINE_SECONDS, float(def.get("hardness", 1.0)) * MINE_SECONDS_PER_HARDNESS)
+	if def.has("tool"):
+		if tool_kind(tool_item) == def.tool:
+			return maxf(MIN_MINE_SECONDS, seconds / tool_speed(tool_item))
+		if def.get("requires_tool", false):
+			return seconds * 3.0
+	return seconds
 
 
-## What breaking a block gives: its "drops" ("" = nothing), else the block itself.
-static func drop_of(block_id: String) -> String:
+## What breaking a block gives: its "drops" ("" = nothing), else the block
+## itself; nothing if it "requires_tool" and the right tool isn't held.
+static func drop_of(block_id: String, tool_item: String = "") -> String:
 	var def: Dictionary = Registry.blocks.get(block_id, {})
+	if def.get("requires_tool", false) and tool_kind(tool_item) != def.get("tool", ""):
+		return ""
 	return str(def.get("drops", block_id))
+
+
+static func tool_kind(item: String) -> String:
+	return str(Registry.items.get(item, {}).get("tool", ""))
+
+
+static func tool_speed(item: String) -> float:
+	return float(Registry.items.get(item, {}).get("speed", 1.0))
+
+
+## The creature under the crosshair, if it is nearer than the targeted block.
+func _mob_in_front(block_hit: Dictionary) -> Dictionary:
+	if not mob_picker.is_valid():
+		return {}
+	var origin := camera.global_position
+	var m: Dictionary = mob_picker.call(origin, -camera.global_basis.z, ATTACK_REACH)
+	if m.is_empty():
+		return {}
+	if block_hit.get("hit", false) and origin.distance_to(Vector3(block_hit.position) + Vector3.ONE * 0.5) < m.distance - 0.5:
+		return {}
+	return m
+
+
+func _try_attack() -> bool:
+	var m := _mob_in_front(_target())
+	if m.is_empty():
+		return false
+	if _attack_cooldown <= 0.0:
+		_attack_cooldown = ATTACK_COOLDOWN
+		attack.emit(m.id)
+	return true
 
 
 func _target() -> Dictionary:
@@ -367,19 +428,33 @@ func _break_target() -> void:
 	if not hit.hit:
 		return
 	var broken: String = Registry.block_ids[hit.block]
-	_apply_edit(hit.position, Registry.block_index("core:air"))
-	block_broken.emit(broken, Vector3(hit.position) + Vector3.ONE * 0.5)
+	var at := Vector3(hit.position) + Vector3.ONE * 0.5
 	if not creative:
-		var drop := drop_of(broken)
-		if drop != "":
-			inventory.add(drop, 1)  # a full inventory loses it (no dropped items yet)
+		pending_drops[hit.position] = drop_of(broken, selected_item())
+	_apply_edit(hit.position, Registry.block_index("core:air"))
+	block_broken.emit(broken, at)
+	if not edit_handler.is_valid():
+		confirm_break(hit.position)  # local: the block is gone, drop it now
+
+
+## The block at `pos` really was broken (multiplayer: the host confirmed it).
+func confirm_break(pos: Vector3i) -> void:
+	var drop: String = pending_drops.get(pos, "")
+	pending_drops.erase(pos)
+	if drop != "":
+		dropped.emit(drop, Vector3(pos) + Vector3.ONE * 0.5)
 
 
 func _place() -> void:
+	var hit := _target()
+	# Right click on a chest/furnace opens it (sneak to place against it instead).
+	if hit.hit and not Input.is_action_pressed(&"sneak") \
+			and Registry.blocks.get(Registry.block_ids[hit.block], {}).has("block_entity"):
+		open_block.emit(hit.position)
+		return
 	var item := selected_item()
 	if not is_placeable(item):
 		return
-	var hit := _target()
 	if not hit.hit or overlaps_block(global_position, hit.previous):
 		return  # nothing to place against, or it would be inside you
 	_apply_edit(hit.previous, Registry.block_index(item))

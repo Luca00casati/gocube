@@ -44,17 +44,39 @@ Launch options (after `--`): `--world=NAME` skip the menu and load or create tha
 
 Controls: WASD walk, Space jump (and swim up in water), Ctrl sprint, Shift sneak, F toggle flying (Space/Shift
 up/down; fly down onto the ground to land), mouse look, hold LMB mine / LMB break (creative),
-RMB place (6-block reach), 1-9 / mouse wheel pick a hotbar slot, E inventory and crafting,
+RMB place / open a chest or furnace (Shift+RMB places against one), LMB on a creature
+attacks it (6-block reach), 1-9 / mouse wheel pick a hotbar slot, E inventory and crafting,
 Esc pause. Launch option `--mode=creative|survival` for new worlds. All keyboard keys can be
 rebound in **Settings…** (title screen or pause menu), along with view distance, mouse
-sensitivity, frame rate limit, vsync and **smooth lighting** (light blended at block corners
+sensitivity, frame rate limit, vsync, **master / effects / ambience volume** (each with
+its own audio bus) and **smooth lighting** (light blended at block corners
 with soft corner shading, instead of the classic flat look). Settings are saved in
 `user://settings.cfg`.
 
 ## Survival and creative
 New worlds are **survival** by default (chosen in the New world dialog): hold left click to
-mine (time = the block's `hardness` × 0.75 s), the block's `"drops"` (or the block itself)
-goes into the 36-slot inventory, and placing uses items up. **Creative**: every block in the
+mine (time = the block's `hardness` × 0.75 s). The block's `"drops"` (or the block itself)
+pops out as a **dropped item** that drifts to you and goes into the 36-slot inventory when
+you're close (same items nearby merge; they vanish after 5 minutes). Placing uses items up.
+
+**Tools**: wooden and stone pickaxes and axes (3 planks or cobblestone + 2 sticks). A block's
+`"tool"` mines `"speed"` times faster with that tool (wood ×2, stone ×4); blocks with
+`"requires_tool": true` (stone, ores, the furnace) take 3× as long by hand and drop nothing.
+Coal ore drops coal.
+
+**Chests** (8 planks, 27 slots) and **furnaces** (8 cobblestone): right click to open. A
+furnace burns fuel (an item's or block's `"fuel"` seconds: coal 40, logs/chests 15, planks
+7.5, sticks 2.5) to run `"smelting"` recipes, 5 s each (cobblestone → stone, iron/gold ore
+→ ingots). Breaking one drops its contents. Contents are saved in `world.json`; in
+multiplayer the host keeps them and runs the furnaces.
+
+**Creatures**: Block Eaters, slow grazers, spawn on grass around players by day (up to 12),
+wander, avoid water and drops, and run off when hit; three hits defeat one. The regular one
+(3 in 4) is slim with moss on its back and drops hide. Every other solid block, mods' blocks
+included, has its own Block Eater built from that block's textures, which drops that block
+(the lamp one glows). Ore, lamp, chest and furnace ones are rare (a chest one drops an empty chest). A block's
+`"eater_weight"` sets how often its Block Eater turns up (1 = an ordinary block, 0 = never).
+In multiplayer the host simulates them and sends positions (`src/mobs/`). **Creative**: every block in the
 inventory, instant breaking, nothing is used up. Worlds from before game modes are creative.
 
 Survival also has **health** (20 points, shown as a bar above the hotbar): falls of more than 3 blocks hurt
@@ -68,8 +90,10 @@ run by the single player / host and sent to others as edits).
 
 Crafting (E) lists every hand recipe and crafts straight from the inventory. Recipe types:
 `"shapeless"` (`"ingredients": {"core:log": 1}`) and `"shaped"` (`"pattern"` + `"key"`;
-only the ingredient counts matter). `"smelting"` recipes need a furnace (not in yet).
-Items can set `"max_stack"` and `"texture"` (their inventory icon).
+only the ingredient counts matter). `"smelting"` recipes (`"input"`, `"output"`) run in a furnace.
+Items can set `"max_stack"`, `"texture"` (their icon), `"fuel"`, and for tools `"tool"`
+(`"pickaxe"`, `"axe"`, …) and `"speed"`. Blocks with `"block_entity": "chest"` or `"furnace"`
+get storage.
 
 ## Exporting
 `export_presets.cfg` has a Linux preset using Godot's official export templates (install
@@ -182,9 +206,8 @@ live under `mods/<id>/`, add an export preset with `include_filter="*.json"`, an
 Mods are **not sandboxed**: only install mods you trust.
 
 ## Next steps
-- Survival bits: health, fall damage, inventory, mining time per block (`hardness`).
-- Tools (faster mining), a furnace for smelting, dropped item entities, creatures.
-- Creatures on `GoCubeWorld.move_box` (step-up built in).
+- Dropped items are only visible to the player they belong to; share them in multiplayer.
+- More creatures (night creatures, more animals), a use for hide.
 - Windows/macOS builds of the engine library.
 - Consider a double-precision build if worlds get large.
 - Evaluate [Godot Mod Loader](https://github.com/GodotModding/godot-mod-loader) if you
