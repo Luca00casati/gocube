@@ -58,6 +58,16 @@ public:
 	void set_save_directory(const godot::String &dir);
 	int save_modified(); // writes all edited chunks; returns how many
 
+	// Multiplayer: the generator is deterministic, so peers generate terrain
+	// themselves and only edited chunks are sent.
+	// Every edited chunk (saved files + unsaved edits): {Vector3i chunk: PackedByteArray}.
+	godot::Dictionary get_edited_chunks() const;
+	// One chunk's current data (loaded, or saved on disk); empty if neither.
+	godot::PackedByteArray get_chunk_bytes(const godot::Vector3i &chunk_pos) const;
+	// Use this data for a chunk instead of loading/generating it (also replaces
+	// it if already loaded). Returns false if the bytes are invalid.
+	bool set_chunk_override(const godot::Vector3i &chunk_pos, const godot::PackedByteArray &bytes);
+
 	int get_block(const godot::Vector3i &position) const;
 	// Changes one block (main thread). Returns false if its chunk isn't loaded.
 	bool set_block(const godot::Vector3i &position, int id);
@@ -123,6 +133,8 @@ private:
 	godot::Ref<godot::Material> _terrain_material, _fluid_material;
 	int _view_distance = 128;
 	std::string _save_dir;
+	std::mutex _override_mutex; // workers read overrides while generating
+	std::unordered_map<int64_t, std::shared_ptr<const ChunkData>> _overrides;
 	float _upload_budget_ms = 4.0f;
 
 	// Main thread state.

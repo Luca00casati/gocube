@@ -21,14 +21,14 @@ var player_name := "Player"
 ## True when launched from the command line: then options after `--` apply.
 var use_cmdline := false
 
-## Command-line options after `--`, e.g. `godot-voxel -- --world=test --view=128`.
+## Command-line options after `--`, e.g. `godot4 -- --world=test --view=128`.
 ## --world / --seed / --host / --join=ADDR / --port / --name override the above.
 var _args := {}
 var _fps_label: Label
 var _loading: Control
 var _loading_since := 0
 var _world: World
-var _player: CharacterBody3D
+var _player: Node3D  # player.gd
 var _cam: Camera3D  # the player's eyes
 var _session: Session
 var _bench_samples: PackedFloat32Array = []
@@ -86,7 +86,7 @@ func _start_local() -> void:
 			_leave_to_menu.call_deferred("Couldn't host on port %d: %s" % [port, error_string(err)])
 			return
 	_world.build(world_name, int(_args.get("view", World.DEFAULT_VIEW_DISTANCE)),
-			new_seed, not _args.has("bench"), net_mode == "host")
+			new_seed, not _args.has("bench"))
 	print("World '%s' (seed %d) at %s" % [world_name, int(_world.meta.seed),
 			ProjectSettings.globalize_path(_world.dir) if _world.is_persistent() else "<not saved>"])
 	if net_mode == "host":
@@ -123,7 +123,7 @@ func _start_client() -> void:
 
 func _on_welcomed(info: Dictionary) -> void:
 	_world.build_remote(PackedStringArray(info.block_ids), int(info.view_distance),
-			int(info.seed), info.sky_overrides)
+			int(info.seed), info.chunks)
 	var s: Array = info.spawn  # an eye position next to the host
 	_spawn_player(Vector3(s[0], s[1] - Player.EYE_HEIGHT, s[2]))
 	_player.edit_handler = _session.request_edit
@@ -143,12 +143,10 @@ func _spawn_player(feet: Vector3) -> void:
 	player.name = "Player"
 	player.world = _world
 	player.position = feet
-	player.view_distance = _world.terrain.max_view_distance
 	player.autopilot = _args.has("bench")
 	player.process_mode = Node.PROCESS_MODE_PAUSABLE
-	if net_mode == "host":
-		player.network_peer_id = 1  # the server's own viewer: never sent over the network
 	add_child(player)
+	_world.set_viewer(player.global_position)
 	_player = player
 	_cam = player.camera
 	_session.local_player = player.camera
@@ -189,7 +187,7 @@ func _leave_to_menu(message: String = "") -> void:
 	if _leaving:
 		return
 	_leaving = true
-	if _world.is_persistent() and _world.terrain:
+	if _world.is_persistent() and _world.engine:
 		_show_saving()
 		await save_game()
 	_session.leave()
@@ -211,7 +209,7 @@ func _show_saving() -> void:
 
 ## Saves the world; if a save (e.g. autosave) is running, waits for it and saves again.
 func save_game() -> void:
-	if not _world.is_persistent() or _world.terrain == null:
+	if not _world.is_persistent() or _world.engine == null:
 		return
 	while _saving:
 		await get_tree().process_frame
@@ -246,11 +244,11 @@ func _process(_delta: float) -> void:
 		_loading = null
 		_player.set_ready_to_move()
 		_mark("spawn area meshed, loading screen hidden")
-	if _cam and _world.sky:
-		_world.sky.follow(_cam.global_position)
-	if _player and _world.terrain and not _player.autopilot:
+	if _cam and _world.engine:
+		_world.set_viewer(_cam.global_position)  # chunks load around the local player
+	if _player and _world.engine and not _player.autopilot:
 		var eye := Vector3i(_cam.global_position.floor())
-		_underwater.visible = _player._fluid_ids.has(_world.get_tool().get_voxel(eye))
+		_underwater.visible = _world.is_fluid(_world.get_block(eye))
 	var status := "%d FPS" % Engine.get_frames_per_second()
 	if _player and not _player.autopilot:
 		var block: String = _player.selected_block()
@@ -333,11 +331,11 @@ func _spawn_area_meshed() -> bool:
 		return true
 	# Stay two mesh blocks inside the view distance: blocks at the edge may
 	# never load when the camera isn't aligned to the block grid.
-	var r := float(_world.terrain.max_view_distance - 2 * _world.terrain.mesh_block_size)
-	if _world.remote:
-		r -= 16  # the client's view distance is 16 larger than what the host sends
+	# A chunk inside the view distance: the corners of a square that size would
+	# poke outside the circular view range and never load.
+	var r := float(_world.view_distance) * 0.7 - World.CHUNK_SIZE
 	var size := Vector3(2 * r, SPAWN_AREA_HEIGHT, 2 * r)
-	return _world.terrain.is_area_meshed(AABB(_cam.global_position - size / 2, size))
+	return _world.is_area_meshed(AABB(_cam.global_position - size / 2, size))
 
 
 func _make_pause_menu() -> Control:

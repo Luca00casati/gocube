@@ -1,15 +1,18 @@
-extends CharacterBody3D
-## The local player: walks with gravity and collisions, or flies (F to toggle).
+extends Node3D
+## The local player: walks with gravity, or flies (F to toggle), colliding with
+## blocks through the engine's box-vs-voxel mover (no physics engine).
 ##
 ## Walk: WASD, Space jump, Ctrl sprint, Shift sneak.  Fly: WASD, Space up, Shift down
-## (descending onto the ground lands), Ctrl faster.  Mouse to look, left click breaks, right click places the selected
-## block (1-9 to pick).  Pausing is handled by the game scene, which pauses this node.
+## (descending onto the ground lands), Ctrl faster.  In water: Space swims up.
+## Mouse to look, left click breaks, right click places the selected block
+## (1-9 / wheel to pick). Pausing is handled by the game scene, which pauses this node.
 ##
 ## The node origin is at the feet; `camera` sits at eye height.
 
 const EYE_HEIGHT := 1.62
 const HEIGHT := 1.8
 const RADIUS := 0.3
+const BODY := Vector3(RADIUS * 2, HEIGHT, RADIUS * 2)
 const WALK_SPEED := 4.3
 const SPRINT_SPEED := 5.6
 const SNEAK_SPEED := 1.3
@@ -27,47 +30,31 @@ const SWIM_UP_SPEED := 3.5
 const SINK_SPEED := 2.0
 
 @export var mouse_sensitivity := 0.003
-@export var view_distance := 128
-## Benchmark mode: fly straight ahead without physics, don't grab the mouse.
+## Benchmark mode: fly straight ahead without collisions, don't grab the mouse.
 @export var autopilot := false
-## Multiplayer host: 1, so the terrain knows this viewer is local (no sending).
-var network_peer_id := -1
 ## Multiplayer client: called with (position: Vector3i, block: int) instead of
 ## editing locally; the host applies the edit and sends it back.
 var edit_handler := Callable()
 
 var world: World
 var camera: Camera3D
+var velocity := Vector3.ZERO
 var flying := false
-## Physics stays off until the ground around the player has loaded, so nobody
-## falls through chunks that don't have collisions yet. See set_ready_to_move().
-var _frozen := true
 var in_water := false
-var _fluid_ids := {}  # block index -> true for fluid blocks
+var on_floor := false
+## Movement stays off until the ground around the player has loaded.
+## See set_ready_to_move().
+var _frozen := true
 var _placeable: PackedStringArray = []
 var _selected := 0
 var _outline: MeshInstance3D
 
 
 func _ready() -> void:
-	var shape := CollisionShape3D.new()
-	var capsule := CapsuleShape3D.new()
-	capsule.radius = RADIUS
-	capsule.height = HEIGHT
-	shape.shape = capsule
-	shape.position.y = HEIGHT / 2
-	add_child(shape)
-
 	camera = Camera3D.new()
 	camera.position.y = EYE_HEIGHT
 	camera.far = 600.0
 	add_child(camera)
-
-	var viewer := VoxelViewer.new()  # tells the terrain where to load chunks
-	viewer.view_distance = view_distance
-	camera.add_child(viewer)
-	if network_peer_id >= 0:
-		viewer.set_network_peer_id(network_peer_id)
 
 	_outline = _make_outline()
 	_outline.visible = false
@@ -76,10 +63,8 @@ func _ready() -> void:
 
 	for id in Registry.block_ids:
 		var def = Registry.blocks.get(id)
-		if def != null and def.get("solid", true):
+		if def != null and def.get("solid", true) and not def.has("fluid"):
 			_placeable.append(id)
-		if def != null and def.has("fluid"):
-			_fluid_ids[Registry.block_index(id)] = true
 	if autopilot:
 		flying = true
 		return
@@ -87,13 +72,13 @@ func _ready() -> void:
 
 
 ## Called by the game once the spawn area is loaded: moves the player out of any
-## solid blocks and turns physics on.
+## solid blocks and turns movement on.
 func set_ready_to_move() -> void:
 	_unstuck()
 	_frozen = false
 
 
-## Eye position and view direction; this is what other players see.
+## View direction; other players see this.
 func look_yaw() -> float:
 	return rotation.y
 
@@ -147,7 +132,7 @@ func _physics_process(delta: float) -> void:
 	if autopilot:
 		global_position += -camera.global_basis.z * BENCH_SPEED * delta
 		return
-	if _frozen or (not flying and not _ground_loaded()):
+	if _frozen:
 		velocity = Vector3.ZERO
 		return
 
@@ -157,6 +142,7 @@ func _physics_process(delta: float) -> void:
 	var wish := basis * Vector3(input.x, 0, input.y)  # yaw only: looking down doesn't slow you
 	var sprint := Input.is_key_pressed(KEY_CTRL)
 	var sneak := Input.is_key_pressed(KEY_SHIFT)
+	in_water = world.is_fluid(world.get_block(Vector3i((global_position + Vector3(0, 0.9, 0)).floor())))
 
 	if flying:
 		var speed := FLY_SPRINT_SPEED if sprint else FLY_SPEED
@@ -165,8 +151,7 @@ func _physics_process(delta: float) -> void:
 		velocity = velocity.lerp(target, 1.0 - exp(-10.0 * delta))
 	else:
 		var speed := SNEAK_SPEED if sneak else (SPRINT_SPEED if sprint else WALK_SPEED)
-		var accel := ACCEL_GROUND if is_on_floor() else ACCEL_AIR
-		in_water = _fluid_ids.has(world.get_tool().get_voxel(Vector3i((global_position + Vector3(0, 0.9, 0)).floor())))
+		var accel := ACCEL_GROUND if on_floor else ACCEL_AIR
 		if in_water:
 			speed *= SWIM_SPEED_FACTOR
 			accel = ACCEL_GROUND
@@ -181,38 +166,33 @@ func _physics_process(delta: float) -> void:
 				velocity.y = minf(velocity.y + 20.0 * delta, SWIM_UP_SPEED)
 		else:
 			velocity.y = maxf(velocity.y - GRAVITY * delta, -MAX_FALL_SPEED)
-			if is_on_floor() and Input.is_key_pressed(KEY_SPACE):
+			if on_floor and Input.is_key_pressed(KEY_SPACE):
 				velocity.y = JUMP_VELOCITY
-	move_and_slide()
-	if flying and is_on_floor() and sneak:
+
+	var r: Dictionary = world.move_box(global_position, BODY, velocity * delta, 0.0)
+	var moved: Vector3 = r.position - global_position
+	global_position = r.position
+	on_floor = r.on_floor
+	# Lose the velocity that ran into something.
+	if r.on_floor or r.hit_ceiling:
+		velocity.y = 0.0
+	if r.hit_wall:
+		if absf(moved.x) < absf(velocity.x * delta) - 1e-4:
+			velocity.x = 0.0
+		if absf(moved.z) < absf(velocity.z * delta) - 1e-4:
+			velocity.z = 0.0
+	if flying and on_floor and sneak:
 		flying = false  # flying down onto the ground ends flight
 
 
-## True when the chunks around the player have meshes (and so collisions).
-func _ground_loaded() -> bool:
-	return world.terrain.is_area_meshed(AABB(global_position - Vector3(2, 3, 2), Vector3(4, 6, 4)))
-
-
-## Moves up until feet and head are in non-solid blocks (spawned inside a hill,
-## or a block appeared where we stand).
+## Moves up until the body fits (spawned inside a hill, or a block appeared
+## where we stand).
 func _unstuck() -> void:
-	var tool := world.get_tool()
-	tool.channel = VoxelBuffer.CHANNEL_TYPE
-	var cell := Vector3i(global_position.floor())
-	for dy in 128:
-		var feet := cell + Vector3i(0, dy, 0)
-		if not _is_solid(tool, feet) and not _is_solid(tool, feet + Vector3i.UP):
-			if dy > 0:
-				global_position.y = feet.y + 0.01
+	for dy in 256:
+		var p := global_position + Vector3(0, dy, 0)
+		if world.is_box_free(p, BODY):
+			global_position = p
 			return
-
-
-static func _is_solid(tool: VoxelTool, cell: Vector3i) -> bool:
-	var id := tool.get_voxel(cell)
-	if id <= 0 or id >= Registry.block_ids.size():
-		return false
-	var def = Registry.blocks.get(Registry.block_ids[id])
-	return def == null or def.get("solid", true)  # missing-mod blocks count as solid
 
 
 # --- Building ----------------------------------------------------------------------------
@@ -221,35 +201,32 @@ func _process(_delta: float) -> void:
 	if autopilot or world == null:
 		return
 	var hit := _target()
-	_outline.visible = hit != null
-	if hit:
+	_outline.visible = hit.hit
+	if hit.hit:
 		_outline.global_position = Vector3(hit.position) + Vector3.ONE * 0.5
 
 
-func _target() -> VoxelRaycastResult:
-	return world.get_tool().raycast(camera.global_position, -camera.global_basis.z, REACH)
+func _target() -> Dictionary:
+	return world.raycast(camera.global_position, -camera.global_basis.z, REACH)
 
 
 func _edit(breaking: bool) -> void:
 	var hit := _target()
-	if hit == null:
+	if not hit.hit:
 		return
-	var pos: Vector3i = hit.position if breaking else hit.previous_position
+	var pos: Vector3i = hit.position if breaking else hit.previous
 	if not breaking and overlaps_block(global_position, pos):
 		return  # don't build inside yourself
 	var block := Registry.block_index("core:air") if breaking else Registry.block_index(_placeable[_selected])
 	if edit_handler.is_valid():
 		edit_handler.call(pos, block)
 		return
-	var tool := world.get_tool()
-	tool.channel = VoxelBuffer.CHANNEL_TYPE
-	tool.set_voxel(pos, block)
-	world.notify_edit(pos, block)
+	world.set_block(pos, block)
 
 
 ## Whether a player standing with feet at `feet` overlaps block `cell`.
 static func overlaps_block(feet: Vector3, cell: Vector3i) -> bool:
-	var body := AABB(feet - Vector3(RADIUS, 0, RADIUS), Vector3(RADIUS * 2, HEIGHT, RADIUS * 2))
+	var body := AABB(feet - Vector3(RADIUS, 0, RADIUS), BODY)
 	return body.intersects(AABB(Vector3(cell), Vector3.ONE))
 
 

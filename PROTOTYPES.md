@@ -1,5 +1,20 @@
 # Feasibility prototypes
 
+> **Update — own engine.** These findings (GDScript light too slow, per-block tint, physics
+> bodies collapsing against trimesh terrain) led to GoCube's own C++ voxel engine
+> (`engine/`), which replaced the voxel module. Phase tests on stock Godot 4.7.2, same laptop:
+>
+> | | Voxel module | Own engine |
+> |---|---|---|
+> | Spawn area ready | ~3.5 s (with terrain features) | 0.39 s; 0.77 s with full block light |
+> | Fly-through benchmark | 59.9 FPS, 0 frames > 33 ms (column skylight) | 60.1 FPS, 0 frames > 33 ms (block light) |
+> | Light per 32³ chunk | GDScript ≈ 685 ms per 64³ | 5.6 ms (≈100× faster), per-face, torches |
+> | Edit visible | — | 6 edits in ~83 ms; relight 14–24 ms |
+> | 1000 box moves / raycasts | — | 4.2 ms / 2.9 ms (no physics engine) |
+>
+> The sections below describe the original voxel-module prototypes; their code was removed
+> when the game moved to the own engine (it is in the git history, branch `prototypes`).
+
 Branch `prototypes`. Measured on the dev laptop (Intel i5-4210M, 4 threads, Intel HD 4600),
 Godot 4.7.2 + voxel module v1.7. Benchmark scenes are in `prototypes/` and can be rerun, e.g.
 `godot-voxel res://prototypes/mobs.tscn -- voxel`.

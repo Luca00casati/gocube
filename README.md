@@ -3,12 +3,17 @@
 Voxel sandbox in Godot 4 + GDScript, built to be modded from day one.
 
 ## Engine
-Requires **Godot 4.7.2 with the [voxel module](https://github.com/Zylann/godot_voxel) v1.7
-compiled in** (the `godot.linuxbsd.editor.x86_64` build from the module's
-[v1.7 release](https://github.com/Zylann/godot_voxel/releases/tag/v1.7)); here it is
-installed as `godot-voxel`. `godot-voxel -e` opens the editor. Stock Godot will fail to
-parse scripts that use `Voxel*` classes. Everyone working on the project needs this
-exact build.
+Runs on **stock Godot 4.5+** (developed on 4.7.2). The voxel engine is GoCube's own C++
+GDExtension in `engine/` (chunk storage, generation, meshing, light, collision, saving),
+built against [godot-cpp](https://github.com/godotengine/godot-cpp) (a submodule pinned
+to `godot-4.5-stable`). Build it once after cloning, and after changing `engine/src/`:
+
+    git submodule update --init
+    cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release
+    cmake --build engine/build -j4        # -> bin/libgocube.linux.template_debug.x86_64.so
+
+Then `godot4 -e --path .` opens the editor (Linux only so far: other platforms need their
+library entries in `bin/gocube.gdextension`).
 
 The game opens on a world menu (play / host / create with optional seed / delete to
 trash / join a game). In game, Esc opens the pause menu.
@@ -17,14 +22,18 @@ trash / join a game). In game, Esc opens the pause menu.
 Pick a world and press **Host**; others press **Join a game…** and enter the address shown
 at the top of the host's screen (UDP port 24680; open it in the host's firewall, or
 forward it on the router for play over the internet). The host's machine runs the world
-and saves it; joining players see what it streams to them.
+and saves it. World generation is deterministic, so joining players generate the
+terrain themselves from the seed; only edits travel over the network.
 
 - Everyone must have the **same mods** (ids and versions). Mods are never downloaded from
   the server — mod scripts are unsandboxed — so mismatched players are refused with a list.
-- Block edits from joining players are requests: the host checks reach (16 blocks) and the
-  block id, then applies them; the voxel module forwards changes to everyone nearby.
-- Code: `src/net/session.gd` (handshake, positions, edit requests), `src/player/avatar.gd`,
-  `World.build_remote()`, terrain sync via `VoxelTerrainMultiplayerSynchronizer`.
+- On join the host sends the seed, its block id table and every edited chunk; after
+  that each edit is sent as (position, block). A player who hasn't loaded that chunk
+  asks the host for the whole chunk.
+- Block edits from joining players are requests: the host checks reach (16 blocks), the
+  block id and that nobody is inside the block, then applies them.
+- Code: `src/net/session.gd` (handshake, positions, edits), `src/player/avatar.gd`,
+  `World.build_remote()`.
 
 Launch options (after `--`): `--world=NAME` skip the menu and load or create that world,
 `--host` (with `--world`) host it, `--join=ADDR` join a game, `--port=N`, `--name=NAME`,
@@ -37,23 +46,30 @@ up/down; fly down onto the ground to land), mouse look, LMB break, RMB place (6-
 reach), 1-9 / mouse wheel pick block, Esc pause.
 
 ## Exporting
-`export_presets.cfg` has a Linux preset using the voxel module's release template
-(`godot.linuxbsd.template_release.x86_64` from the same v1.7 release). Its path is set
-in `custom_template/release`; adjust it on another machine. Then:
+`export_presets.cfg` has a Linux preset using Godot's official export templates (install
+them from the editor: Editor → Manage Export Templates). Exports need the engine's
+release library:
 
-    godot-voxel --headless --export-release "Linux" export/linux/gocube.x86_64
+    cmake -S engine -B engine/build-release -DCMAKE_BUILD_TYPE=Release -DGODOTCPP_TARGET=template_release
+    cmake --build engine/build-release -j4   # -> bin/libgocube.linux.template_release.x86_64.so
+    godot4 --headless --export-release "Linux" export/linux/gocube.x86_64
 
 The preset includes `*.json` (mod manifests and content are not Godot resources, so
-they'd be left out otherwise). Windows needs the module's Windows template the same way.
+they'd be left out otherwise) and the license files.
 
 ## Prototypes
-Feasibility results for lighting, caves/trees/water and many creatures: see
-[PROTOTYPES.md](PROTOTYPES.md).
+Feasibility results that led to the own engine (lighting, caves/trees/water, many
+creatures) and the engine's phase tests: [PROTOTYPES.md](PROTOTYPES.md),
+`prototypes/engine_phase*.tscn` (run with `godot4 res://prototypes/engine_phase3.tscn`).
 
 ## Layout
 - `src/core/registry.gd` — autoload `Registry`: blocks, items, recipes (namespaced `mod:name` ids).
 - `src/core/mod_loader.gd` — autoload `ModLoader`: finds, orders and loads mods.
-- `src/world/` — `World` (terrain + save folder), classic lighting (`terrain.gdshader`, `SkyLight`), `BlockLibrary` (registry → voxel models + texture atlas), native terrain generator (`VoxelGeneratorGraph`).
+- `engine/src/` — the C++ voxel engine (`GoCubeWorld` node): `generator`, `mesher`, `light`,
+  `storage`, `gocube_world` (streaming on worker threads, editing, raycast, box collision).
+- `src/engine/` — `BlockAtlas` (registry → texture atlas + engine block table) and the chunk
+  shaders (classic face shading × baked sky/block light; `daylight` uniform).
+- `src/world/world.gd` — `World`: the engine plus the world's save folder and id table.
 - `src/ui/world_menu.gd` — title screen / world select (the main scene).
 - `src/player/player.gd` — the player: walking/jumping/flying physics, block break/place.
 - `mods/core/` — the base game, written as an ordinary mod.
@@ -61,8 +77,10 @@ Feasibility results for lighting, caves/trees/water and many creatures: see
 
 ## Saving
 Worlds live in `user://worlds/<name>/` (on Linux `~/.local/share/godot/app_userdata/GoCube/`):
-`world.json` (seed, block id table, player position) and `blocks.sqlite` (only chunks
-the player edited; the rest is regenerated from the seed). Saved on quit and every 60 s.
+`world.json` (seed, block id table, player position) and `chunks/` (only chunks the player
+edited, run-length encoded; the rest is regenerated from the seed). Saved on quit and
+every 60 s. Worlds from the old voxel-module version regenerate their terrain; their edits
+are not carried over.
 
 Voxels store numeric block ids, so each world keeps its own id table: adding mods appends
 new ids, and blocks from a removed mod keep their slot (shown magenta) until it returns.
@@ -75,20 +93,25 @@ scaled to 32×32 and packed into a shared, mipmapped atlas at startup (textures 
 tile seamlessly: the atlas pads each tile with repeats of itself to prevent mip bleeding). Blocks without textures
 fall back to their `"color"`.
 
+Other block keys: `"solid": false` (no collision), `"transparent": true` (doesn't hide
+neighbours or block light), `"fluid": "water"`, `"light": 0..15` (glows, e.g. `core:lamp`).
+
 ## Writing a mod
 Create `user://mods/<id>/mod.json` (see the header of `mod_loader.gd`), add JSON
 content files and/or an `entry` script with `init_mod(registry)`.
 
 To distribute it as a pack: make a Godot project with the same engine build whose files
 live under `mods/<id>/`, add an export preset with `include_filter="*.json"`, and run
-`godot-voxel --headless --export-pack "<preset>" <id>.pck`. Players drop the `.pck` into
+`godot4 --headless --export-pack "<preset>" <id>.pck`. Players drop the `.pck` into
 `user://mods/` (Linux: `~/.local/share/godot/app_userdata/GoCube/mods/`).
 
 Mods are **not sandboxed**: only install mods you trust.
 
 ## Next steps
 - Survival bits: health, fall damage, inventory, mining time per block (`hardness`).
-- Caves/ores: add nodes to the graph in `graph_terrain_generator.gd` and extend the remap categories.
+- Ore generation, flowing water, smooth lighting, a day/night cycle (`daylight` uniform).
+- Creatures on `GoCubeWorld.move_box` (step-up built in).
+- Windows/macOS builds of the engine library.
 - Consider a double-precision build if worlds get large.
 - Evaluate [Godot Mod Loader](https://github.com/GodotModding/godot-mod-loader) if you
   want script hooks/extensions beyond this registry.
@@ -99,7 +122,7 @@ GoCube is **source-available**: you may build it yourself and play your own buil
 sell them. Redistributing builds or the source, and commercial use, need written permission.
 Mods you make are yours. Full terms: [LICENSE.md](LICENSE.md).
 
-Third-party components (Godot Engine, the voxel module, and libraries bundled in Godot) keep
+Third-party components (Godot Engine, godot-cpp, and libraries bundled in Godot) keep
 their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Their texts ship with
 the game (title screen → **Licenses**).
 

@@ -178,6 +178,75 @@ int GoCubeWorld::save_modified() {
 	return saved;
 }
 
+Dictionary GoCubeWorld::get_edited_chunks() const {
+	Dictionary out;
+	auto put = [&](const Vector3i &p, const std::vector<uint8_t> &bytes) {
+		PackedByteArray a;
+		a.resize(int64_t(bytes.size()));
+		std::memcpy(a.ptrw(), bytes.data(), bytes.size());
+		out[p] = a;
+	};
+	if (!_save_dir.empty()) {
+		for (const auto &c : list_chunk_files(_save_dir)) {
+			const Vector3i p(c[0], c[1], c[2]);
+			auto it = _chunks.find(key(p));
+			if (it != _chunks.end() && it->second.dirty) {
+				continue; // newer data in memory, added below
+			}
+			ChunkData data;
+			if (load_chunk_file(chunk_file_path(_save_dir, p.x, p.y, p.z), data)) {
+				put(p, encode_chunk(data));
+			}
+		}
+	}
+	for (const auto &kv : _chunks) {
+		if (kv.second.dirty && kv.second.data) {
+			put(pos_of(kv.first), encode_chunk(*kv.second.data));
+		}
+	}
+	return out;
+}
+
+PackedByteArray GoCubeWorld::get_chunk_bytes(const Vector3i &chunk_pos) const {
+	std::vector<uint8_t> bytes;
+	auto it = _chunks.find(key(chunk_pos));
+	if (it != _chunks.end() && it->second.data) {
+		bytes = encode_chunk(*it->second.data);
+	} else if (!_save_dir.empty()) {
+		ChunkData data;
+		if (load_chunk_file(chunk_file_path(_save_dir, chunk_pos.x, chunk_pos.y, chunk_pos.z), data)) {
+			bytes = encode_chunk(data);
+		}
+	}
+	PackedByteArray out;
+	out.resize(int64_t(bytes.size()));
+	if (!bytes.empty()) {
+		std::memcpy(out.ptrw(), bytes.data(), bytes.size());
+	}
+	return out;
+}
+
+bool GoCubeWorld::set_chunk_override(const Vector3i &chunk_pos, const PackedByteArray &bytes) {
+	auto data = std::make_shared<ChunkData>();
+	if (!decode_chunk(bytes.ptr(), size_t(bytes.size()), *data)) {
+		return false;
+	}
+	{
+		std::lock_guard<std::mutex> lock(_override_mutex);
+		_overrides[key(chunk_pos)] = data;
+	}
+	auto it = _chunks.find(key(chunk_pos));
+	if (it != _chunks.end() && it->second.data) {
+		it->second.data = data;
+		chunk_local_tops(*data, _blocks, it->second.local_tops);
+		update_column_tops(chunk_pos.x, chunk_pos.z);
+		// Its blocks and its column's sky may have changed: relight around it.
+		relight_around(chunk_pos * CHUNK + Vector3i(CHUNK / 2, 0, CHUNK / 2),
+				CHUNK_Y_MIN * CHUNK, (CHUNK_Y_MAX + 1) * CHUNK - 1);
+	}
+	return true;
+}
+
 // --- Queries -------------------------------------------------------------------
 
 Vector3i GoCubeWorld::pos_of(int64_t k) {
@@ -555,14 +624,26 @@ void GoCubeWorld::worker_loop() {
 		r.urgent = job.urgent;
 		const int64_t t0 = now_us();
 		if (job.kind == JOB_GENERATE) {
-			auto data = std::make_shared<ChunkData>();
-			const bool loaded = !_save_dir.empty() &&
-					load_chunk_file(chunk_file_path(_save_dir, job.pos.x, job.pos.y, job.pos.z), *data);
-			if (!loaded) {
-				_generator.generate(*data, job.pos.x * CHUNK, job.pos.y * CHUNK, job.pos.z * CHUNK);
+			std::shared_ptr<const ChunkData> from_host;
+			{
+				std::lock_guard<std::mutex> lock(_override_mutex);
+				auto oit = _overrides.find(key(job.pos));
+				if (oit != _overrides.end()) {
+					from_host = oit->second;
+				}
 			}
-			chunk_local_tops(*data, _blocks, r.local_tops);
-			r.data = data;
+			if (from_host) {
+				r.data = from_host;
+			} else {
+				auto data = std::make_shared<ChunkData>();
+				const bool loaded = !_save_dir.empty() &&
+						load_chunk_file(chunk_file_path(_save_dir, job.pos.x, job.pos.y, job.pos.z), *data);
+				if (!loaded) {
+					_generator.generate(*data, job.pos.x * CHUNK, job.pos.y * CHUNK, job.pos.z * CHUNK);
+				}
+				r.data = data;
+			}
+			chunk_local_tops(*r.data, _blocks, r.local_tops);
 			_gen_us += now_us() - t0;
 			_gen_count++;
 		} else {
@@ -849,6 +930,9 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_box_free", "position", "size"), &GoCubeWorld::is_box_free);
 	ClassDB::bind_method(D_METHOD("set_save_directory", "dir"), &GoCubeWorld::set_save_directory);
 	ClassDB::bind_method(D_METHOD("save_modified"), &GoCubeWorld::save_modified);
+	ClassDB::bind_method(D_METHOD("get_edited_chunks"), &GoCubeWorld::get_edited_chunks);
+	ClassDB::bind_method(D_METHOD("get_chunk_bytes", "chunk_pos"), &GoCubeWorld::get_chunk_bytes);
+	ClassDB::bind_method(D_METHOD("set_chunk_override", "chunk_pos", "bytes"), &GoCubeWorld::set_chunk_override);
 	ClassDB::bind_method(D_METHOD("is_area_meshed", "area"), &GoCubeWorld::is_area_meshed);
 	ClassDB::bind_method(D_METHOD("get_stats"), &GoCubeWorld::get_stats);
 

@@ -7,4 +7,5 @@ __pycache__/
 
 # Native engine build output
 engine/build/
+engine/build-release/
 bin/*.so

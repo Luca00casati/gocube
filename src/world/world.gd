@@ -1,119 +1,166 @@
 class_name World
 extends Node3D
-## A saved world: terrain plus its folder on disk. Call build() after mods load.
+## A saved world on the native engine (GoCubeWorld). Call build() after mods load.
 ##
 ## user://worlds/<name>/
-##   world.json     seed, block id table, player state (written atomically)
-##   blocks.sqlite  chunks the player edited; untouched chunks are regenerated
-##                  from the seed, so this stays small.
-
-const TerrainGenerator := preload("res://src/world/graph_terrain_generator.gd")
+##   world.json   seed, block id table, player state (written atomically)
+##   chunks/      chunks the player edited; everything else is regenerated
+##                from the seed, so this stays small.
 
 const WORLDS_DIR := "user://worlds"
-const FORMAT_VERSION := 1
+## 2 = native engine (chunks/). 1 = voxel-module worlds (blocks.sqlite), whose
+## edits can't be carried over: their terrain generator was different.
+const FORMAT_VERSION := 2
 const DEFAULT_VIEW_DISTANCE := 128  # 256 halves FPS on an Intel HD 4600
-## PROTOTYPE: per-voxel light in the COLOR channel (see LightPrototype). Off by
-## default: costs 2 bytes/voxel and GDScript light is far too slow (PROTOTYPES.md).
-const LIGHTING_PROTOTYPE := false
+const CHUNK_SIZE := 32
 
-var terrain: VoxelTerrain
+## A block changed through set_block() (the host forwards these to clients).
+signal block_changed(position: Vector3i, block: int)
+
+var engine: GoCubeWorld
 ## Contents of world.json. "player" is whatever the game passed to save().
 var meta: Dictionary = {}
 var dir := ""
-## True on a multiplayer client: voxels come from the host, nothing is generated or saved.
+## True on a multiplayer client: the host's edits come over the network,
+## nothing is saved here.
 var remote := false
-## Classic column skylight for the terrain shader (see SkyLight).
-var sky: SkyLight
-
-## A column's skylight changed because of an edit (the host forwards it to clients).
-signal sky_changed(column: Vector2i, top: int)
+var view_distance := DEFAULT_VIEW_DISTANCE
+var terrain_material: ShaderMaterial
+var fluid_material: ShaderMaterial
+## Block index -> true, for fluid blocks (swimming, underwater view).
+var fluid_ids := {}
 
 
 ## persistent=false runs the world without reading or writing anything (benchmarks).
-## networked=true makes this the authoritative copy of a multiplayer game (host).
-## Multiplayer must already be set up: the synchronizer checks it on entering the tree.
-func build(world_name: String, view_distance: int = DEFAULT_VIEW_DISTANCE,
-		new_seed: int = -1, persistent: bool = true, networked: bool = false) -> void:
+func build(world_name: String, distance: int = DEFAULT_VIEW_DISTANCE, new_seed: int = -1,
+		persistent: bool = true) -> void:
 	if persistent:
 		dir = WORLDS_DIR.path_join(world_name)
-		DirAccess.make_dir_recursive_absolute(dir)
+		DirAccess.make_dir_recursive_absolute(dir.path_join("chunks"))
 		meta = _read_meta()
+	if not meta.is_empty() and int(meta.get("format", 1)) < FORMAT_VERSION:
+		push_warning("World '%s' was made with the old voxel engine; its terrain is regenerated and old edits are not carried over" % world_name)
+		meta.erase("player")  # the old position may now be inside terrain
 	if meta.is_empty():
-		meta = {
-			"format": FORMAT_VERSION,
-			"seed": new_seed if new_seed >= 0 else randi(),
-			"created": Time.get_datetime_string_from_system(),
-		}
+		meta = {"seed": new_seed if new_seed >= 0 else randi(),
+				"created": Time.get_datetime_string_from_system()}
 	elif int(meta.get("format", 0)) > FORMAT_VERSION:
 		push_error("World '%s' was saved by a newer version of the game" % world_name)
+	meta.format = FORMAT_VERSION
 
-	# Voxels store numeric ids, so a world must keep its own id table. It is
-	# written before any chunk can be saved.
+	# Voxels store numeric ids, so a world keeps its own id table. It is written
+	# before any chunk can be saved.
 	Registry.assign_block_ids(PackedStringArray(meta.get("block_ids", [])))
 	meta.block_ids = Array(Registry.block_ids)
 	if persistent:
 		_write_meta()
-
-	_make_terrain(view_distance)
-	var generator := TerrainGenerator.new()
-	generator.setup(int(meta.seed), LIGHTING_PROTOTYPE)
-	terrain.generator = generator
-	sky = SkyLight.new(generator, terrain.material_override, terrain.get_voxel_tool(), meta.get("sky_overrides", {}))
+	_make_engine(distance, int(meta.seed))
 	if persistent:
-		var stream := VoxelStreamSQLite.new()
-		stream.database_path = ProjectSettings.globalize_path(dir.path_join("blocks.sqlite"))
-		terrain.stream = stream
-	if networked:
-		_add_synchronizer()
-	add_child(terrain)
+		engine.set_save_directory(ProjectSettings.globalize_path(dir.path_join("chunks")))
+	add_child(engine)
+	engine.start()
 
 
-## Client side of a multiplayer game. Uses the host's block table; the terrain
-## only shows chunks the host sends (the synchronizer disables local loading).
-func build_remote(block_ids: PackedStringArray, view_distance: int, world_seed: int,
-		sky_overrides: Dictionary) -> void:
+## Client side of a multiplayer game: same seed and block table as the host,
+## plus the host's edited chunks; terrain is generated locally.
+func build_remote(block_ids: PackedStringArray, distance: int, world_seed: int, chunks: Dictionary) -> void:
 	remote = true
 	Registry.assign_block_ids(block_ids)
-	meta = {"block_ids": Array(block_ids), "seed": world_seed}
-	# Slightly larger than the host's, so chunks aren't unloaded before the host
-	# stops sending them (avoids holes at the edge).
-	_make_terrain(view_distance + 16)
-	# The client doesn't generate terrain, but skylight uses the same height
-	# function as the host's generator, so it needs one for that.
-	var heights := TerrainGenerator.new()
-	heights.setup(world_seed)
-	sky = SkyLight.new(heights, terrain.material_override, terrain.get_voxel_tool(), sky_overrides)
-	_add_synchronizer()
-	add_child(terrain)
+	meta = {"block_ids": Array(block_ids), "seed": world_seed, "format": FORMAT_VERSION}
+	_make_engine(distance, world_seed)
+	for pos in chunks:
+		engine.set_chunk_override(pos, chunks[pos])
+	add_child(engine)
+	engine.start()
 
 
-func _make_terrain(view_distance: int) -> void:
-	var blocks := BlockLibrary.new()
-	var mesher := VoxelMesherBlocky.new()
-	mesher.library = blocks.library
-	terrain = VoxelTerrain.new()
-	terrain.name = "Terrain"
-	if LIGHTING_PROTOTYPE:
-		# Light lives in the COLOR channel (RGBA4444 = 16 levels per channel); the
-		# blocky mesher multiplies each block's vertices by it (TINT_RAW_COLOR).
-		mesher.tint_mode = VoxelMesherBlocky.TINT_RAW_COLOR
-		var format := VoxelFormat.new()
-		format.set_channel_depth(VoxelBuffer.CHANNEL_COLOR, VoxelBuffer.DEPTH_16_BIT)
-		terrain.format = format
-	# Flat classic look: the shader does face shading; the mesher's per-corner
-	# occlusion is off (terrain.gdshader `use_vertex_ao` turns it back on).
-	mesher.occlusion_enabled = false
-	terrain.mesher = mesher
-	terrain.material_override = blocks.material
-	terrain.max_view_distance = view_distance
-	terrain.generate_collisions = true
+func _make_engine(distance: int, world_seed: int) -> void:
+	view_distance = distance
+	var atlas := BlockAtlas.new()
+	terrain_material = ShaderMaterial.new()
+	terrain_material.shader = preload("res://src/engine/chunk.gdshader")
+	terrain_material.set_shader_parameter("albedo_texture", ImageTexture.create_from_image(atlas.atlas))
+	fluid_material = ShaderMaterial.new()
+	fluid_material.shader = preload("res://src/engine/chunk_fluid.gdshader")
+	for i in Registry.block_ids.size():
+		if atlas.block_table[i].fluid:
+			fluid_ids[i] = true
+
+	engine = GoCubeWorld.new()
+	engine.name = "Engine"
+	engine.configure_blocks(atlas.block_table)
+	engine.set_atlas_layout(atlas.cols, atlas.rows, BlockAtlas.CELL, BlockAtlas.FACE_OFFSET)
+	engine.set_materials(terrain_material, fluid_material)
+	var ids := {}
+	for key in ["stone", "dirt", "grass", "sand", "water", "log", "leaves"]:
+		ids[key] = Registry.block_index("core:" + key)
+	engine.configure_generator(world_seed, ids)
+	engine.view_distance = distance
 
 
-## Must have the same node path on host and clients: Main/World/Terrain/Sync.
-func _add_synchronizer() -> void:
-	var sync := VoxelTerrainMultiplayerSynchronizer.new()
-	sync.name = "Sync"
-	terrain.add_child(sync)
+# --- Blocks ------------------------------------------------------------------------
+
+func get_block(pos: Vector3i) -> int:
+	return engine.get_block(pos)
+
+
+## Changes a block and tells listeners (multiplayer). Returns false if its chunk
+## isn't loaded.
+func set_block(pos: Vector3i, block: int) -> bool:
+	if not engine.set_block(pos, block):
+		return false
+	block_changed.emit(pos, block)
+	return true
+
+
+## Applies a block change from the host (no signal: the host already knows).
+## Returns false if the chunk isn't loaded here: then ask the host for the
+## whole chunk (chunk_bytes / set_chunk) so the edit isn't lost.
+func apply_remote_block(pos: Vector3i, block: int) -> bool:
+	return engine.set_block(pos, block)
+
+
+static func chunk_of(pos: Vector3i) -> Vector3i:
+	return Vector3i(floori(pos.x / float(CHUNK_SIZE)), floori(pos.y / float(CHUNK_SIZE)), floori(pos.z / float(CHUNK_SIZE)))
+
+
+func chunk_bytes(chunk_pos: Vector3i) -> PackedByteArray:
+	return engine.get_chunk_bytes(chunk_pos)
+
+
+func set_chunk(chunk_pos: Vector3i, bytes: PackedByteArray) -> void:
+	engine.set_chunk_override(chunk_pos, bytes)
+
+
+## {hit, position, previous, normal, block, distance}
+func raycast(origin: Vector3, direction: Vector3, max_distance: float) -> Dictionary:
+	return engine.raycast(origin, direction, max_distance)
+
+
+func move_box(position: Vector3, size: Vector3, motion: Vector3, step_height: float = 0.0) -> Dictionary:
+	return engine.move_box(position, size, motion, step_height)
+
+
+func is_box_free(position: Vector3, size: Vector3) -> bool:
+	return engine.is_box_free(position, size)
+
+
+func is_area_meshed(area: AABB) -> bool:
+	return engine.is_area_meshed(area)
+
+
+func is_fluid(block: int) -> bool:
+	return fluid_ids.has(block)
+
+
+## Where chunks are loaded around (the local player).
+func set_viewer(position: Vector3) -> void:
+	engine.viewer_position = position
+
+
+## For multiplayer: every edited chunk, to send to a joining player.
+func edited_chunks() -> Dictionary:
+	return engine.get_edited_chunks()
 
 
 # --- World folders -------------------------------------------------------------
@@ -152,39 +199,21 @@ static func delete_world(world_name: String) -> Error:
 	return OS.move_to_trash(ProjectSettings.globalize_path(WORLDS_DIR.path_join(world_name)))
 
 
-## Call after changing a block (locally, or on the host for a client's request).
-func notify_edit(pos: Vector3i, block: int) -> void:
-	if sky:
-		var col := Vector2i(pos.x, pos.z)
-		var before := sky.get_top(col)
-		var top := sky.on_edit(pos, block)
-		if top != before:
-			sky_changed.emit(col, top)
-
-
-func get_tool() -> VoxelTool:
-	return terrain.get_voxel_tool()
-
+# --- Saving ----------------------------------------------------------------------
 
 func is_persistent() -> bool:
 	return dir != ""
 
 
-## Writes world.json and all edited chunks. Await it to know the save finished.
+## Writes world.json and all edited chunks.
 func save(player: Dictionary = {}) -> void:
 	if not is_persistent():
 		return
 	if not player.is_empty():
 		meta.player = player
-	if sky:
-		meta.sky_overrides = sky.serialize()
 	meta.saved = Time.get_datetime_string_from_system()
 	_write_meta()
-	var tracker := terrain.save_modified_blocks()
-	while not (tracker.is_complete() or tracker.is_aborted()):
-		await get_tree().process_frame
-	if tracker.is_aborted():
-		push_error("Saving world chunks was aborted")
+	engine.save_modified()
 
 
 func _read_meta() -> Dictionary:

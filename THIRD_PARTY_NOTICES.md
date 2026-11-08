@@ -7,7 +7,7 @@ license (`LICENSE.md`); each is covered by its own license, whose full text ship
 | Component | License | Full text |
 |---|---|---|
 | [Godot Engine](https://godotengine.org) 4.7.2 | MIT | `licenses/godot.txt` |
-| [Voxel Tools for Godot](https://github.com/Zylann/godot_voxel) v1.7 (Marc Gilleron) | MIT | `licenses/voxel_module.txt` |
+| [godot-cpp](https://github.com/godotengine/godot-cpp) (compiled into the engine library) | MIT | `licenses/godot_cpp.txt` |
 | Libraries bundled in the Godot engine (e.g. FreeType, ENet, mbedTLS, HarfBuzz, zstd, ...) | various (MIT, BSD, zlib, Apache-2.0, FTL, ...) | shown in-game from the engine's own copyright data |
 
 Builds of GoCube must keep these notices. The in-game Licenses screen lists the engine's bundled

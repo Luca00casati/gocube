@@ -223,7 +223,7 @@ static func license_text() -> String:
 	var parts := PackedStringArray()
 	for entry in [["GoCube", "res://LICENSE.md"],
 			["Godot Engine", "res://licenses/godot.txt"],
-			["Voxel Tools for Godot (voxel module)", "res://licenses/voxel_module.txt"]]:
+			["godot-cpp", "res://licenses/godot_cpp.txt"]]:
 		parts.append("==== %s ====\n\n%s" % [entry[0], FileAccess.get_file_as_string(entry[1]).strip_edges()])
 	# Libraries bundled in this engine build, straight from the engine.
 	var lines := PackedStringArray(["==== Third-party libraries in the Godot engine ===="])

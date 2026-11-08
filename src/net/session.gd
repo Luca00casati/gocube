@@ -2,14 +2,15 @@ class_name Session
 extends Node
 ## Multiplayer session over Godot's high-level multiplayer (ENet).
 ##
-## The host is an authoritative server that also plays. Terrain is streamed by
-## the voxel module's VoxelTerrainMultiplayerSynchronizer (see World): every
-## joined player gets a server-side VoxelViewer, and chunks around it are sent
-## to that player; server-side edits are forwarded automatically. This node
-## handles the rest:
-##   - handshake: protocol + exact mod list check, then the world's block table
+## The host is an authoritative server that also plays. World generation is
+## deterministic, so clients generate terrain themselves from the seed and only
+## edits travel over the network:
+##   - handshake: protocol + exact mod list check, then seed, block table and
+##     every edited chunk (run-length encoded)
+##   - block edits: clients ask, the host validates and applies, then sends
+##     (position, block) to everyone; a client that hasn't loaded that chunk
+##     asks the host for the whole chunk instead
 ##   - player positions (clients -> host -> everyone) and avatars
-##   - block edits from clients, which the host validates and applies
 ##
 ## Mods are NOT sent over the network: both sides must have the same mods
 ## installed (mod scripts run unsandboxed, so never auto-download them).
@@ -35,7 +36,7 @@ var world: World
 var local_player: Node3D
 var player_name := "Player"
 
-## Host only: peer id -> {name, viewer: VoxelViewer, position: Vector3, yaw: float}
+## Host only: peer id -> {name, position: Vector3, yaw: float}
 var _peers := {}
 ## Avatars of other players, by peer id.
 var _avatars := {}
@@ -176,31 +177,19 @@ func _hello(protocol: int, mods: Array, requested_name: String) -> void:
 		pname = "Player %d" % id
 	var spawn := local_player.global_position + Vector3(2, 0, 2)
 
-	# Reliable messages on one channel arrive in order, so the client builds its
-	# terrain (and synchronizer) from this before any chunk data reaches it.
+	# Reliable messages on one channel arrive in order, so the client has the
+	# world before any later block edit reaches it.
 	_welcome.rpc_id(id, {
 		"block_ids": Array(Registry.block_ids),
-		"view_distance": world.terrain.max_view_distance,
+		"view_distance": world.view_distance,
 		"spawn": [spawn.x, spawn.y, spawn.z],
-		"seed": int(world.meta.seed),               # clients compute skylight heights
-		"sky_overrides": world.sky.serialize(),     # columns changed by edits
+		"seed": int(world.meta.seed),
+		"chunks": world.edited_chunks(),  # {Vector3i: PackedByteArray}
 	})
-	if not world.sky_changed.is_connected(_on_sky_changed):
-		world.sky_changed.connect(_on_sky_changed)
+	if not world.block_changed.is_connected(_on_block_changed):
+		world.block_changed.connect(_on_block_changed)
 
-	# A server-side viewer per player makes the terrain load chunks around them
-	# and send those chunks to them. It doesn't need meshes or collisions here.
-	var viewer := VoxelViewer.new()
-	viewer.name = "Viewer_%d" % id
-	viewer.view_distance = world.terrain.max_view_distance
-	viewer.requires_visuals = false
-	viewer.requires_collisions = false
-	viewer.requires_data_block_notifications = true
-	viewer.position = spawn
-	world.add_child(viewer)
-	viewer.set_network_peer_id(id)
-
-	_peers[id] = {"name": pname, "viewer": viewer, "position": spawn, "yaw": 0.0}
+	_peers[id] = {"name": pname, "position": spawn, "yaw": 0.0}
 	print("%s joined (peer %d)" % [pname, id])
 
 
@@ -213,7 +202,6 @@ func _on_peer_disconnected(id: int) -> void:
 	if not _peers.has(id):
 		return
 	print("%s left" % _peers[id].name)
-	_peers[id].viewer.queue_free()
 	_peers.erase(id)
 
 
@@ -225,7 +213,6 @@ func _client_state(pos: Vector3, yaw: float) -> void:
 	var p: Dictionary = _peers[id]
 	p.position = pos
 	p.yaw = yaw
-	p.viewer.position = pos
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -245,23 +232,34 @@ func _request_edit(pos: Vector3i, block: int) -> void:
 		for state in _host_states().values():  # nobody may get built into a block
 			if Player.overlaps_block(state[0] - Vector3(0, Player.EYE_HEIGHT, 0), pos):
 				return
-	var tool := world.get_tool()
-	if not tool.is_area_editable(AABB(Vector3(pos), Vector3.ONE)):
-		return
-	tool.channel = VoxelBuffer.CHANNEL_TYPE
-	tool.set_voxel(pos, block)  # the synchronizer forwards this to everyone nearby
-	world.notify_edit(pos, block)
+	world.set_block(pos, block)  # -> block_changed -> sent to everyone (fails if not loaded)
 
 
-func _on_sky_changed(column: Vector2i, top: int) -> void:
+func _on_block_changed(pos: Vector3i, block: int) -> void:
 	if is_host() and not _peers.is_empty():
-		_sky_column.rpc(column, top)
+		_block.rpc(pos, block)
+
+
+## Client: a block changed on the host.
+@rpc("authority", "call_remote", "reliable")
+func _block(pos: Vector3i, block: int) -> void:
+	if world and not world.apply_remote_block(pos, block):
+		_request_chunk.rpc_id(1, World.chunk_of(pos))  # not loaded here: get the whole chunk
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_chunk(chunk_pos: Vector3i) -> void:
+	var id := multiplayer.get_remote_sender_id()
+	if is_host() and _peers.has(id):
+		var bytes := world.chunk_bytes(chunk_pos)
+		if not bytes.is_empty():
+			_chunk.rpc_id(id, chunk_pos, bytes)
 
 
 @rpc("authority", "call_remote", "reliable")
-func _sky_column(column: Vector2i, top: int) -> void:
-	if world and world.sky:
-		world.sky.set_top(column, top)
+func _chunk(chunk_pos: Vector3i, bytes: PackedByteArray) -> void:
+	if world:
+		world.set_chunk(chunk_pos, bytes)
 
 
 func _host_states() -> Dictionary:
