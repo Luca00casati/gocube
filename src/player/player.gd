@@ -22,6 +22,9 @@ const ACCEL_GROUND := 14.0
 const ACCEL_AIR := 3.0
 const REACH := 6.0
 const BENCH_SPEED := 20.0
+const SWIM_SPEED_FACTOR := 0.6
+const SWIM_UP_SPEED := 3.5
+const SINK_SPEED := 2.0
 
 @export var mouse_sensitivity := 0.003
 @export var view_distance := 128
@@ -39,6 +42,8 @@ var flying := false
 ## Physics stays off until the ground around the player has loaded, so nobody
 ## falls through chunks that don't have collisions yet. See set_ready_to_move().
 var _frozen := true
+var in_water := false
+var _fluid_ids := {}  # block index -> true for fluid blocks
 var _placeable: PackedStringArray = []
 var _selected := 0
 var _outline: MeshInstance3D
@@ -73,6 +78,8 @@ func _ready() -> void:
 		var def = Registry.blocks.get(id)
 		if def != null and def.get("solid", true):
 			_placeable.append(id)
+		if def != null and def.has("fluid"):
+			_fluid_ids[Registry.block_index(id)] = true
 	if autopilot:
 		flying = true
 		return
@@ -159,13 +166,23 @@ func _physics_process(delta: float) -> void:
 	else:
 		var speed := SNEAK_SPEED if sneak else (SPRINT_SPEED if sprint else WALK_SPEED)
 		var accel := ACCEL_GROUND if is_on_floor() else ACCEL_AIR
+		in_water = _fluid_ids.has(world.get_tool().get_voxel(Vector3i((global_position + Vector3(0, 0.9, 0)).floor())))
+		if in_water:
+			speed *= SWIM_SPEED_FACTOR
+			accel = ACCEL_GROUND
 		var horizontal := Vector2(velocity.x, velocity.z).lerp(
 				Vector2(wish.x, wish.z) * speed, 1.0 - exp(-accel * delta))
 		velocity.x = horizontal.x
 		velocity.z = horizontal.y
-		velocity.y = maxf(velocity.y - GRAVITY * delta, -MAX_FALL_SPEED)
-		if is_on_floor() and Input.is_key_pressed(KEY_SPACE):
-			velocity.y = JUMP_VELOCITY
+		if in_water:
+			# buoyant: sink slowly, Space swims up
+			velocity.y = maxf(velocity.y - GRAVITY * 0.3 * delta, -SINK_SPEED)
+			if Input.is_key_pressed(KEY_SPACE):
+				velocity.y = minf(velocity.y + 20.0 * delta, SWIM_UP_SPEED)
+		else:
+			velocity.y = maxf(velocity.y - GRAVITY * delta, -MAX_FALL_SPEED)
+			if is_on_floor() and Input.is_key_pressed(KEY_SPACE):
+				velocity.y = JUMP_VELOCITY
 	move_and_slide()
 	if flying and is_on_floor() and sneak:
 		flying = false  # flying down onto the ground ends flight

@@ -10,7 +10,9 @@ extends RefCounted
 ##     Paths are relative to the block's mod folder, or "othermod:path" to use
 ##     another mod's file. PNGs of any square size are scaled to TILE_SIZE.
 ##   "color": "#rrggbb"     flat color, used when a block has no textures
-##   "solid": false         no geometry (e.g. air)
+##   "solid": false         no collision; no geometry unless it is a fluid (e.g. air)
+##   "fluid": "water"       a fluid block (rendered by the fluid mesher, see-through);
+##                          blocks naming the same fluid share one material
 ##   "transparent": true    neighbours' faces stay visible
 
 const TILE_SIZE := 32  # textures of other sizes are scaled to this (nearest)
@@ -25,6 +27,7 @@ const MISSING_COLOR := Color(1, 0, 1)  # magenta = no texture or color given
 var library: VoxelBlockyLibrary
 var material: StandardMaterial3D
 
+var _fluids: Dictionary = {}  # fluid name -> VoxelBlockyFluid
 var _tiles: Array[Image] = []
 var _tile_index: Dictionary = {}  # texture path or color key -> tile index
 
@@ -46,7 +49,9 @@ func _init() -> void:
 		var id := Registry.block_ids[i]
 		var def: Dictionary = Registry.blocks.get(id, {})
 		var model: VoxelBlockyModel
-		if not def.get("solid", true):
+		if def.has("fluid"):
+			model = _fluid_model(def)
+		elif not def.get("solid", true):
 			model = VoxelBlockyModelEmpty.new()
 		else:
 			var cube := VoxelBlockyModelCube.new()
@@ -75,6 +80,28 @@ func _init() -> void:
 	# The blocky mesher bakes ambient occlusion into vertex colors.
 	material.vertex_color_use_as_albedo = true
 	material.vertex_color_is_srgb = true
+
+
+## A full (source) fluid block. Faces between blocks of the same fluid are
+## culled (same transparency index); faces against air are drawn.
+func _fluid_model(def: Dictionary) -> VoxelBlockyModelFluid:
+	var fluid_name: String = def.fluid
+	if not _fluids.has(fluid_name):
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color.html(def.get("color", "#3f76d6"))
+		mat.albedo_color.a = 0.7
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED  # visible from underwater too
+		mat.roughness = 0.15
+		var fluid := VoxelBlockyFluid.new()
+		fluid.material = mat
+		_fluids[fluid_name] = fluid
+	var model := VoxelBlockyModelFluid.new()
+	model.fluid = _fluids[fluid_name]
+	model.level = 0
+	model.transparency_index = 2
+	model.collision_aabbs = []
+	return model
 
 
 static func _face_name(side: int) -> String:

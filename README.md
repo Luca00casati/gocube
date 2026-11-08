@@ -32,7 +32,7 @@ Launch options (after `--`): `--world=NAME` skip the menu and load or create tha
 `--cheap-shadows` (off by default: they cost ~40% FPS on integrated GPUs), `--bench`
 (fly forward 20 s and print FPS stats), `--profile-startup` (time each startup step and list slow frames). Try `--rendering-method gl_compatibility` on old GPUs.
 
-Controls: WASD walk, Space jump, Ctrl sprint, Shift sneak, F toggle flying (Space/Shift
+Controls: WASD walk, Space jump (and swim up in water), Ctrl sprint, Shift sneak, F toggle flying (Space/Shift
 up/down; fly down onto the ground to land), mouse look, LMB break, RMB place (6-block
 reach), 1-9 / mouse wheel pick block, Esc pause.
 
@@ -45,6 +45,10 @@ in `custom_template/release`; adjust it on another machine. Then:
 
 The preset includes `*.json` (mod manifests and content are not Godot resources, so
 they'd be left out otherwise). Windows needs the module's Windows template the same way.
+
+## Prototypes
+Feasibility results for lighting, caves/trees/water and many creatures: see
+[PROTOTYPES.md](PROTOTYPES.md).
 
 ## Layout
 - `src/core/registry.gd` — autoload `Registry`: blocks, items, recipes (namespaced `mod:name` ids).

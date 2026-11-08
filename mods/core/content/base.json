@@ -95,6 +95,11 @@
       "textures": {
         "all": "textures/crystal_ore.png"
       }
+    },
+    "water": {
+      "solid": false,
+      "fluid": "water",
+      "color": "#3f76d6"
     }
   },
   "items": {

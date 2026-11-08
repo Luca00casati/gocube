@@ -35,6 +35,7 @@ var _bench_samples: PackedFloat32Array = []
 var _saving := false
 var _leaving := false
 var _pause_menu: Control
+var _underwater: ColorRect
 
 
 func _ready() -> void:
@@ -244,6 +245,9 @@ func _process(_delta: float) -> void:
 		_loading = null
 		_player.set_ready_to_move()
 		_mark("spawn area meshed, loading screen hidden")
+	if _player and _world.terrain and not _player.autopilot:
+		var eye := Vector3i(_cam.global_position.floor())
+		_underwater.visible = _player._fluid_ids.has(_world.get_tool().get_voxel(eye))
 	var status := "%d FPS" % Engine.get_frames_per_second()
 	if _player and not _player.autopilot:
 		var block: String = _player.selected_block()
@@ -305,6 +309,13 @@ func _add_hud() -> void:
 		bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		crosshair.add_child(bar)
 	hud.add_child(crosshair)
+	_underwater = ColorRect.new()  # tint while the camera is inside a fluid
+	_underwater.color = Color(0.1, 0.3, 0.55, 0.45)
+	_underwater.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_underwater.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_underwater.visible = false
+	hud.add_child(_underwater)
+	hud.move_child(_underwater, 0)  # under the HUD text
 	_loading = _make_loading_screen()
 	_loading_since = Time.get_ticks_msec()
 	hud.add_child(_loading)

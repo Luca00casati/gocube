@@ -12,6 +12,9 @@ const TerrainGenerator := preload("res://src/world/graph_terrain_generator.gd")
 const WORLDS_DIR := "user://worlds"
 const FORMAT_VERSION := 1
 const DEFAULT_VIEW_DISTANCE := 128  # 256 halves FPS on an Intel HD 4600
+## PROTOTYPE: per-voxel light in the COLOR channel (see LightPrototype). Off by
+## default: costs 2 bytes/voxel and GDScript light is far too slow (PROTOTYPES.md).
+const LIGHTING_PROTOTYPE := false
 
 var terrain: VoxelTerrain
 ## Contents of world.json. "player" is whatever the game passed to save().
@@ -48,7 +51,7 @@ func build(world_name: String, view_distance: int = DEFAULT_VIEW_DISTANCE,
 
 	_make_terrain(view_distance)
 	var generator := TerrainGenerator.new()
-	generator.setup(int(meta.seed))
+	generator.setup(int(meta.seed), LIGHTING_PROTOTYPE)
 	terrain.generator = generator
 	if persistent:
 		var stream := VoxelStreamSQLite.new()
@@ -78,6 +81,13 @@ func _make_terrain(view_distance: int) -> void:
 	mesher.library = blocks.library
 	terrain = VoxelTerrain.new()
 	terrain.name = "Terrain"
+	if LIGHTING_PROTOTYPE:
+		# Light lives in the COLOR channel (RGBA4444 = 16 levels per channel); the
+		# blocky mesher multiplies each block's vertices by it (TINT_RAW_COLOR).
+		mesher.tint_mode = VoxelMesherBlocky.TINT_RAW_COLOR
+		var format := VoxelFormat.new()
+		format.set_channel_depth(VoxelBuffer.CHANNEL_COLOR, VoxelBuffer.DEPTH_16_BIT)
+		terrain.format = format
 	terrain.mesher = mesher
 	terrain.material_override = blocks.material
 	terrain.max_view_distance = view_distance
