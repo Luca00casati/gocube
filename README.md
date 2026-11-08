@@ -36,6 +36,16 @@ Controls: WASD walk, Space jump, Ctrl sprint, Shift sneak, F toggle flying (Spac
 up/down; fly down onto the ground to land), mouse look, LMB break, RMB place (6-block
 reach), 1-9 / mouse wheel pick block, Esc pause.
 
+## Exporting
+`export_presets.cfg` has a Linux preset using the voxel module's release template
+(`godot.linuxbsd.template_release.x86_64` from the same v1.7 release). Its path is set
+in `custom_template/release`; adjust it on another machine. Then:
+
+    godot-voxel --headless --export-release "Linux" export/linux/gocube.x86_64
+
+The preset includes `*.json` (mod manifests and content are not Godot resources, so
+they'd be left out otherwise). Windows needs the module's Windows template the same way.
+
 ## Layout
 - `src/core/registry.gd` — autoload `Registry`: blocks, items, recipes (namespaced `mod:name` ids).
 - `src/core/mod_loader.gd` — autoload `ModLoader`: finds, orders and loads mods.
@@ -63,8 +73,12 @@ fall back to their `"color"`.
 
 ## Writing a mod
 Create `user://mods/<id>/mod.json` (see the header of `mod_loader.gd`), add JSON
-content files and/or an `entry` script with `init_mod(registry)`. To distribute,
-export a `.pck`/`.zip` whose files live under `mods/<id>/` and drop it in `user://mods/`.
+content files and/or an `entry` script with `init_mod(registry)`.
+
+To distribute it as a pack: make a Godot project with the same engine build whose files
+live under `mods/<id>/`, add an export preset with `include_filter="*.json"`, and run
+`godot-voxel --headless --export-pack "<preset>" <id>.pck`. Players drop the `.pck` into
+`user://mods/` (Linux: `~/.local/share/godot/app_userdata/GoCube/mods/`).
 
 Mods are **not sandboxed**: only install mods you trust.
 
