@@ -3,6 +3,7 @@
 #pragma once
 
 #include "chunk.h"
+#include "light.h"
 
 #include <vector>
 
@@ -18,15 +19,16 @@ struct Surface {
 	std::vector<float> positions; // xyz, chunk-local
 	std::vector<float> normals;   // xyz
 	std::vector<float> uvs;       // uv
-	std::vector<float> colors;    // rgba (light; white for now)
+	std::vector<float> colors;    // rgba: r = sky light, g = block light (0..1), b unused
 	std::vector<int32_t> indices;
 
 	bool empty() const { return indices.empty(); }
 };
 
 // neighbours: FACE_* order; nullptr means "outside the world" (above: air, below: solid).
+// light: per-face light is taken from the cell in front of each face; nullptr = full light.
 void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_COUNT],
-		const std::vector<BlockInfo> &blocks, const AtlasLayout &atlas,
+		const std::vector<BlockInfo> &blocks, const AtlasLayout &atlas, const LightRegion *light,
 		Surface &opaque, Surface &fluid);
 
 } // namespace gocube

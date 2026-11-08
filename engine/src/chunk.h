@@ -21,6 +21,7 @@ struct BlockInfo {
 	bool solid = false;   // collides
 	bool opaque = false;  // hides neighbour faces, blocks skylight
 	bool fluid = false;   // drawn on the transparent fluid surface
+	uint8_t emit = 0;     // block light it gives off (0..15)
 	std::array<int, FACE_COUNT> tiles{}; // atlas tile per face
 };
 

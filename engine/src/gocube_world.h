@@ -5,6 +5,7 @@
 
 #include "chunk.h"
 #include "generator.h"
+#include "light.h"
 #include "mesher.h"
 
 #include <godot_cpp/classes/material.hpp>
@@ -87,6 +88,7 @@ private:
 		bool meshed = false;
 		bool dirty = false;        // edited since last saved
 		uint32_t mesh_version = 0; // bumped on every remesh request; stale meshes are dropped
+		std::array<int8_t, CHUNK_AREA> local_tops{}; // topmost opaque local y per column, or -1
 		godot::RID mesh;
 		godot::RID instance;
 	};
@@ -100,13 +102,15 @@ private:
 		uint32_t version = 0;
 		bool urgent = false;
 		std::shared_ptr<const ChunkData> self;
-		std::array<std::shared_ptr<const ChunkData>, FACE_COUNT> neighbours;
+		std::array<std::shared_ptr<const ChunkData>, 27> neighbourhood; // neighbourhood_index()
+		std::array<std::shared_ptr<const ColumnTops>, 9> tops;
 	};
 
 	struct Result {
 		JobKind kind;
 		godot::Vector3i pos;
 		std::shared_ptr<const ChunkData> data;
+		std::array<int8_t, CHUNK_AREA> local_tops{};
 		Surface opaque, fluid;
 		uint32_t version = 0;
 		bool urgent = false;
@@ -127,6 +131,9 @@ private:
 	std::unordered_map<int64_t, Chunk> _chunks;
 	std::unordered_set<int64_t> _mesh_candidates;
 	std::unordered_set<int64_t> _urgent; // remesh after an edit: jump the queues
+	// Per chunk column (key with y = 0): topmost opaque world y per (x, z).
+	// Present only while every chunk of the column is loaded.
+	std::unordered_map<int64_t, std::shared_ptr<const ColumnTops>> _column_tops;
 	std::deque<Result> _uploads;
 	bool _started = false;
 
@@ -140,7 +147,7 @@ private:
 	std::atomic<bool> _stop{ false };
 
 	// Stats.
-	std::atomic<int64_t> _gen_us{ 0 }, _gen_count{ 0 }, _mesh_us{ 0 }, _mesh_count{ 0 };
+	std::atomic<int64_t> _gen_us{ 0 }, _gen_count{ 0 }, _mesh_us{ 0 }, _mesh_count{ 0 }, _light_us{ 0 };
 
 	static int64_t key(const godot::Vector3i &p);
 	godot::Vector3i chunk_of(const godot::Vector3 &p) const;
@@ -148,6 +155,8 @@ private:
 	const ChunkData *chunk_data_at(const godot::Vector3i &block, godot::Vector3i &local) const;
 	bool solid_at(int x, int y, int z) const;
 	void request_remesh(const godot::Vector3i &chunk_pos);
+	void update_column_tops(int cx, int cz);
+	void relight_around(const godot::Vector3i &block, int y_low, int y_high);
 	bool save_chunk(const godot::Vector3i &pos, Chunk &c);
 	float sweep_axis(int axis, const float mn[3], const float mx[3], float motion) const;
 	int radius_chunks() const;

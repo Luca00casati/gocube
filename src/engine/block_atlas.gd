@@ -2,6 +2,7 @@ class_name BlockAtlas
 extends RefCounted
 ## Packs every registered block's textures into one mipmapped atlas and gives
 ## the native engine (GoCubeWorld) its block table. No voxel-module classes.
+## Block definition keys used: textures/color, solid, transparent, fluid, light (0..15).
 ##
 ## Each tile gets a CELL x CELL area filled with repeats of the (seamless)
 ## texture; faces use the copy at FACE_OFFSET. Cells are power-of-two aligned,
@@ -36,7 +37,8 @@ func _init() -> void:
 			# Engine face order: +X, -X, +Y, -Y, +Z, -Z.
 			for face in ["side", "side", "top", "bottom", "side", "side"]:
 				tiles.append(_face_tile(def, face))
-		block_table.append({"solid": solid, "opaque": opaque, "fluid": fluid, "tiles": tiles})
+		block_table.append({"solid": solid, "opaque": opaque, "fluid": fluid, "tiles": tiles,
+				"light": int(def.get("light", 0))})
 	atlas = _build_atlas()
 
 

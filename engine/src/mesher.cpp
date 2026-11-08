@@ -102,7 +102,8 @@ inline BlockId sample(const ChunkData &c, const ChunkData *const nb[FACE_COUNT],
 	return n ? n->get(x, y, z) : solid_fallback;
 }
 
-void emit_face(Surface &s, const FaceDef &d, float bx, float by, float bz, const AtlasLayout &atlas, int tile) {
+void emit_face(Surface &s, const FaceDef &d, float bx, float by, float bz, const AtlasLayout &atlas, int tile,
+		float sky, float block) {
 	const int base = static_cast<int>(s.positions.size() / 3);
 	const float tw = 1.0f / (atlas.cols * atlas.cell);
 	const float th = 1.0f / (atlas.rows * atlas.cell);
@@ -119,7 +120,7 @@ void emit_face(Surface &s, const FaceDef &d, float bx, float by, float bz, const
 		s.normals.push_back(static_cast<float>(d.dz));
 		s.uvs.push_back(u0 + d.st[c][0] * tw);
 		s.uvs.push_back(v0 + d.st[c][1] * th);
-		s.colors.insert(s.colors.end(), { 1.0f, 1.0f, 1.0f, 1.0f });
+		s.colors.insert(s.colors.end(), { sky, block, 0.0f, 1.0f });
 	}
 	for (int k = 0; k < 6; k++) {
 		s.indices.push_back(base + d.order[k]);
@@ -129,7 +130,7 @@ void emit_face(Surface &s, const FaceDef &d, float bx, float by, float bz, const
 } // namespace
 
 void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_COUNT],
-		const std::vector<BlockInfo> &blocks, const AtlasLayout &atlas,
+		const std::vector<BlockInfo> &blocks, const AtlasLayout &atlas, const LightRegion *light,
 		Surface &opaque, Surface &fluid) {
 	if (chunk.uniform && chunk.uniform_value == AIR) {
 		return;
@@ -158,19 +159,27 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 					const BlockId nid = sample(chunk, neighbours, blocks, x + d.dx, y + d.dy, z + d.dz, solid_fallback);
 					const BlockInfo *n = nid < count ? &blocks[nid] : nullptr;
 					const bool n_opaque = n && n->opaque;
+					float sky = 1.0f, blk = 0.0f;
+					if (light) {
+						sky = light->sky_at(x + d.dx, y + d.dy, z + d.dz) / float(LIGHT_MAX);
+						blk = light->block_at(x + d.dx, y + d.dy, z + d.dz) / float(LIGHT_MAX);
+					}
 					if (info.fluid) {
 						// Fluid faces only towards air (not other fluid, not solid blocks).
 						if (nid != AIR) {
 							continue;
 						}
-						emit_face(fluid, d, x, y, z, atlas, info.tiles[f]);
+						emit_face(fluid, d, x, y, z, atlas, info.tiles[f], sky, blk);
 					} else {
 						// Opaque faces are hidden by opaque neighbours; see-through
 						// blocks (e.g. glass) also hide faces against the same block.
 						if (n_opaque || (!info.opaque && nid == id)) {
 							continue;
 						}
-						emit_face(opaque, d, x, y, z, atlas, info.tiles[f]);
+						if (info.emit > 0) {
+							blk = info.emit / float(LIGHT_MAX); // glowing blocks are lit by themselves
+						}
+						emit_face(opaque, d, x, y, z, atlas, info.tiles[f], sky, blk);
 					}
 				}
 			}

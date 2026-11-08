@@ -78,6 +78,7 @@ void GoCubeWorld::configure_blocks(const TypedArray<Dictionary> &blocks) {
 		b.solid = d.get("solid", false);
 		b.opaque = d.get("opaque", false);
 		b.fluid = d.get("fluid", false);
+		b.emit = static_cast<uint8_t>(std::clamp(int(d.get("light", 0)), 0, LIGHT_MAX));
 		const PackedInt32Array tiles = d.get("tiles", PackedInt32Array());
 		for (int f = 0; f < FACE_COUNT; f++) {
 			b.tiles[f] = f < tiles.size() ? tiles[f] : 0;
@@ -228,15 +229,66 @@ bool GoCubeWorld::set_block(const Vector3i &position, int id) {
 	copy->compact();
 	chunk.data = copy;
 	chunk.dirty = true;
-	request_remesh(c);
-	// Faces of neighbouring chunks touching this block may appear or disappear.
-	if (l.x == 0) request_remesh(c + Vector3i(-1, 0, 0));
-	if (l.x == CHUNK - 1) request_remesh(c + Vector3i(1, 0, 0));
-	if (l.y == 0) request_remesh(c + Vector3i(0, -1, 0));
-	if (l.y == CHUNK - 1) request_remesh(c + Vector3i(0, 1, 0));
-	if (l.z == 0) request_remesh(c + Vector3i(0, 0, -1));
-	if (l.z == CHUNK - 1) request_remesh(c + Vector3i(0, 0, 1));
+
+	// Column top within this chunk, then for the whole column.
+	const int column = l.z * CHUNK + l.x;
+	int8_t local_top = -1;
+	for (int y = CHUNK - 1; y >= 0; y--) {
+		const BlockId b = copy->get(l.x, y, l.z);
+		if (b < _blocks.size() && _blocks[b].opaque) {
+			local_top = static_cast<int8_t>(y);
+			break;
+		}
+	}
+	const int64_t ckey = key(Vector3i(c.x, 0, c.z));
+	auto tit = _column_tops.find(ckey);
+	const int old_top = tit != _column_tops.end() ? (*tit->second)[column] : NO_TOP;
+	chunk.local_tops[column] = local_top;
+	update_column_tops(c.x, c.z);
+	tit = _column_tops.find(ckey);
+	const int new_top = tit != _column_tops.end() ? (*tit->second)[column] : NO_TOP;
+
+	// Everything light can reach from here, plus everything below a column
+	// whose sky exposure changed.
+	int y_low = position.y, y_high = position.y;
+	if (old_top != new_top) {
+		y_low = std::min({ y_low, old_top, new_top });
+		y_high = std::max({ y_high, old_top, new_top });
+		y_low = std::max(y_low, CHUNK_Y_MIN * CHUNK);
+	}
+	relight_around(position, y_low, y_high);
 	return true;
+}
+
+void GoCubeWorld::relight_around(const Vector3i &block, int y_low, int y_high) {
+	const Vector3i a(floor_div(block.x - LIGHT_MAX, CHUNK), floor_div(y_low - LIGHT_MAX, CHUNK), floor_div(block.z - LIGHT_MAX, CHUNK));
+	const Vector3i b(floor_div(block.x + LIGHT_MAX, CHUNK), floor_div(y_high + LIGHT_MAX, CHUNK), floor_div(block.z + LIGHT_MAX, CHUNK));
+	for (int cy = std::max(a.y, CHUNK_Y_MIN); cy <= std::min(b.y, CHUNK_Y_MAX); cy++) {
+		for (int cz = a.z; cz <= b.z; cz++) {
+			for (int cx = a.x; cx <= b.x; cx++) {
+				request_remesh(Vector3i(cx, cy, cz));
+			}
+		}
+	}
+}
+
+void GoCubeWorld::update_column_tops(int cx, int cz) {
+	const int64_t ckey = key(Vector3i(cx, 0, cz));
+	auto tops = std::make_shared<ColumnTops>();
+	tops->fill(NO_TOP);
+	for (int cy = CHUNK_Y_MAX; cy >= CHUNK_Y_MIN; cy--) {
+		auto it = _chunks.find(key(Vector3i(cx, cy, cz)));
+		if (it == _chunks.end() || !it->second.data) {
+			_column_tops.erase(ckey); // column incomplete: no sky information yet
+			return;
+		}
+		for (int i = 0; i < CHUNK_AREA; i++) {
+			if ((*tops)[i] == NO_TOP && it->second.local_tops[i] >= 0) {
+				(*tops)[i] = static_cast<int16_t>(cy * CHUNK + it->second.local_tops[i]);
+			}
+		}
+	}
+	_column_tops[ckey] = tops;
 }
 
 void GoCubeWorld::request_remesh(const Vector3i &chunk_pos) {
@@ -464,7 +516,8 @@ Dictionary GoCubeWorld::get_stats() const {
 	}
 	const int64_t gc = _gen_count.load(), mc = _mesh_count.load();
 	d["generate_ms_avg"] = gc ? _gen_us.load() / 1000.0 / gc : 0.0;
-	d["mesh_ms_avg"] = mc ? _mesh_us.load() / 1000.0 / mc : 0.0;
+	d["mesh_ms_avg"] = mc ? _mesh_us.load() / 1000.0 / mc : 0.0; // includes light
+	d["light_ms_avg"] = mc ? _light_us.load() / 1000.0 / mc : 0.0;
 	d["workers"] = int64_t(_workers.size());
 	return d;
 }
@@ -508,15 +561,28 @@ void GoCubeWorld::worker_loop() {
 			if (!loaded) {
 				_generator.generate(*data, job.pos.x * CHUNK, job.pos.y * CHUNK, job.pos.z * CHUNK);
 			}
+			chunk_local_tops(*data, _blocks, r.local_tops);
 			r.data = data;
 			_gen_us += now_us() - t0;
 			_gen_count++;
 		} else {
-			const ChunkData *nb[FACE_COUNT];
-			for (int f = 0; f < FACE_COUNT; f++) {
-				nb[f] = job.neighbours[f].get();
+			const ChunkData *hood[27];
+			for (int i = 0; i < 27; i++) {
+				hood[i] = job.neighbourhood[i].get();
 			}
-			mesh_chunk(*job.self, nb, _blocks, _atlas, r.opaque, r.fluid);
+			const ColumnTops *tops[9];
+			for (int i = 0; i < 9; i++) {
+				tops[i] = job.tops[i].get();
+			}
+			LightRegion light;
+			compute_light(light, hood, tops, job.pos.y, _blocks);
+			_light_us += now_us() - t0;
+			const ChunkData *nb[FACE_COUNT] = {
+				hood[neighbourhood_index(1, 0, 0)], hood[neighbourhood_index(-1, 0, 0)],
+				hood[neighbourhood_index(0, 1, 0)], hood[neighbourhood_index(0, -1, 0)],
+				hood[neighbourhood_index(0, 0, 1)], hood[neighbourhood_index(0, 0, -1)]
+			};
+			mesh_chunk(*job.self, nb, _blocks, _atlas, &light, r.opaque, r.fluid);
 			_mesh_us += now_us() - t0;
 			_mesh_count++;
 		}
@@ -550,6 +616,7 @@ void GoCubeWorld::_notification(int what) {
 			free_chunk_render(kv.second);
 		}
 		_urgent.clear();
+		_column_tops.clear();
 		_chunks.clear();
 		_mesh_candidates.clear();
 		_uploads.clear();
@@ -592,9 +659,15 @@ void GoCubeWorld::_process(double delta) {
 		}
 		if (r.kind == JOB_GENERATE) {
 			it->second.data = r.data;
-			_mesh_candidates.insert(key(r.pos));
-			for (const Vector3i &dir : FACE_DIRS) {
-				_mesh_candidates.insert(key(r.pos + dir));
+			it->second.local_tops = r.local_tops;
+			update_column_tops(r.pos.x, r.pos.z);
+			// Light needs the whole 3x3x3 neighbourhood, so any of them may now be ready.
+			for (int dy = -1; dy <= 1; dy++) {
+				for (int dz = -1; dz <= 1; dz++) {
+					for (int dx = -1; dx <= 1; dx++) {
+						_mesh_candidates.insert(key(r.pos + Vector3i(dx, dy, dz)));
+					}
+				}
 			}
 		} else if (r.urgent) {
 			_uploads.push_front(std::move(r));
@@ -629,6 +702,7 @@ void GoCubeWorld::update_desired(const Vector3i &center) {
 			free_chunk_render(it->second);
 			_mesh_candidates.erase(it->first);
 			_urgent.erase(it->first);
+			_column_tops.erase(key(Vector3i(cx, 0, cz)));
 			it = _chunks.erase(it);
 		} else {
 			++it;
@@ -685,17 +759,31 @@ void GoCubeWorld::schedule_meshing(const Vector3i &center) {
 		job.urgent = urgent;
 		job.self = c.data;
 		bool ready = true;
-		for (int f = 0; f < FACE_COUNT; f++) {
-			const Vector3i np = p + FACE_DIRS[f];
-			if (np.y > CHUNK_Y_MAX || np.y < CHUNK_Y_MIN) {
-				continue; // outside the world: mesher treats as air above / solid below
+		for (int dy = -1; dy <= 1 && ready; dy++) {
+			for (int dz = -1; dz <= 1 && ready; dz++) {
+				for (int dx = -1; dx <= 1 && ready; dx++) {
+					const Vector3i np = p + Vector3i(dx, dy, dz);
+					if (np.y > CHUNK_Y_MAX || np.y < CHUNK_Y_MIN) {
+						continue; // outside the world: air above / solid below
+					}
+					auto nit = _chunks.find(key(np));
+					if (nit == _chunks.end() || !nit->second.data) {
+						ready = false;
+						break;
+					}
+					job.neighbourhood[neighbourhood_index(dx, dy, dz)] = nit->second.data;
+				}
 			}
-			auto nit = _chunks.find(key(np));
-			if (nit == _chunks.end() || !nit->second.data) {
-				ready = false;
-				break;
+		}
+		for (int dz = -1; dz <= 1 && ready; dz++) {
+			for (int dx = -1; dx <= 1 && ready; dx++) {
+				auto tit = _column_tops.find(key(Vector3i(p.x + dx, 0, p.z + dz)));
+				if (tit == _column_tops.end()) {
+					ready = false; // a column isn't fully loaded: sky light unknown
+					break;
+				}
+				job.tops[(dz + 1) * 3 + (dx + 1)] = tit->second;
 			}
-			job.neighbours[f] = nit->second.data;
 		}
 		if (!ready) {
 			++it; // a neighbour will add us back when it arrives; keep for now

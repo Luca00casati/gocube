@@ -100,6 +100,14 @@
       "solid": false,
       "fluid": "water",
       "color": "#3f76d6"
+    },
+    "lamp": {
+      "hardness": 0.3,
+      "light": 14,
+      "color": "#f2c25a",
+      "textures": {
+        "all": "textures/lamp.png"
+      }
     }
   },
   "items": {

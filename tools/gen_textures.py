@@ -307,6 +307,25 @@ def ore(name, colors, seed, blobs=5):
     return img
 
 
+LAMP = ramp("#7a4a12", "#c27a1c", "#eba83a", "#fbd36a", "#fff3b8")
+
+
+def lamp():
+    """A glowing block: warm, brightest in the middle, inside a dark iron frame."""
+    def px(x, y):
+        if x in (0, S - 1) or y in (0, S - 1):
+            return (40, 34, 30)                      # outer frame
+        if x in (1, S - 2) or y in (1, S - 2):
+            return (78, 66, 56)                      # frame highlight
+        if x in (S // 2 - 1, S // 2) or y in (S // 2 - 1, S // 2):
+            return (52, 44, 38)                      # cross bars
+        cx, cy = x - (S - 1) / 2, y - (S - 1) / 2
+        glow = 1.0 - min(1.0, math.hypot(cx, cy) / (S * 0.62))
+        t = glow * 0.85 + (fbm(30, x, y, ((8, 0.6), (16, 0.4))) - 0.5) * 0.3
+        return pick(LAMP, t)
+    return image(px)
+
+
 TEXTURES = {
     "stone": stone,
     "cobblestone": cobblestone,
@@ -323,6 +342,7 @@ TEXTURES = {
     "iron_ore": lambda: ore("iron", ("#7d5c48", "#b48a6c", "#e2c2a2"), 22, blobs=5),
     "gold_ore": lambda: ore("gold", ("#9c7210", "#dcae26", "#fde877"), 23, blobs=5),
     "crystal_ore": lambda: ore("crystal", ("#18707c", "#38bcc6", "#b2f6f3"), 24, blobs=4),
+    "lamp": lamp,
 }
 
 if __name__ == "__main__":
