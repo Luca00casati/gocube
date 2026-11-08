@@ -4,3 +4,7 @@
 export/
 # Python
 __pycache__/
+
+# Native engine build output
+engine/build/
+bin/*.so

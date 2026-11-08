@@ -1,0 +1,6 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://prototypes/engine_phase1.gd" id="1"]
+
+[node name="EnginePhase1" type="Node3D"]
+script = ExtResource("1")

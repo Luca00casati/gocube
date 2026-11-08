@@ -1,0 +1,131 @@
+// GoCubeWorld: streams voxel chunks around a viewer. Generation and meshing run
+// on worker threads; meshes are uploaded to the RenderingServer on the main
+// thread within a per-frame time budget.
+#pragma once
+
+#include "chunk.h"
+#include "generator.h"
+#include "mesher.h"
+
+#include <godot_cpp/classes/material.hpp>
+#include <godot_cpp/classes/node3d.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/variant/rid.hpp>
+#include <godot_cpp/variant/typed_array.hpp>
+
+#include <array>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+namespace gocube {
+
+class GoCubeWorld : public godot::Node3D {
+	GDCLASS(GoCubeWorld, godot::Node3D)
+
+public:
+	// Vertical extent of the world, in chunks (y = -96 .. 127).
+	static constexpr int CHUNK_Y_MIN = -3;
+	static constexpr int CHUNK_Y_MAX = 3;
+
+	GoCubeWorld();
+	~GoCubeWorld() override;
+
+	// Setup, before start(). blocks[i] = {solid, opaque, fluid, tiles: PackedInt32Array(6)}.
+	void configure_blocks(const godot::TypedArray<godot::Dictionary> &blocks);
+	void set_atlas_layout(int cols, int rows, int cell, const godot::Vector2i &face_offset);
+	void set_materials(const godot::Ref<godot::Material> &terrain, const godot::Ref<godot::Material> &fluid);
+	void configure_generator(int seed, const godot::Dictionary &ids);
+	void start();
+
+	void set_view_distance(int blocks);
+	int get_view_distance() const;
+	void set_viewer_position(const godot::Vector3 &position);
+	godot::Vector3 get_viewer_position() const;
+	void set_upload_budget_ms(float ms);
+	float get_upload_budget_ms() const;
+
+	int get_block(const godot::Vector3i &position) const;
+	bool is_area_meshed(const godot::AABB &area) const;
+	godot::Dictionary get_stats() const;
+
+	void _process(double delta) override;
+
+protected:
+	static void _bind_methods();
+	void _notification(int what);
+
+private:
+	struct Chunk {
+		std::shared_ptr<const ChunkData> data; // null until generated
+		bool mesh_queued = false;
+		bool meshed = false;
+		godot::RID mesh;
+		godot::RID instance;
+	};
+
+	enum JobKind { JOB_GENERATE, JOB_MESH };
+
+	struct Job {
+		JobKind kind;
+		godot::Vector3i pos;
+		float priority; // lower runs first
+		std::shared_ptr<const ChunkData> self;
+		std::array<std::shared_ptr<const ChunkData>, FACE_COUNT> neighbours;
+	};
+
+	struct Result {
+		JobKind kind;
+		godot::Vector3i pos;
+		std::shared_ptr<const ChunkData> data;
+		Surface opaque, fluid;
+	};
+
+	// Configuration (read-only once started).
+	std::vector<BlockInfo> _blocks;
+	AtlasLayout _atlas;
+	Generator _generator;
+	godot::Ref<godot::Material> _terrain_material, _fluid_material;
+	int _view_distance = 128;
+	float _upload_budget_ms = 4.0f;
+
+	// Main thread state.
+	godot::Vector3 _viewer;
+	godot::Vector3i _last_viewer_chunk{ 1 << 20, 0, 0 };
+	std::unordered_map<int64_t, Chunk> _chunks;
+	std::unordered_set<int64_t> _mesh_candidates;
+	std::deque<Result> _uploads;
+	bool _started = false;
+
+	// Worker threads.
+	std::vector<std::thread> _workers;
+	std::mutex _job_mutex;
+	std::condition_variable _job_cv;
+	std::vector<Job> _jobs;
+	std::mutex _result_mutex;
+	std::vector<Result> _results;
+	std::atomic<bool> _stop{ false };
+
+	// Stats.
+	std::atomic<int64_t> _gen_us{ 0 }, _gen_count{ 0 }, _mesh_us{ 0 }, _mesh_count{ 0 };
+
+	static int64_t key(const godot::Vector3i &p);
+	godot::Vector3i chunk_of(const godot::Vector3 &p) const;
+	int radius_chunks() const;
+
+	void worker_loop();
+	void push_job(Job &&job);
+	void stop_workers();
+	void free_chunk_render(Chunk &c);
+	void update_desired(const godot::Vector3i &center);
+	void schedule_meshing(const godot::Vector3i &center);
+	void upload(Result &r);
+};
+
+} // namespace gocube

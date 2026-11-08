@@ -1,0 +1,9 @@
+[configuration]
+
+entry_symbol = "gocube_init"
+compatibility_minimum = "4.5"
+
+[libraries]
+
+linux.debug.x86_64 = "res://bin/libgocube.linux.template_debug.x86_64.so"
+linux.release.x86_64 = "res://bin/libgocube.linux.template_release.x86_64.so"
