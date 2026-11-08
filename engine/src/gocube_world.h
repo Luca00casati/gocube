@@ -14,6 +14,7 @@
 #include <godot_cpp/variant/typed_array.hpp>
 
 #include <array>
+#include <string>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -51,7 +52,25 @@ public:
 	void set_upload_budget_ms(float ms);
 	float get_upload_budget_ms() const;
 
+	// Saving: edited chunks go to `dir` (an absolute path); chunks found there
+	// are loaded instead of generated. Set before start().
+	void set_save_directory(const godot::String &dir);
+	int save_modified(); // writes all edited chunks; returns how many
+
 	int get_block(const godot::Vector3i &position) const;
+	// Changes one block (main thread). Returns false if its chunk isn't loaded.
+	bool set_block(const godot::Vector3i &position, int id);
+	// First targetable (non-air, non-fluid) block along a ray:
+	// {hit, position, previous, normal, block, distance}; {hit: false} if none.
+	godot::Dictionary raycast(const godot::Vector3 &origin, const godot::Vector3 &direction, float max_distance) const;
+	// Moves a box (feet at `position`, size = width x height x depth) by `motion`
+	// against solid blocks, one axis at a time. With step_height > 0 it climbs
+	// steps that high when walking into them on the ground.
+	// Returns {position, on_floor, hit_ceiling, hit_wall}.
+	godot::Dictionary move_box(const godot::Vector3 &position, const godot::Vector3 &size,
+			const godot::Vector3 &motion, float step_height) const;
+	// True when the box overlaps no solid block (unloaded chunks count as solid).
+	bool is_box_free(const godot::Vector3 &position, const godot::Vector3 &size) const;
 	bool is_area_meshed(const godot::AABB &area) const;
 	godot::Dictionary get_stats() const;
 
@@ -66,6 +85,8 @@ private:
 		std::shared_ptr<const ChunkData> data; // null until generated
 		bool mesh_queued = false;
 		bool meshed = false;
+		bool dirty = false;        // edited since last saved
+		uint32_t mesh_version = 0; // bumped on every remesh request; stale meshes are dropped
 		godot::RID mesh;
 		godot::RID instance;
 	};
@@ -76,6 +97,8 @@ private:
 		JobKind kind;
 		godot::Vector3i pos;
 		float priority; // lower runs first
+		uint32_t version = 0;
+		bool urgent = false;
 		std::shared_ptr<const ChunkData> self;
 		std::array<std::shared_ptr<const ChunkData>, FACE_COUNT> neighbours;
 	};
@@ -85,6 +108,8 @@ private:
 		godot::Vector3i pos;
 		std::shared_ptr<const ChunkData> data;
 		Surface opaque, fluid;
+		uint32_t version = 0;
+		bool urgent = false;
 	};
 
 	// Configuration (read-only once started).
@@ -93,6 +118,7 @@ private:
 	Generator _generator;
 	godot::Ref<godot::Material> _terrain_material, _fluid_material;
 	int _view_distance = 128;
+	std::string _save_dir;
 	float _upload_budget_ms = 4.0f;
 
 	// Main thread state.
@@ -100,6 +126,7 @@ private:
 	godot::Vector3i _last_viewer_chunk{ 1 << 20, 0, 0 };
 	std::unordered_map<int64_t, Chunk> _chunks;
 	std::unordered_set<int64_t> _mesh_candidates;
+	std::unordered_set<int64_t> _urgent; // remesh after an edit: jump the queues
 	std::deque<Result> _uploads;
 	bool _started = false;
 
@@ -117,6 +144,12 @@ private:
 
 	static int64_t key(const godot::Vector3i &p);
 	godot::Vector3i chunk_of(const godot::Vector3 &p) const;
+	static godot::Vector3i pos_of(int64_t key);
+	const ChunkData *chunk_data_at(const godot::Vector3i &block, godot::Vector3i &local) const;
+	bool solid_at(int x, int y, int z) const;
+	void request_remesh(const godot::Vector3i &chunk_pos);
+	bool save_chunk(const godot::Vector3i &pos, Chunk &c);
+	float sweep_axis(int axis, const float mn[3], const float mx[3], float motion) const;
 	int radius_chunks() const;
 
 	void worker_loop();

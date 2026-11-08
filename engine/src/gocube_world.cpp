@@ -1,4 +1,5 @@
 #include "gocube_world.h"
+#include "storage.h"
 
 #include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
@@ -149,7 +150,260 @@ float GoCubeWorld::get_upload_budget_ms() const {
 	return _upload_budget_ms;
 }
 
+void GoCubeWorld::set_save_directory(const String &dir) {
+	ERR_FAIL_COND_MSG(_started, "set_save_directory() must be called before start()");
+	_save_dir = dir.utf8().get_data();
+}
+
+bool GoCubeWorld::save_chunk(const Vector3i &pos, Chunk &c) {
+	if (_save_dir.empty() || !c.dirty || !c.data) {
+		return true;
+	}
+	if (!save_chunk_file(chunk_file_path(_save_dir, pos.x, pos.y, pos.z), *c.data)) {
+		UtilityFunctions::push_error("GoCubeWorld: failed to save chunk ", pos);
+		return false;
+	}
+	c.dirty = false;
+	return true;
+}
+
+int GoCubeWorld::save_modified() {
+	int saved = 0;
+	for (auto &kv : _chunks) {
+		if (kv.second.dirty && save_chunk(pos_of(kv.first), kv.second)) {
+			saved++;
+		}
+	}
+	return saved;
+}
+
 // --- Queries -------------------------------------------------------------------
+
+Vector3i GoCubeWorld::pos_of(int64_t k) {
+	auto field = [](int64_t v) { return int((v & 0x100000) ? (v | ~int64_t(0x1FFFFF)) : v); };
+	return Vector3i(field((k >> 42) & 0x1FFFFF), field((k >> 21) & 0x1FFFFF), field(k & 0x1FFFFF));
+}
+
+const ChunkData *GoCubeWorld::chunk_data_at(const Vector3i &block, Vector3i &local) const {
+	const Vector3i c(floor_div(block.x, CHUNK), floor_div(block.y, CHUNK), floor_div(block.z, CHUNK));
+	auto it = _chunks.find(key(c));
+	if (it == _chunks.end() || !it->second.data) {
+		return nullptr;
+	}
+	local = block - c * CHUNK;
+	return it->second.data.get();
+}
+
+// Unloaded chunks count as solid, so nothing falls out of the loaded world.
+// Above and below the world's vertical range is open.
+bool GoCubeWorld::solid_at(int x, int y, int z) const {
+	const int cy = floor_div(y, CHUNK);
+	if (cy > CHUNK_Y_MAX || cy < CHUNK_Y_MIN) {
+		return false;
+	}
+	Vector3i local;
+	const ChunkData *d = chunk_data_at(Vector3i(x, y, z), local);
+	if (!d) {
+		return true;
+	}
+	const BlockId id = d->get(local.x, local.y, local.z);
+	return id < _blocks.size() && _blocks[id].solid;
+}
+
+bool GoCubeWorld::set_block(const Vector3i &position, int id) {
+	ERR_FAIL_COND_V(id < 0 || id >= int(_blocks.size()), false);
+	const Vector3i c(floor_div(position.x, CHUNK), floor_div(position.y, CHUNK), floor_div(position.z, CHUNK));
+	auto it = _chunks.find(key(c));
+	if (it == _chunks.end() || !it->second.data) {
+		return false;
+	}
+	Chunk &chunk = it->second;
+	const Vector3i l = position - c * CHUNK;
+	if (chunk.data->get(l.x, l.y, l.z) == id) {
+		return true;
+	}
+	// Copy-on-write: mesh jobs may still be reading the old snapshot.
+	auto copy = std::make_shared<ChunkData>(*chunk.data);
+	copy->set(l.x, l.y, l.z, static_cast<BlockId>(id));
+	copy->compact();
+	chunk.data = copy;
+	chunk.dirty = true;
+	request_remesh(c);
+	// Faces of neighbouring chunks touching this block may appear or disappear.
+	if (l.x == 0) request_remesh(c + Vector3i(-1, 0, 0));
+	if (l.x == CHUNK - 1) request_remesh(c + Vector3i(1, 0, 0));
+	if (l.y == 0) request_remesh(c + Vector3i(0, -1, 0));
+	if (l.y == CHUNK - 1) request_remesh(c + Vector3i(0, 1, 0));
+	if (l.z == 0) request_remesh(c + Vector3i(0, 0, -1));
+	if (l.z == CHUNK - 1) request_remesh(c + Vector3i(0, 0, 1));
+	return true;
+}
+
+void GoCubeWorld::request_remesh(const Vector3i &chunk_pos) {
+	auto it = _chunks.find(key(chunk_pos));
+	if (it == _chunks.end() || !it->second.data) {
+		return;
+	}
+	it->second.mesh_version++;
+	it->second.mesh_queued = false;
+	_mesh_candidates.insert(it->first);
+	_urgent.insert(it->first);
+}
+
+Dictionary GoCubeWorld::raycast(const Vector3 &origin, const Vector3 &direction, float max_distance) const {
+	Dictionary result;
+	result["hit"] = false;
+	const Vector3 dir = direction.normalized();
+	if (dir.is_zero_approx()) {
+		return result;
+	}
+	// Voxel traversal: step to whichever cell boundary the ray reaches first.
+	Vector3i cell(int(std::floor(origin.x)), int(std::floor(origin.y)), int(std::floor(origin.z)));
+	Vector3i previous = cell;
+	Vector3i normal;
+	int step[3];
+	float t_max[3], t_delta[3];
+	for (int a = 0; a < 3; a++) {
+		const float d = dir[a];
+		step[a] = d > 0 ? 1 : (d < 0 ? -1 : 0);
+		t_delta[a] = d != 0 ? std::fabs(1.0f / d) : INFINITY;
+		const float boundary = d > 0 ? std::floor(origin[a]) + 1.0f : std::floor(origin[a]);
+		t_max[a] = d != 0 ? (boundary - origin[a]) / d : INFINITY;
+	}
+	float t = 0.0f;
+	while (t <= max_distance) {
+		Vector3i local;
+		const ChunkData *data = chunk_data_at(cell, local);
+		if (!data) {
+			return result; // left the loaded world
+		}
+		const BlockId id = data->get(local.x, local.y, local.z);
+		if (id != AIR && id < _blocks.size() && !_blocks[id].fluid) {
+			result["hit"] = true;
+			result["position"] = cell;
+			result["previous"] = previous;
+			result["normal"] = normal;
+			result["block"] = int(id);
+			result["distance"] = t;
+			return result;
+		}
+		const int a = (t_max[0] < t_max[1]) ? (t_max[0] < t_max[2] ? 0 : 2) : (t_max[1] < t_max[2] ? 1 : 2);
+		previous = cell;
+		cell[a] += step[a];
+		t = t_max[a];
+		t_max[a] += t_delta[a];
+		normal = Vector3i();
+		normal[a] = -step[a];
+	}
+	return result;
+}
+
+// How far a box [mn, mx] can move along `axis` (signed), stopping at the
+// first solid block layer it would enter.
+float GoCubeWorld::sweep_axis(int axis, const float mn[3], const float mx[3], float motion) const {
+	constexpr float EPS = 1e-3f;
+	if (motion == 0.0f) {
+		return 0.0f;
+	}
+	const int u = (axis + 1) % 3, v = (axis + 2) % 3;
+	const int u0 = int(std::floor(mn[u] + EPS)), u1 = int(std::floor(mx[u] - EPS));
+	const int v0 = int(std::floor(mn[v] + EPS)), v1 = int(std::floor(mx[v] - EPS));
+	int c[3];
+	if (motion > 0) {
+		const int first = int(std::floor(mx[axis] - EPS)) + 1;
+		const int last = int(std::floor(mx[axis] + motion));
+		for (int layer = first; layer <= last; layer++) {
+			c[axis] = layer;
+			for (c[u] = u0; c[u] <= u1; c[u]++) {
+				for (c[v] = v0; c[v] <= v1; c[v]++) {
+					if (solid_at(c[0], c[1], c[2])) {
+						return std::max(0.0f, layer - mx[axis] - EPS);
+					}
+				}
+			}
+		}
+	} else {
+		const int first = int(std::floor(mn[axis] + EPS)) - 1;
+		const int last = int(std::floor(mn[axis] + motion));
+		for (int layer = first; layer >= last; layer--) {
+			c[axis] = layer;
+			for (c[u] = u0; c[u] <= u1; c[u]++) {
+				for (c[v] = v0; c[v] <= v1; c[v]++) {
+					if (solid_at(c[0], c[1], c[2])) {
+						return std::min(0.0f, (layer + 1) - mn[axis] + EPS);
+					}
+				}
+			}
+		}
+	}
+	return motion;
+}
+
+Dictionary GoCubeWorld::move_box(const Vector3 &position, const Vector3 &size, const Vector3 &motion, float step_height) const {
+	// Moves y, then x, then z. Returns the final feet position and contacts.
+	auto simulate = [&](Vector3 p, const Vector3 &m, bool &on_floor, bool &ceiling, bool &wall) {
+		const int order[3] = { 1, 0, 2 };
+		for (int a : order) {
+			float mn[3] = { p.x - size.x * 0.5f, p.y, p.z - size.z * 0.5f };
+			float mx[3] = { p.x + size.x * 0.5f, p.y + size.y, p.z + size.z * 0.5f };
+			const float allowed = sweep_axis(a, mn, mx, m[a]);
+			if (allowed != m[a]) {
+				if (a == 1) {
+					(m[a] < 0 ? on_floor : ceiling) = true;
+				} else {
+					wall = true;
+				}
+			}
+			p[a] += allowed;
+		}
+		return p;
+	};
+	bool on_floor = false, ceiling = false, wall = false;
+	Vector3 end = simulate(position, motion, on_floor, ceiling, wall);
+
+	// Step up: if walking on the ground into something, try going over it.
+	if (step_height > 0.0f && wall) {
+		bool f2 = false, c2 = false, w2 = false;
+		const bool grounded = !is_box_free(position - Vector3(0, 0.05f, 0), size) || on_floor;
+		if (grounded) {
+			Vector3 up = simulate(position, Vector3(0, step_height, 0), f2, c2, w2);
+			Vector3 across = simulate(up, Vector3(motion.x, 0, motion.z), f2, c2, w2);
+			bool f3 = false, c3 = false, w3 = false;
+			Vector3 down = simulate(across, Vector3(0, -step_height + std::min(0.0f, motion.y), 0), f3, c3, w3);
+			const float flat = Vector2(end.x - position.x, end.z - position.z).length();
+			const float stepped = Vector2(down.x - position.x, down.z - position.z).length();
+			if (stepped > flat + 1e-3f) {
+				end = down;
+				on_floor = f3;
+				wall = w2;
+			}
+		}
+	}
+	Dictionary r;
+	r["position"] = end;
+	r["on_floor"] = on_floor;
+	r["hit_ceiling"] = ceiling;
+	r["hit_wall"] = wall;
+	return r;
+}
+
+bool GoCubeWorld::is_box_free(const Vector3 &position, const Vector3 &size) const {
+	constexpr float EPS = 1e-3f;
+	const int x0 = int(std::floor(position.x - size.x * 0.5f + EPS)), x1 = int(std::floor(position.x + size.x * 0.5f - EPS));
+	const int y0 = int(std::floor(position.y + EPS)), y1 = int(std::floor(position.y + size.y - EPS));
+	const int z0 = int(std::floor(position.z - size.z * 0.5f + EPS)), z1 = int(std::floor(position.z + size.z * 0.5f - EPS));
+	for (int y = y0; y <= y1; y++) {
+		for (int z = z0; z <= z1; z++) {
+			for (int x = x0; x <= x1; x++) {
+				if (solid_at(x, y, z)) {
+					return false;
+				}
+			}
+		}
+	}
+	return true;
+}
+
 
 int64_t GoCubeWorld::key(const Vector3i &p) {
 	return (static_cast<int64_t>(p.x & 0x1FFFFF) << 42) | (static_cast<int64_t>(p.y & 0x1FFFFF) << 21) |
@@ -192,11 +446,14 @@ bool GoCubeWorld::is_area_meshed(const AABB &area) const {
 
 Dictionary GoCubeWorld::get_stats() const {
 	Dictionary d;
-	int generated = 0, meshed = 0;
+	int generated = 0, meshed = 0, dirty = 0;
 	for (const auto &kv : _chunks) {
 		generated += kv.second.data ? 1 : 0;
 		meshed += kv.second.meshed ? 1 : 0;
+		dirty += kv.second.dirty ? 1 : 0;
 	}
+	d["dirty"] = dirty;
+	d["pending_remesh"] = int64_t(_urgent.size());
 	d["chunks"] = int64_t(_chunks.size());
 	d["generated"] = generated;
 	d["meshed"] = meshed;
@@ -241,10 +498,16 @@ void GoCubeWorld::worker_loop() {
 		Result r;
 		r.kind = job.kind;
 		r.pos = job.pos;
+		r.version = job.version;
+		r.urgent = job.urgent;
 		const int64_t t0 = now_us();
 		if (job.kind == JOB_GENERATE) {
 			auto data = std::make_shared<ChunkData>();
-			_generator.generate(*data, job.pos.x * CHUNK, job.pos.y * CHUNK, job.pos.z * CHUNK);
+			const bool loaded = !_save_dir.empty() &&
+					load_chunk_file(chunk_file_path(_save_dir, job.pos.x, job.pos.y, job.pos.z), *data);
+			if (!loaded) {
+				_generator.generate(*data, job.pos.x * CHUNK, job.pos.y * CHUNK, job.pos.z * CHUNK);
+			}
 			r.data = data;
 			_gen_us += now_us() - t0;
 			_gen_count++;
@@ -283,8 +546,10 @@ void GoCubeWorld::_notification(int what) {
 	if (what == NOTIFICATION_EXIT_TREE || what == NOTIFICATION_PREDELETE) {
 		stop_workers();
 		for (auto &kv : _chunks) {
+			save_chunk(pos_of(kv.first), kv.second);
 			free_chunk_render(kv.second);
 		}
+		_urgent.clear();
 		_chunks.clear();
 		_mesh_candidates.clear();
 		_uploads.clear();
@@ -331,6 +596,8 @@ void GoCubeWorld::_process(double delta) {
 			for (const Vector3i &dir : FACE_DIRS) {
 				_mesh_candidates.insert(key(r.pos + dir));
 			}
+		} else if (r.urgent) {
+			_uploads.push_front(std::move(r));
 		} else {
 			_uploads.push_back(std::move(r));
 		}
@@ -340,7 +607,8 @@ void GoCubeWorld::_process(double delta) {
 
 	// Upload meshes within the frame budget, nearest-queued first.
 	const int64_t start = now_us();
-	while (!_uploads.empty() && (now_us() - start) < int64_t(_upload_budget_ms * 1000.0f)) {
+	while (!_uploads.empty() &&
+			(_uploads.front().urgent || (now_us() - start) < int64_t(_upload_budget_ms * 1000.0f))) {
 		Result r = std::move(_uploads.front());
 		_uploads.pop_front();
 		upload(r);
@@ -357,8 +625,10 @@ void GoCubeWorld::update_desired(const Vector3i &center) {
 		const int cx = field((k >> 42) & 0x1FFFFF), cz = field(k & 0x1FFFFF);
 		const int dx = cx - center.x, dz = cz - center.z;
 		if (dx * dx + dz * dz > (r + 1) * (r + 1)) {
+			save_chunk(pos_of(it->first), it->second);
 			free_chunk_render(it->second);
 			_mesh_candidates.erase(it->first);
+			_urgent.erase(it->first);
 			it = _chunks.erase(it);
 		} else {
 			++it;
@@ -400,19 +670,19 @@ void GoCubeWorld::schedule_meshing(const Vector3i &center) {
 			it = _mesh_candidates.erase(it);
 			continue;
 		}
-		// Recover position from the key.
-		const int64_t k = *it;
-		auto field = [](int64_t v) { return int((v & 0x100000) ? (v | ~int64_t(0x1FFFFF)) : v); };
-		const Vector3i p(field((k >> 42) & 0x1FFFFF), field((k >> 21) & 0x1FFFFF), field(k & 0x1FFFFF));
+		const Vector3i p = pos_of(*it);
 		const int dx = p.x - center.x, dz = p.z - center.z;
-		if (dx * dx + dz * dz > r * r) {
+		const bool urgent = _urgent.count(*it) > 0;
+		if (!urgent && dx * dx + dz * dz > r * r) {
 			++it; // not in view yet; keep as a candidate
 			continue;
 		}
 		Job job;
 		job.kind = JOB_MESH;
 		job.pos = p;
-		job.priority = float(dx * dx + dz * dz) + std::abs(p.y) * 0.5f;
+		job.priority = float(dx * dx + dz * dz) + std::abs(p.y) * 0.5f - (urgent ? 1e6f : 0.0f);
+		job.version = c.mesh_version;
+		job.urgent = urgent;
 		job.self = c.data;
 		bool ready = true;
 		for (int f = 0; f < FACE_COUNT; f++) {
@@ -432,6 +702,7 @@ void GoCubeWorld::schedule_meshing(const Vector3i &center) {
 			continue;
 		}
 		c.mesh_queued = true;
+		_urgent.erase(*it);
 		push_job(std::move(job));
 		it = _mesh_candidates.erase(it);
 	}
@@ -443,6 +714,9 @@ void GoCubeWorld::upload(Result &r) {
 		return;
 	}
 	Chunk &c = it->second;
+	if (r.version != c.mesh_version) {
+		return; // a newer mesh for this chunk is on its way
+	}
 	free_chunk_render(c);
 	c.meshed = true;
 	if (r.opaque.empty() && r.fluid.empty()) {
@@ -481,6 +755,12 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("configure_generator", "seed", "ids"), &GoCubeWorld::configure_generator);
 	ClassDB::bind_method(D_METHOD("start"), &GoCubeWorld::start);
 	ClassDB::bind_method(D_METHOD("get_block", "position"), &GoCubeWorld::get_block);
+	ClassDB::bind_method(D_METHOD("set_block", "position", "id"), &GoCubeWorld::set_block);
+	ClassDB::bind_method(D_METHOD("raycast", "origin", "direction", "max_distance"), &GoCubeWorld::raycast);
+	ClassDB::bind_method(D_METHOD("move_box", "position", "size", "motion", "step_height"), &GoCubeWorld::move_box);
+	ClassDB::bind_method(D_METHOD("is_box_free", "position", "size"), &GoCubeWorld::is_box_free);
+	ClassDB::bind_method(D_METHOD("set_save_directory", "dir"), &GoCubeWorld::set_save_directory);
+	ClassDB::bind_method(D_METHOD("save_modified"), &GoCubeWorld::save_modified);
 	ClassDB::bind_method(D_METHOD("is_area_meshed", "area"), &GoCubeWorld::is_area_meshed);
 	ClassDB::bind_method(D_METHOD("get_stats"), &GoCubeWorld::get_stats);
 
