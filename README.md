@@ -53,7 +53,7 @@ they'd be left out otherwise). Windows needs the module's Windows template the s
 - `src/ui/world_menu.gd` — title screen / world select (the main scene).
 - `src/player/player.gd` — the player: walking/jumping/flying physics, block break/place.
 - `mods/core/` — the base game, written as an ordinary mod.
-- `tools/gen_textures.py` — regenerates the core block textures (`python3 tools/gen_textures.py`).
+- `tools/gen_textures.py` — regenerates the core 32×32 block textures (`python3 tools/gen_textures.py`).
 
 ## Saving
 Worlds live in `user://worlds/<name>/` (on Linux `~/.local/share/godot/app_userdata/GoCube/`):
@@ -67,7 +67,7 @@ new ids, and blocks from a removed mod keep their slot (shown magenta) until it 
 In a block definition: `"textures": {"all": "textures/stone.png"}` or per face
 `{"top": ..., "side": ..., "bottom": ...}`. Paths are relative to the mod folder
 (`"othermod:textures/x.png"` borrows another mod's file). Any square PNG works; it is
-scaled to 16×16 and packed into a shared, mipmapped atlas at startup (textures should
+scaled to 32×32 and packed into a shared, mipmapped atlas at startup (textures should
 tile seamlessly: the atlas pads each tile with repeats of itself to prevent mip bleeding). Blocks without textures
 fall back to their `"color"`.
 

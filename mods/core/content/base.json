@@ -35,6 +35,66 @@
         "side": "textures/grass_side.png",
         "bottom": "textures/dirt.png"
       }
+    },
+    "sand": {
+      "hardness": 0.5,
+      "color": "#d6c38a",
+      "textures": {
+        "all": "textures/sand.png"
+      }
+    },
+    "gravel": {
+      "hardness": 0.6,
+      "color": "#7a6f66",
+      "textures": {
+        "all": "textures/gravel.png"
+      }
+    },
+    "log": {
+      "hardness": 2.0,
+      "flammable": true,
+      "color": "#59422c",
+      "textures": {
+        "top": "textures/log_top.png",
+        "bottom": "textures/log_top.png",
+        "side": "textures/log_side.png"
+      }
+    },
+    "leaves": {
+      "hardness": 0.2,
+      "flammable": true,
+      "color": "#356828",
+      "textures": {
+        "all": "textures/leaves.png"
+      }
+    },
+    "coal_ore": {
+      "hardness": 3.0,
+      "color": "#3a3a40",
+      "textures": {
+        "all": "textures/coal_ore.png"
+      }
+    },
+    "iron_ore": {
+      "hardness": 3.0,
+      "color": "#9a8070",
+      "textures": {
+        "all": "textures/iron_ore.png"
+      }
+    },
+    "gold_ore": {
+      "hardness": 3.0,
+      "color": "#b8a050",
+      "textures": {
+        "all": "textures/gold_ore.png"
+      }
+    },
+    "crystal_ore": {
+      "hardness": 3.0,
+      "color": "#5aa8b0",
+      "textures": {
+        "all": "textures/crystal_ore.png"
+      }
     }
   },
   "items": {

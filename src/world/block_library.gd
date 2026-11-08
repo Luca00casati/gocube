@@ -13,7 +13,7 @@ extends RefCounted
 ##   "solid": false         no geometry (e.g. air)
 ##   "transparent": true    neighbours' faces stay visible
 
-const TILE_SIZE := 16
+const TILE_SIZE := 32  # textures of other sizes are scaled to this (nearest)
 ## Each tile gets a CELL x CELL tile area in the atlas, filled with repeats of
 ## the (seamless) texture, and faces use the copy at (1, 1). Cells are
 ## power-of-two aligned, so every mip level only averages a tile with itself:
