@@ -17,6 +17,8 @@ extends Node
 
 signal welcomed(info: Dictionary)  # client: host accepted us, build the world
 signal ended(reason: String)       # client: connection failed / rejected / lost
+## Another player changed a block (for sounds): old and new block index.
+signal remote_edit(position: Vector3i, old_block: int, new_block: int)
 
 const Avatar := preload("res://src/player/avatar.gd")
 const Player := preload("res://src/player/player.gd")
@@ -49,6 +51,7 @@ var _time_sync_timer := 0.0
 var _connect_started := 0
 var _welcomed := false
 var _ended := false
+var _own_edits := {}  # client: positions we asked the host to change (no echo sound)
 
 
 # --- Setup / teardown ----------------------------------------------------------
@@ -147,6 +150,7 @@ func _rejected(reason: String) -> void:
 
 ## Clients ask the host to change a block; the host validates and applies it.
 func request_edit(pos: Vector3i, block: int) -> void:
+	_own_edits[pos] = true
 	_request_edit.rpc_id(1, pos, block)
 
 
@@ -239,7 +243,9 @@ func _request_edit(pos: Vector3i, block: int) -> void:
 		for state in _host_states().values():  # nobody may get built into a block
 			if Player.overlaps_block(state[0] - Vector3(0, Player.EYE_HEIGHT, 0), pos):
 				return
-	world.set_block(pos, block)  # -> block_changed -> sent to everyone (fails if not loaded)
+	var old := world.get_block(pos)
+	if world.set_block(pos, block):  # -> block_changed -> sent to everyone
+		remote_edit.emit(pos, old, block)
 
 
 func _on_block_changed(pos: Vector3i, block: int) -> void:
@@ -250,16 +256,21 @@ func _on_block_changed(pos: Vector3i, block: int) -> void:
 ## Client: a block changed on the host.
 @rpc("authority", "call_remote", "reliable")
 func _block(pos: Vector3i, block: int) -> void:
-	if world and not world.apply_remote_block(pos, block):
+	if world == null:
+		return
+	var old := world.get_block(pos)
+	if not world.apply_remote_block(pos, block):
 		_request_chunk.rpc_id(1, World.chunk_of(pos))  # not loaded here: get the whole chunk
+	elif not _own_edits.erase(pos):
+		remote_edit.emit(pos, old, block)
 
 
 ## Client: the host's time of day (snap only if we drifted noticeably).
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _time(host_time: float) -> void:
 	if day_cycle:
-		var drift := absf(wrapf(host_time - day_cycle.time, -0.5, 0.5))
-		if drift > 0.0005:  # ~0.6 s with a 20-minute day
+		var drift := absf(wrapf(host_time - day_cycle.time, -0.5, 0.5)) * day_cycle.day_length
+		if drift > 0.5:  # seconds
 			day_cycle.time = host_time
 
 

@@ -42,6 +42,10 @@ var _hud: CanvasLayer
 var _hotbar: Hotbar
 var _inventory_screen: InventoryScreen
 var _settings_screen: SettingsScreen
+var _sounds: Sounds
+var _hurt_flash: ColorRect
+var _death_screen: Control
+var _restored_player := false  # position came from the save (else: put on the ground)
 
 
 func _ready() -> void:
@@ -78,6 +82,10 @@ func _ready() -> void:
 	_session.world = _world
 	_add_environment()
 	_add_hud()
+	_sounds = Sounds.new()
+	_sounds.name = "Sounds"
+	add_child(_sounds)
+	_session.remote_edit.connect(_on_remote_edit)
 	# Offline, pausing stops time too; in multiplayer the world keeps going.
 	_day.process_mode = Node.PROCESS_MODE_PAUSABLE if net_mode == "offline" else Node.PROCESS_MODE_ALWAYS
 	_session.day_cycle = _day
@@ -103,6 +111,12 @@ func _start_local() -> void:
 		print("Hosting on port %d (%s)" % [port, ", ".join(_lan_addresses())])
 	_start_day(float(_args.get("time", _world.meta.get("time", DayCycle.START_TIME))),
 			float(_args.get("day-length", DayCycle.DEFAULT_DAY_LENGTH)))
+	# The game's time is the computer's local time, unless a test/launch option
+	# sets the time or day length.
+	_day.follow_system_clock = not (_args.has("time") or _args.has("day-length"))
+	if _day.follow_system_clock:
+		_day.time = DayCycle.system_time()
+		_day.apply()
 	_mark("world built")
 
 	_spawn_player(Vector3(0, 40, 0))
@@ -183,6 +197,12 @@ func _spawn_player(feet: Vector3) -> void:
 	_player = player
 	if player.creative:
 		player.fill_creative()
+	player.footstep.connect(func(block, at): _sounds.play_block(block, "step", at, -6.0))
+	player.block_broken.connect(func(block, at): _sounds.play_block(block, "break", at))
+	player.block_placed.connect(func(block, at): _sounds.play_block(block, "place", at))
+	player.splashed.connect(func(at): _sounds.play("core:effects", "splash", at))
+	player.hurt.connect(_on_hurt)
+	player.died.connect(_on_died)
 	_hotbar = Hotbar.new()
 	_hotbar.player = player
 	_hotbar.atlas = _world.atlas
@@ -204,12 +224,12 @@ func _exit_tree() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if _player and not _loading and not get_tree().paused and _inventory_screen == null \
-			and event.is_action_pressed(&"inventory"):
+			and _death_screen == null and event.is_action_pressed(&"inventory"):
 		_open_inventory()
 		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed(&"ui_cancel") and not _loading and not _args.has("bench") \
-			and _settings_screen == null:
+			and _settings_screen == null and _death_screen == null:
 		set_paused(not get_tree().paused)
 		get_viewport().set_input_as_handled()
 
@@ -222,6 +242,53 @@ func _open_inventory() -> void:
 	_hud.add_child(_inventory_screen)
 	_player.ui_open = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func _on_remote_edit(pos: Vector3i, old_block: int, new_block: int) -> void:
+	var at := Vector3(pos) + Vector3.ONE * 0.5
+	if new_block == Registry.block_index("core:air"):
+		_sounds.play_block(Registry.block_ids[old_block], "break", at)
+	else:
+		_sounds.play_block(Registry.block_ids[new_block], "place", at)
+
+
+func _on_hurt(_amount: int) -> void:
+	_sounds.play("core:effects", "hurt", _cam.global_position)
+	_hurt_flash.color.a = 0.35
+	create_tween().tween_property(_hurt_flash, "color:a", 0.0, 0.4)
+
+
+func _on_died() -> void:
+	_death_screen = ColorRect.new()
+	_death_screen.color = Color(0.35, 0.0, 0.0, 0.55)
+	_death_screen.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_death_screen.add_child(center)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 14)
+	center.add_child(box)
+	var title := Label.new()
+	title.text = "You died"
+	title.add_theme_font_size_override("font_size", 40)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(title)
+	var button := Button.new()
+	button.text = "Respawn"
+	button.pressed.connect(_respawn)
+	box.add_child(button)
+	_hud.add_child(_death_screen)
+	_player.ui_open = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func _respawn() -> void:
+	var s: Array = _world.meta.get("spawn", [0.5, 40.0, 0.5])
+	_player.respawn(Vector3(s[0], s[1], s[2]))
+	_death_screen.queue_free()
+	_death_screen = null
+	_player.ui_open = false
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 func _open_settings() -> void:
@@ -250,6 +317,14 @@ func set_paused(paused: bool) -> void:
 func _save_and_quit() -> void:
 	_show_saving()
 	await save_game()
+	await _quit()
+
+
+## Quits cleanly: stop sounds, give the audio thread a frame to let go of them.
+func _quit() -> void:
+	_sounds.stop_all()
+	await get_tree().process_frame
+	await get_tree().process_frame
 	get_tree().quit()
 
 
@@ -302,10 +377,32 @@ func _player_state() -> Dictionary:
 			"flying": _player.flying, "selected": _player.selected}
 	if not _player.creative:
 		state.inventory = _player.inventory.serialize()
+		state.health = _player.health
 	return state
 
 
+## Puts the player on dry ground: the nearest column (searching outward up to
+## SPAWN_SEARCH blocks) whose top solid block isn't under water.
+const SPAWN_SEARCH := 64
+
+
+func _place_on_ground(player: Node3D) -> void:
+	var origin := Vector3i(player.global_position.floor())
+	for radius in range(0, SPAWN_SEARCH + 1, 2):
+		for dz in range(-radius, radius + 1, 2):
+			for dx in range(-radius, radius + 1, 2):
+				if maxi(absi(dx), absi(dz)) != radius:
+					continue  # only the ring at this radius
+				var x := origin.x + dx
+				var z := origin.z + dz
+				var hit := _world.raycast(Vector3(x + 0.5, World.TOP_Y, z + 0.5), Vector3.DOWN, 400)
+				if hit.hit and not _world.is_fluid(_world.get_block(hit.previous)):
+					player.global_position = Vector3(x + 0.5, hit.position.y + 1, z + 0.5)
+					return
+
+
 func _restore_player(state: Dictionary) -> void:
+	_restored_player = state.has("position")
 	if state.has("position"):
 		var p: Array = state.position
 		_player.position = Vector3(p[0], p[1], p[2])
@@ -315,19 +412,29 @@ func _restore_player(state: Dictionary) -> void:
 	_player.selected = clampi(int(state.get("selected", 0)), 0, Inventory.HOTBAR - 1)
 	if not _player.creative and state.has("inventory"):
 		_player.inventory.deserialize(state.inventory)
+	if state.has("health"):
+		_player.health = clampi(int(state.health), 1, _player.MAX_HEALTH)
 
 
 func _process(_delta: float) -> void:
 	if _loading and _cam and _spawn_area_meshed():
 		_loading.queue_free()
 		_loading = null
+		if not _restored_player and not _world.remote:
+			_place_on_ground(_player)  # new world: start on the ground, not mid-air
 		_player.set_ready_to_move()
+		if not _world.meta.has("spawn") and not _world.remote:
+			var s := _player.global_position
+			_world.meta.spawn = [s.x, s.y, s.z]  # where new players appear and the dead respawn
 		_mark("spawn area meshed, loading screen hidden")
 	if _cam and _world.engine:
 		_world.set_viewer(_cam.global_position)  # chunks load around the local player
 	if _player and _world.engine and not _player.autopilot:
 		var eye := Vector3i(_cam.global_position.floor())
 		_underwater.visible = _world.is_fluid(_world.get_block(eye))
+		_sounds.set_underwater(_underwater.visible)
+	if _sounds:
+		_sounds.update_ambience(_day.day_amount())
 	var status := "%d FPS · %s" % [Engine.get_frames_per_second(), _day.clock_text(Settings.clock_24h)]
 	if _player and not _player.autopilot:
 		status += " · %s · %s · E inventory" % ["creative" if _player.creative else "survival",
@@ -401,6 +508,11 @@ func _add_hud() -> void:
 	_underwater.visible = false
 	hud.add_child(_underwater)
 	hud.move_child(_underwater, 0)  # under the HUD text
+	_hurt_flash = ColorRect.new()
+	_hurt_flash.color = Color(0.8, 0.0, 0.0, 0.0)
+	_hurt_flash.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_hurt_flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hud.add_child(_hurt_flash)
 	_loading = _make_loading_screen()
 	_loading_since = Time.get_ticks_msec()
 	hud.add_child(_loading)
@@ -444,7 +556,7 @@ func _make_pause_menu() -> Control:
 	box.add_child(title)
 	var entries: Array = [["Resume", func(): set_paused(false)]]
 	if net_mode == "client":
-		entries += [["Disconnect", _leave_to_menu.bind("")], ["Quit game", get_tree().quit]]
+		entries += [["Disconnect", _leave_to_menu.bind("")], ["Quit game", _quit]]
 	else:
 		entries += [["Save & quit to menu", _leave_to_menu.bind("")], ["Save & quit game", _save_and_quit]]
 	entries.insert(1, ["Settings…", _open_settings])

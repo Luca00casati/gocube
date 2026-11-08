@@ -14,9 +14,10 @@ func _key(code: Key, down: bool) -> void:
 
 func test_walk_jump_land() -> void:
 	var w := await make_world()
+	var ground: int = w.raycast(Vector3(0.5, 100, 0.5), Vector3.DOWN, 300).position.y
 	var p = Player.new()
 	p.world = w
-	p.position = Vector3(0.5, 40, 0.5)
+	p.position = Vector3(0.5, ground + 1.5, 0.5)  # just above the ground (no fall damage)
 	add(p)
 	p.set_ready_to_move()
 	check(await wait_until(func(): return p.on_floor, 10), "lands on the ground")

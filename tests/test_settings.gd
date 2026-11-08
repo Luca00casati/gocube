@@ -50,3 +50,21 @@ func test_clock_formats() -> void:
 	check_eq(DayCycle.format_clock(18.5 / 24.0, false), "6:30 PM", "evening, 12-hour")
 	check_eq(DayCycle.format_clock(18.5 / 24.0, true), "18:30", "evening, 24-hour")
 	check_eq(DayCycle.format_clock(0.0, true), "00:00", "midnight, 24-hour")
+
+
+func test_time_runs_in_real_time() -> void:
+	var day := DayCycle.new()
+	check_eq(day.day_length, 86400.0, "a day lasts 24 hours")
+	day.time = 0.5  # noon
+	day._process(60.0)  # one real minute
+	check_eq(day.clock_text(true), "12:01", "one real minute later the clock shows 12:01")
+	day.free()
+
+
+func test_clock_follows_the_computer() -> void:
+	var day := DayCycle.new()
+	day.follow_system_clock = true
+	day._process(0.016)
+	var t := Time.get_time_dict_from_system()
+	check_eq(day.clock_text(true), "%02d:%02d" % [t.hour, t.minute], "game clock = computer clock")
+	day.free()

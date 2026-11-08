@@ -10,21 +10,24 @@
       "color": "#7f7f7f",
       "textures": {
         "all": "textures/stone.png"
-      }
+      },
+      "sound": "core:stone"
     },
     "cobblestone": {
       "hardness": 2.0,
       "color": "#6a6a6a",
       "textures": {
         "all": "textures/cobblestone.png"
-      }
+      },
+      "sound": "core:stone"
     },
     "dirt": {
       "hardness": 0.5,
       "color": "#8b5a2b",
       "textures": {
         "all": "textures/dirt.png"
-      }
+      },
+      "sound": "core:grass"
     },
     "grass": {
       "hardness": 0.6,
@@ -34,21 +37,24 @@
         "top": "textures/grass_top.png",
         "side": "textures/grass_side.png",
         "bottom": "textures/dirt.png"
-      }
+      },
+      "sound": "core:grass"
     },
     "sand": {
       "hardness": 0.5,
       "color": "#d6c38a",
       "textures": {
         "all": "textures/sand.png"
-      }
+      },
+      "sound": "core:sand"
     },
     "gravel": {
       "hardness": 0.6,
       "color": "#7a6f66",
       "textures": {
         "all": "textures/gravel.png"
-      }
+      },
+      "sound": "core:gravel"
     },
     "log": {
       "hardness": 2.0,
@@ -58,7 +64,8 @@
         "top": "textures/log_top.png",
         "bottom": "textures/log_top.png",
         "side": "textures/log_side.png"
-      }
+      },
+      "sound": "core:wood"
     },
     "leaves": {
       "hardness": 0.2,
@@ -66,40 +73,46 @@
       "color": "#356828",
       "textures": {
         "all": "textures/leaves.png"
-      }
+      },
+      "sound": "core:grass"
     },
     "coal_ore": {
       "hardness": 3.0,
       "color": "#3a3a40",
       "textures": {
         "all": "textures/coal_ore.png"
-      }
+      },
+      "sound": "core:stone"
     },
     "iron_ore": {
       "hardness": 3.0,
       "color": "#9a8070",
       "textures": {
         "all": "textures/iron_ore.png"
-      }
+      },
+      "sound": "core:stone"
     },
     "gold_ore": {
       "hardness": 3.0,
       "color": "#b8a050",
       "textures": {
         "all": "textures/gold_ore.png"
-      }
+      },
+      "sound": "core:stone"
     },
     "crystal_ore": {
       "hardness": 3.0,
       "color": "#5aa8b0",
       "textures": {
         "all": "textures/crystal_ore.png"
-      }
+      },
+      "sound": "core:stone"
     },
     "water": {
       "solid": false,
       "fluid": "water",
-      "color": "#3f76d6"
+      "color": "#3f76d6",
+      "level": 8
     },
     "lamp": {
       "hardness": 0.3,
@@ -107,7 +120,57 @@
       "color": "#f2c25a",
       "textures": {
         "all": "textures/lamp.png"
-      }
+      },
+      "sound": "core:stone"
+    },
+    "water_1": {
+      "solid": false,
+      "fluid": "water",
+      "level": 1,
+      "flowing": true,
+      "color": "#3f76d6"
+    },
+    "water_2": {
+      "solid": false,
+      "fluid": "water",
+      "level": 2,
+      "flowing": true,
+      "color": "#3f76d6"
+    },
+    "water_3": {
+      "solid": false,
+      "fluid": "water",
+      "level": 3,
+      "flowing": true,
+      "color": "#3f76d6"
+    },
+    "water_4": {
+      "solid": false,
+      "fluid": "water",
+      "level": 4,
+      "flowing": true,
+      "color": "#3f76d6"
+    },
+    "water_5": {
+      "solid": false,
+      "fluid": "water",
+      "level": 5,
+      "flowing": true,
+      "color": "#3f76d6"
+    },
+    "water_6": {
+      "solid": false,
+      "fluid": "water",
+      "level": 6,
+      "flowing": true,
+      "color": "#3f76d6"
+    },
+    "water_7": {
+      "solid": false,
+      "fluid": "water",
+      "level": 7,
+      "flowing": true,
+      "color": "#3f76d6"
     }
   },
   "items": {
@@ -198,6 +261,100 @@
         6
       ],
       "chance": 30
+    }
+  },
+  "sound_sets": {
+    "grass": {
+      "step": [
+        "sounds/grass_step_1.wav",
+        "sounds/grass_step_2.wav",
+        "sounds/grass_step_3.wav"
+      ],
+      "break": [
+        "sounds/grass_break_1.wav",
+        "sounds/grass_break_2.wav",
+        "sounds/grass_break_3.wav"
+      ],
+      "place": [
+        "sounds/grass_place.wav"
+      ]
+    },
+    "stone": {
+      "step": [
+        "sounds/stone_step_1.wav",
+        "sounds/stone_step_2.wav",
+        "sounds/stone_step_3.wav"
+      ],
+      "break": [
+        "sounds/stone_break_1.wav",
+        "sounds/stone_break_2.wav",
+        "sounds/stone_break_3.wav"
+      ],
+      "place": [
+        "sounds/stone_place.wav"
+      ]
+    },
+    "wood": {
+      "step": [
+        "sounds/wood_step_1.wav",
+        "sounds/wood_step_2.wav",
+        "sounds/wood_step_3.wav"
+      ],
+      "break": [
+        "sounds/wood_break_1.wav",
+        "sounds/wood_break_2.wav",
+        "sounds/wood_break_3.wav"
+      ],
+      "place": [
+        "sounds/wood_place.wav"
+      ]
+    },
+    "sand": {
+      "step": [
+        "sounds/sand_step_1.wav",
+        "sounds/sand_step_2.wav",
+        "sounds/sand_step_3.wav"
+      ],
+      "break": [
+        "sounds/sand_break_1.wav",
+        "sounds/sand_break_2.wav",
+        "sounds/sand_break_3.wav"
+      ],
+      "place": [
+        "sounds/sand_place.wav"
+      ]
+    },
+    "gravel": {
+      "step": [
+        "sounds/gravel_step_1.wav",
+        "sounds/gravel_step_2.wav",
+        "sounds/gravel_step_3.wav"
+      ],
+      "break": [
+        "sounds/gravel_break_1.wav",
+        "sounds/gravel_break_2.wav",
+        "sounds/gravel_break_3.wav"
+      ],
+      "place": [
+        "sounds/gravel_place.wav"
+      ]
+    },
+    "effects": {
+      "splash": [
+        "sounds/splash_1.wav",
+        "sounds/splash_2.wav"
+      ],
+      "hurt": [
+        "sounds/hurt.wav"
+      ]
+    },
+    "ambience": {
+      "day": [
+        "sounds/ambience_day.wav"
+      ],
+      "night": [
+        "sounds/ambience_night.wav"
+      ]
     }
   }
 }

@@ -160,7 +160,7 @@ func _load_mod(m: Dictionary) -> void:
 
 
 ## Content file format: { "blocks": {id: def}, "items": {id: def}, "recipes": {id: def},
-##                        "ores": {id: def}, "trees": {id: def} }
+##                        "ores": {id: def}, "trees": {id: def}, "sound_sets": {id: def} }
 func _load_content_file(path: String) -> void:
 	var data = JSON.parse_string(FileAccess.get_file_as_string(path))
 	if not data is Dictionary:
@@ -176,3 +176,5 @@ func _load_content_file(path: String) -> void:
 		Registry.register_ore(id, data.ores[id])
 	for id in data.get("trees", {}):
 		Registry.register_tree(id, data.trees[id])
+	for id in data.get("sound_sets", {}):
+		Registry.register_sound_set(id, data.sound_sets[id])

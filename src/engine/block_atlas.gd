@@ -41,7 +41,7 @@ func _init() -> void:
 				tiles.append(_face_tile(def, face))
 			_icon_tiles[id] = tiles[0]  # the side face shows best as a flat icon
 		block_table.append({"solid": solid, "opaque": opaque, "fluid": fluid, "tiles": tiles,
-				"light": int(def.get("light", 0))})
+				"light": int(def.get("light", 0)), "fluid_level": int(def.get("level", 8))})
 	atlas = _build_atlas()
 
 

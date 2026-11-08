@@ -117,8 +117,10 @@ struct CornerLight {
 	float sky[4], block[4], ao[4];
 };
 
+// top_height: where the face's upper corners sit (1 = full block; lower for
+// flowing fluids).
 void emit_face(Surface &s, const FaceDef &d, float bx, float by, float bz, const AtlasLayout &atlas, int tile,
-		const CornerLight &cl) {
+		const CornerLight &cl, float top_height = 1.0f) {
 	const int base = static_cast<int>(s.positions.size() / 3);
 	const float tw = 1.0f / (atlas.cols * atlas.cell);
 	const float th = 1.0f / (atlas.rows * atlas.cell);
@@ -128,7 +130,7 @@ void emit_face(Surface &s, const FaceDef &d, float bx, float by, float bz, const
 	const float v0 = (row * atlas.cell + atlas.face_y) * th;
 	for (int c = 0; c < 4; c++) {
 		s.positions.push_back(bx + d.corners[c][0]);
-		s.positions.push_back(by + d.corners[c][1]);
+		s.positions.push_back(by + (d.corners[c][1] > 0.5f ? top_height : d.corners[c][1]));
 		s.positions.push_back(bz + d.corners[c][2]);
 		s.normals.push_back(static_cast<float>(d.dx));
 		s.normals.push_back(static_cast<float>(d.dy));
@@ -224,11 +226,21 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 						}
 					}
 					if (info.fluid) {
-						// Fluid faces only towards air (not other fluid, not solid blocks).
-						if (nid != AIR) {
+						// Surface height: full under more fluid, else by level (a
+						// source is a little below the block top).
+						const BlockId above = sample(chunk, neighbours, blocks, x, y + 1, z, solid_fallback);
+						const bool covered = above < count && blocks[above].fluid;
+						const float height = covered ? 1.0f : std::max(0.125f, info.fluid_level / 8.0f * 0.875f);
+						// Faces towards air, and sides towards lower fluid (so steps
+						// between water levels have no gaps).
+						const bool lower_fluid = n && n->fluid && d.dy == 0 && n->fluid_level < info.fluid_level && !covered;
+						if (nid != AIR && !lower_fluid) {
 							continue;
 						}
-						emit_face(fluid, d, x, y, z, atlas, info.tiles[f], cl);
+						if (d.dy > 0 && covered) {
+							continue;
+						}
+						emit_face(fluid, d, x, y, z, atlas, info.tiles[f], cl, height);
 					} else {
 						// Opaque faces are hidden by opaque neighbours; see-through
 						// blocks (e.g. glass) also hide faces against the same block.

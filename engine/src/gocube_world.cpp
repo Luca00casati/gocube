@@ -79,6 +79,7 @@ void GoCubeWorld::configure_blocks(const TypedArray<Dictionary> &blocks) {
 		b.opaque = d.get("opaque", false);
 		b.fluid = d.get("fluid", false);
 		b.emit = static_cast<uint8_t>(std::clamp(int(d.get("light", 0)), 0, LIGHT_MAX));
+		b.fluid_level = static_cast<uint8_t>(std::clamp(int(d.get("fluid_level", 8)), 1, 8));
 		const PackedInt32Array tiles = d.get("tiles", PackedInt32Array());
 		for (int f = 0; f < FACE_COUNT; f++) {
 			b.tiles[f] = f < tiles.size() ? tiles[f] : 0;

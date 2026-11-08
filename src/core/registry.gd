@@ -13,6 +13,8 @@ var recipes: Dictionary = {}
 ## World generation (see README "World generation from mods").
 var ores: Dictionary = {}
 var trees: Dictionary = {}
+## Sounds (see README "Sounds"): {"step": [paths], "break": [...], "place": [...], ...}
+var sound_sets: Dictionary = {}
 
 ## Numeric voxel ids. block_ids[n] is the string id of voxel n; "core:air" is
 ## always 0. Assigned at freeze, then re-assigned per world from its saved table
@@ -40,6 +42,12 @@ func register_recipe(id: String, def: Dictionary) -> String:
 ##  "size": [3, 6], "replaces": "core:stone"}
 func register_ore(id: String, def: Dictionary) -> String:
 	return _register(ores, &"ore", id, def)
+
+
+## {"step": ["sounds/a.wav", ...], "break": [...], "place": [...]}; paths are
+## relative to the mod. Blocks pick a set with "sound": "mod:set".
+func register_sound_set(id: String, def: Dictionary) -> String:
+	return _register(sound_sets, &"sound_set", id, def)
 
 
 ## {"log": "mod:log", "leaves": "mod:leaves", "trunk": [4, 6], "chance": 30}

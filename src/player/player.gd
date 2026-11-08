@@ -8,7 +8,16 @@ extends Node3D
 ## Survival: hold left click to mine (time from the block's "hardness"); the
 ## drop goes into the inventory, and placing uses items up.
 ## Creative: left click breaks instantly, nothing is used up.
+## Survival also has health: falls over 3 blocks hurt, so does running out of
+## breath underwater; health comes back slowly.
 ## Pausing is handled by the game scene, which pauses this node.
+
+signal footstep(block_id: String, at: Vector3)
+signal block_broken(block_id: String, at: Vector3)
+signal block_placed(block_id: String, at: Vector3)
+signal splashed(at: Vector3)
+signal hurt(amount: int)
+signal died
 ##
 ## The node origin is at the feet; `camera` sits at eye height.
 
@@ -33,6 +42,13 @@ const SWIM_UP_SPEED := 3.5
 const SINK_SPEED := 2.0
 const MINE_SECONDS_PER_HARDNESS := 0.75
 const MIN_MINE_SECONDS := 0.1
+const MAX_HEALTH := 20
+const MAX_BREATH := 10.0           # seconds underwater before drowning starts
+const SAFE_FALL := 3.0             # blocks you can fall without damage
+const DROWN_DAMAGE := 2            # per second without breath
+const REGEN_DELAY := 4.0           # seconds without damage before healing
+const REGEN_INTERVAL := 2.5        # seconds per health point healed
+const STRIDE := 1.7                # metres walked per footstep sound
 
 ## Benchmark mode: fly straight ahead without collisions, don't grab the mouse.
 @export var autopilot := false
@@ -48,6 +64,16 @@ var creative := false
 var ui_open := false
 ## 0..1 while holding left click on a block in survival (for the HUD).
 var mining_progress := 0.0
+var health := MAX_HEALTH
+var breath := MAX_BREATH
+var dead := false
+var _fall_peak := 0.0
+var _was_on_floor := true
+var _was_in_water := false
+var _since_damage := 0.0
+var _regen_timer := 0.0
+var _drown_timer := 0.0
+var _step_distance := 0.0
 var velocity := Vector3.ZERO
 var flying := false
 var in_water := false
@@ -152,7 +178,7 @@ func _physics_process(delta: float) -> void:
 	if autopilot:
 		global_position += -camera.global_basis.z * BENCH_SPEED * delta
 		return
-	if _frozen:
+	if _frozen or dead:
 		velocity = Vector3.ZERO
 		return
 
@@ -192,10 +218,12 @@ func _physics_process(delta: float) -> void:
 			if on_floor and jump:
 				velocity.y = JUMP_VELOCITY
 
+	var fell_from := velocity.y
 	var r: Dictionary = world.move_box(global_position, BODY, velocity * delta, 0.0)
 	var moved: Vector3 = r.position - global_position
 	global_position = r.position
 	on_floor = r.on_floor
+	_after_move(moved, fell_from, sneak, delta)
 	# Lose the velocity that ran into something.
 	if r.on_floor or r.hit_ceiling:
 		velocity.y = 0.0
@@ -206,6 +234,77 @@ func _physics_process(delta: float) -> void:
 			velocity.z = 0.0
 	if flying and on_floor and sneak:
 		flying = false  # flying down onto the ground ends flight
+
+
+## Falls, footsteps, splashes, breath and healing, after each move.
+func _after_move(moved: Vector3, vertical_speed: float, sneak: bool, delta: float) -> void:
+	var below := Registry.block_ids[world.get_block(Vector3i((global_position + Vector3(0, -0.1, 0)).floor()))]
+	# Falling: remember the highest point since leaving the ground.
+	if on_floor or in_water or flying:
+		if on_floor and not _was_on_floor and not in_water and not flying:
+			var fall := _fall_peak - global_position.y
+			if fall > 0.6:
+				footstep.emit(below, global_position)
+			if fall > SAFE_FALL:
+				damage(int(floor(fall - SAFE_FALL)))
+		_fall_peak = global_position.y
+	else:
+		_fall_peak = maxf(_fall_peak, global_position.y)
+	_was_on_floor = on_floor
+
+	if in_water and not _was_in_water and vertical_speed < -4.0:
+		splashed.emit(global_position)
+	_was_in_water = in_water
+
+	var walked := Vector2(moved.x, moved.z).length()
+	if on_floor and not in_water and walked > 0.0:
+		_step_distance += walked
+		if _step_distance >= STRIDE * (0.6 if sneak else 1.0):
+			_step_distance = 0.0
+			footstep.emit(below, global_position)
+
+	if creative:
+		return
+	var head_in_water := world.is_fluid(world.get_block(Vector3i(camera.global_position.floor())))
+	if head_in_water:
+		breath = maxf(0.0, breath - delta)
+		if breath <= 0.0:
+			_drown_timer += delta
+			if _drown_timer >= 1.0:
+				_drown_timer = 0.0
+				damage(DROWN_DAMAGE)
+	else:
+		breath = minf(MAX_BREATH, breath + delta * 3.0)
+		_drown_timer = 0.0
+	_since_damage += delta
+	if health < MAX_HEALTH and _since_damage >= REGEN_DELAY:
+		_regen_timer += delta
+		if _regen_timer >= REGEN_INTERVAL:
+			_regen_timer = 0.0
+			health += 1
+
+
+func damage(amount: int) -> void:
+	if creative or dead or amount <= 0:
+		return
+	health = maxi(0, health - amount)
+	_since_damage = 0.0
+	_regen_timer = 0.0
+	hurt.emit(amount)
+	if health == 0:
+		dead = true
+		velocity = Vector3.ZERO
+		died.emit()
+
+
+func respawn(at: Vector3) -> void:
+	health = MAX_HEALTH
+	breath = MAX_BREATH
+	dead = false
+	velocity = Vector3.ZERO
+	global_position = at
+	_fall_peak = at.y
+	_unstuck()
 
 
 ## Moves up until the body fits (spawned inside a hill, or a block appeared
@@ -269,6 +368,7 @@ func _break_target() -> void:
 		return
 	var broken: String = Registry.block_ids[hit.block]
 	_apply_edit(hit.position, Registry.block_index("core:air"))
+	block_broken.emit(broken, Vector3(hit.position) + Vector3.ONE * 0.5)
 	if not creative:
 		var drop := drop_of(broken)
 		if drop != "":
@@ -283,6 +383,7 @@ func _place() -> void:
 	if not hit.hit or overlaps_block(global_position, hit.previous):
 		return  # nothing to place against, or it would be inside you
 	_apply_edit(hit.previous, Registry.block_index(item))
+	block_placed.emit(item, Vector3(hit.previous) + Vector3.ONE * 0.5)
 	if not creative:
 		inventory.take_one(selected)
 

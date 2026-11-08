@@ -13,6 +13,9 @@ const WORLDS_DIR := "user://worlds"
 const FORMAT_VERSION := 2
 const DEFAULT_VIEW_DISTANCE := 128  # 256 halves FPS on an Intel HD 4600
 const CHUNK_SIZE := 32
+## Highest block y in the world (the engine's vertical range is y -96..127);
+## start downward raycasts here, above it nothing is loaded.
+const TOP_Y := 127
 
 ## A block changed through set_block() (the host forwards these to clients).
 signal block_changed(position: Vector3i, block: int)
@@ -30,6 +33,8 @@ var terrain_material: ShaderMaterial
 var fluid_material: ShaderMaterial
 ## Block index -> true, for fluid blocks (swimming, underwater view).
 var fluid_ids := {}
+## Flowing fluids (single player and host; clients get the result as edits).
+var fluids: FluidSim
 
 
 ## persistent=false runs the world without reading or writing anything (benchmarks).
@@ -63,6 +68,10 @@ func build(world_name: String, distance: int = DEFAULT_VIEW_DISTANCE, new_seed: 
 		engine.set_save_directory(ProjectSettings.globalize_path(dir.path_join("chunks")))
 	add_child(engine)
 	engine.start()
+	fluids = FluidSim.new()
+	fluids.name = "Fluids"
+	fluids.world = self
+	add_child(fluids)
 
 
 ## Client side of a multiplayer game: same seed and block table as the host,

@@ -5,7 +5,9 @@ extends Node
 ## the sky colours and the sun. Saved with the world; in multiplayer the host's
 ## clock is authoritative and clients are corrected now and then.
 
-const DEFAULT_DAY_LENGTH := 1200.0  # seconds for a full day (20 minutes)
+## Real time: one second in the game is one second in real life, so a full
+## day lasts 24 hours (launch option --day-length=SECONDS changes it).
+const DEFAULT_DAY_LENGTH := 86400.0
 const NIGHT_LIGHT := 0.14           # sky light at night: dark, but you can see
 const START_TIME := 0.3             # new worlds start in the morning
 
@@ -19,6 +21,9 @@ const NIGHT_GROUND := Color(0.02, 0.02, 0.03)
 
 var time := START_TIME
 var day_length := DEFAULT_DAY_LENGTH
+## Follow the computer's local clock (single player / host). Multiplayer
+## clients use the host's time instead, so everyone shares one day.
+var follow_system_clock := false
 ## Materials with a `daylight` uniform (terrain, fluids).
 var materials: Array[ShaderMaterial] = []
 var sky_material: ProceduralSkyMaterial
@@ -27,8 +32,18 @@ var sun: DirectionalLight3D
 
 
 func _process(delta: float) -> void:
-	time = fposmod(time + delta / day_length, 1.0)
+	if follow_system_clock:
+		time = system_time()
+	else:
+		time = fposmod(time + delta / day_length, 1.0)
 	apply()
+
+
+## The computer's local time of day as 0..1 (0 = midnight).
+static func system_time() -> float:
+	var t := Time.get_time_dict_from_system()
+	var seconds: float = t.hour * 3600 + t.minute * 60 + t.second
+	return seconds / 86400.0
 
 
 ## +1 at noon, 0 at sunrise/sunset, -1 at midnight.
