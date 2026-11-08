@@ -41,6 +41,7 @@ var _day: DayCycle
 var _hud: CanvasLayer
 var _hotbar: Hotbar
 var _inventory_screen: InventoryScreen
+var _settings_screen: SettingsScreen
 
 
 func _ready() -> void:
@@ -94,7 +95,7 @@ func _start_local() -> void:
 		if err != OK:
 			_leave_to_menu.call_deferred("Couldn't host on port %d: %s" % [port, error_string(err)])
 			return
-	_world.build(world_name, int(_args.get("view", World.DEFAULT_VIEW_DISTANCE)),
+	_world.build(world_name, int(_args.get("view", Settings.view_distance)),
 			new_seed, not _args.has("bench"), game_mode)
 	print("World '%s' (seed %d) at %s" % [world_name, int(_world.meta.seed),
 			ProjectSettings.globalize_path(_world.dir) if _world.is_persistent() else "<not saved>"])
@@ -133,7 +134,8 @@ func _start_client() -> void:
 
 
 func _on_welcomed(info: Dictionary) -> void:
-	_world.build_remote(PackedStringArray(info.block_ids), int(info.view_distance),
+	# Clients generate terrain themselves, so they can use their own view distance.
+	_world.build_remote(PackedStringArray(info.block_ids), int(_args.get("view", Settings.view_distance)),
 			int(info.seed), info.chunks, str(info.get("mode", "survival")))
 	_start_day(float(info.get("time", DayCycle.START_TIME)), float(info.get("day_length", DayCycle.DEFAULT_DAY_LENGTH)))
 	var s: Array = info.spawn  # an eye position next to the host
@@ -144,7 +146,18 @@ func _on_welcomed(info: Dictionary) -> void:
 	print("Joined %s:%d" % [join_address, port])
 
 
+## Settings that affect the running world.
+func _apply_settings() -> void:
+	if _world and _world.engine:
+		_world.engine.smooth_lighting = Settings.smooth_lighting
+		if not _args.has("view"):
+			_world.set_view_distance(Settings.view_distance)
+
+
 func _start_day(time: float, day_length: float) -> void:
+	_apply_settings()
+	if not Settings.changed.is_connected(_apply_settings):
+		Settings.changed.connect(_apply_settings)
 	_day.materials = [_world.terrain_material, _world.fluid_material]
 	_day.time = fposmod(time, 1.0)
 	_day.day_length = maxf(10.0, day_length)
@@ -191,11 +204,12 @@ func _exit_tree() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if _player and not _loading and not get_tree().paused and _inventory_screen == null \
-			and event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_E:
+			and event.is_action_pressed(&"inventory"):
 		_open_inventory()
 		get_viewport().set_input_as_handled()
 		return
-	if event.is_action_pressed(&"ui_cancel") and not _loading and not _args.has("bench"):
+	if event.is_action_pressed(&"ui_cancel") and not _loading and not _args.has("bench") \
+			and _settings_screen == null:
 		set_paused(not get_tree().paused)
 		get_viewport().set_input_as_handled()
 
@@ -208,6 +222,15 @@ func _open_inventory() -> void:
 	_hud.add_child(_inventory_screen)
 	_player.ui_open = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func _open_settings() -> void:
+	_settings_screen = SettingsScreen.new()
+	_settings_screen.process_mode = Node.PROCESS_MODE_ALWAYS  # works while paused
+	_settings_screen.closed.connect(func():
+		_settings_screen.queue_free()
+		_settings_screen = null)
+	_hud.add_child(_settings_screen)
 
 
 func _close_inventory() -> void:
@@ -305,7 +328,7 @@ func _process(_delta: float) -> void:
 	if _player and _world.engine and not _player.autopilot:
 		var eye := Vector3i(_cam.global_position.floor())
 		_underwater.visible = _world.is_fluid(_world.get_block(eye))
-	var status := "%d FPS · %s" % [Engine.get_frames_per_second(), _day.clock_text()]
+	var status := "%d FPS · %s" % [Engine.get_frames_per_second(), _day.clock_text(Settings.clock_24h)]
 	if _player and not _player.autopilot:
 		status += " · %s · %s · E inventory" % ["creative" if _player.creative else "survival",
 				"flying (F)" if _player.flying else "walking (F to fly)"]
@@ -424,6 +447,7 @@ func _make_pause_menu() -> Control:
 		entries += [["Disconnect", _leave_to_menu.bind("")], ["Quit game", get_tree().quit]]
 	else:
 		entries += [["Save & quit to menu", _leave_to_menu.bind("")], ["Save & quit game", _save_and_quit]]
+	entries.insert(1, ["Settings…", _open_settings])
 	for entry in entries:
 		var b := Button.new()
 		b.text = entry[0]

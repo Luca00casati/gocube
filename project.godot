@@ -11,3 +11,4 @@ config/features=PackedStringArray("4.7")
 
 Registry="*res://src/core/registry.gd"
 ModLoader="*res://src/core/mod_loader.gd"
+Settings="*res://src/core/settings.gd"

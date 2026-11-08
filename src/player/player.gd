@@ -34,7 +34,6 @@ const SINK_SPEED := 2.0
 const MINE_SECONDS_PER_HARDNESS := 0.75
 const MIN_MINE_SECONDS := 0.1
 
-@export var mouse_sensitivity := 0.003
 ## Benchmark mode: fly straight ahead without collisions, don't grab the mouse.
 @export var autopilot := false
 ## Multiplayer client: called with (position: Vector3i, block: int) instead of
@@ -126,14 +125,14 @@ func _unhandled_input(event: InputEvent) -> void:
 	if autopilot or ui_open:
 		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		rotation.y -= event.relative.x * mouse_sensitivity
-		camera.rotation.x = clampf(camera.rotation.x - event.relative.y * mouse_sensitivity, -1.55, 1.55)
+		rotation.y -= event.relative.x * Settings.mouse_sensitivity
+		camera.rotation.x = clampf(camera.rotation.x - event.relative.y * Settings.mouse_sensitivity, -1.55, 1.55)
+	elif event.is_action_pressed(&"toggle_fly"):
+		flying = not flying
+		velocity.y = 0.0
 	elif event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode >= KEY_1 and event.keycode <= KEY_9:
 			selected = event.keycode - KEY_1
-		elif event.keycode == KEY_F:
-			flying = not flying
-			velocity.y = 0.0
 	elif event is InputEventMouseButton and event.pressed:
 		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -158,16 +157,19 @@ func _physics_process(delta: float) -> void:
 		return
 
 	var input := Vector2(
-		float(Input.is_key_pressed(KEY_D)) - float(Input.is_key_pressed(KEY_A)),
-		float(Input.is_key_pressed(KEY_S)) - float(Input.is_key_pressed(KEY_W))).limit_length(1.0)
+		Input.get_action_strength(&"move_right") - Input.get_action_strength(&"move_left"),
+		Input.get_action_strength(&"move_back") - Input.get_action_strength(&"move_forward")).limit_length(1.0)
+	if ui_open:
+		input = Vector2.ZERO
 	var wish := basis * Vector3(input.x, 0, input.y)  # yaw only: looking down doesn't slow you
-	var sprint := Input.is_key_pressed(KEY_CTRL)
-	var sneak := Input.is_key_pressed(KEY_SHIFT)
+	var sprint := Input.is_action_pressed(&"sprint") and not ui_open
+	var sneak := Input.is_action_pressed(&"sneak") and not ui_open
+	var jump := Input.is_action_pressed(&"jump") and not ui_open
 	in_water = world.is_fluid(world.get_block(Vector3i((global_position + Vector3(0, 0.9, 0)).floor())))
 
 	if flying:
 		var speed := FLY_SPRINT_SPEED if sprint else FLY_SPEED
-		var vertical := float(Input.is_key_pressed(KEY_SPACE)) - float(sneak)
+		var vertical := float(jump) - float(sneak)
 		var target := Vector3(wish.x * speed, vertical * speed, wish.z * speed)
 		velocity = velocity.lerp(target, 1.0 - exp(-10.0 * delta))
 	else:
@@ -183,11 +185,11 @@ func _physics_process(delta: float) -> void:
 		if in_water:
 			# buoyant: sink slowly, Space swims up
 			velocity.y = maxf(velocity.y - GRAVITY * 0.3 * delta, -SINK_SPEED)
-			if Input.is_key_pressed(KEY_SPACE):
+			if jump:
 				velocity.y = minf(velocity.y + 20.0 * delta, SWIM_UP_SPEED)
 		else:
 			velocity.y = maxf(velocity.y - GRAVITY * delta, -MAX_FALL_SPEED)
-			if on_floor and Input.is_key_pressed(KEY_SPACE):
+			if on_floor and jump:
 				velocity.y = JUMP_VELOCITY
 
 	var r: Dictionary = world.move_box(global_position, BODY, velocity * delta, 0.0)

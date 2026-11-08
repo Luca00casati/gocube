@@ -198,6 +198,11 @@ func is_fluid(block: int) -> bool:
 	return fluid_ids.has(block)
 
 
+func set_view_distance(distance: int) -> void:
+	view_distance = distance
+	engine.view_distance = distance
+
+
 ## Where chunks are loaded around (the local player).
 func set_viewer(position: Vector3) -> void:
 	engine.viewer_position = position

@@ -1,7 +1,8 @@
 shader_type spatial;
 // Chunk material for the native engine (GoCubeWorld). Classic block lighting:
 // flat face shading by normal, times the light the engine bakes into the
-// vertex colour per face: r = sky light, g = block light (0..1 = levels 0..15).
+// vertex colour: r = sky light, g = block light (0..1 = levels 0..15),
+// b = corner occlusion (smooth lighting; 1 = none).
 render_mode unshaded;
 
 uniform sampler2D albedo_texture : source_color, filter_nearest_mipmap;
@@ -27,5 +28,5 @@ void fragment() {
 			: (n.y < -0.5 ? face_light.w : (abs(n.z) > 0.5 ? face_light.y : face_light.z));
 	vec3 light = max(vec3(light_curve(COLOR.r) * daylight), block_light_color * light_curve(COLOR.g));
 	light = max(light, vec3(min_light));
-	ALBEDO = texture(albedo_texture, UV).rgb * face * light;
+	ALBEDO = texture(albedo_texture, UV).rgb * face * light * COLOR.b;
 }

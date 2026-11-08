@@ -45,9 +45,21 @@ func daylight() -> float:
 	return lerpf(NIGHT_LIGHT, 1.0, day_amount())
 
 
-func clock_text() -> String:
-	var minutes := int(time * 24.0 * 60.0)
-	return "%02d:%02d" % [minutes / 60, minutes % 60]
+## "7:19 AM" (12-hour, the default) or "07:19" (24-hour, see Settings).
+func clock_text(use_24h: bool = false) -> String:
+	return format_clock(time, use_24h)
+
+
+static func format_clock(day_time: float, use_24h: bool) -> String:
+	var minutes := int(fposmod(day_time, 1.0) * 24.0 * 60.0)
+	var hour := minutes / 60
+	var minute := minutes % 60
+	if use_24h:
+		return "%02d:%02d" % [hour, minute]
+	var hour12 := hour % 12
+	if hour12 == 0:
+		hour12 = 12  # midnight = 12 AM, noon = 12 PM
+	return "%d:%02d %s" % [hour12, minute, "AM" if hour < 12 else "PM"]
 
 
 func apply() -> void:

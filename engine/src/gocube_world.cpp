@@ -175,6 +175,23 @@ Vector3 GoCubeWorld::get_viewer_position() const {
 	return _viewer;
 }
 
+void GoCubeWorld::set_smooth_lighting(bool enabled) {
+	if (_smooth_lighting.exchange(enabled) == enabled) {
+		return;
+	}
+	for (auto &kv : _chunks) {
+		if (kv.second.data && kv.second.meshed) {
+			kv.second.mesh_version++;
+			kv.second.mesh_queued = false;
+			_mesh_candidates.insert(kv.first); // not urgent: nearest first, within the budget
+		}
+	}
+}
+
+bool GoCubeWorld::get_smooth_lighting() const {
+	return _smooth_lighting.load();
+}
+
 void GoCubeWorld::set_upload_budget_ms(float ms) {
 	_upload_budget_ms = std::max(0.5f, ms);
 }
@@ -695,7 +712,9 @@ void GoCubeWorld::worker_loop() {
 				hood[neighbourhood_index(0, 1, 0)], hood[neighbourhood_index(0, -1, 0)],
 				hood[neighbourhood_index(0, 0, 1)], hood[neighbourhood_index(0, 0, -1)]
 			};
-			mesh_chunk(*job.self, nb, _blocks, _atlas, &light, r.opaque, r.fluid);
+			MeshOptions options;
+			options.smooth_lighting = _smooth_lighting.load();
+			mesh_chunk(*job.self, nb, _blocks, _atlas, &light, options, r.opaque, r.fluid);
 			_mesh_us += now_us() - t0;
 			_mesh_count++;
 		}
@@ -972,6 +991,9 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_view_distance"), &GoCubeWorld::get_view_distance);
 	ClassDB::bind_method(D_METHOD("set_viewer_position", "position"), &GoCubeWorld::set_viewer_position);
 	ClassDB::bind_method(D_METHOD("get_viewer_position"), &GoCubeWorld::get_viewer_position);
+	ClassDB::bind_method(D_METHOD("set_smooth_lighting", "enabled"), &GoCubeWorld::set_smooth_lighting);
+	ClassDB::bind_method(D_METHOD("get_smooth_lighting"), &GoCubeWorld::get_smooth_lighting);
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "smooth_lighting"), "set_smooth_lighting", "get_smooth_lighting");
 	ClassDB::bind_method(D_METHOD("set_upload_budget_ms", "ms"), &GoCubeWorld::set_upload_budget_ms);
 	ClassDB::bind_method(D_METHOD("get_upload_budget_ms"), &GoCubeWorld::get_upload_budget_ms);
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "view_distance"), "set_view_distance", "get_view_distance");

@@ -9,6 +9,9 @@ struct FaceDef {
 	float corners[4][3];     // quad corners relative to the block's min corner
 	float st[4][2];          // texture coords (0..1 inside the tile) per corner
 	int order[6];            // triangle indices giving clockwise (front) winding
+	int flipped[6];          // same winding, using the other diagonal
+	int ua, va;              // tangent axes
+	int cu[4], cv[4];        // corner position along (ua, va): 0 or 1
 };
 
 // Builds the 6 face definitions once. Corners go around the face in (u, v)
@@ -29,12 +32,16 @@ struct FaceTable {
 			// Tangents: X faces -> (z, y); Y faces -> (x, z); Z faces -> (x, y).
 			const int ua = axis == 0 ? 2 : 0;
 			const int va = axis == 1 ? 2 : 1;
+			d.ua = ua;
+			d.va = va;
 			const float uv[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
 			for (int c = 0; c < 4; c++) {
 				float p[3] = { 0, 0, 0 };
 				p[axis] = plane;
 				p[ua] = uv[c][0];
 				p[va] = uv[c][1];
+				d.cu[c] = int(uv[c][0]);
+				d.cv[c] = int(uv[c][1]);
 				d.corners[c][0] = p[0];
 				d.corners[c][1] = p[1];
 				d.corners[c][2] = p[2];
@@ -58,8 +65,11 @@ struct FaceTable {
 			const bool ccw_from_outside = cx * d.dx + cy * d.dy + cz * d.dz > 0.0f;
 			const int cw[6] = { 0, 2, 1, 0, 3, 2 };
 			const int ccw[6] = { 0, 1, 2, 0, 2, 3 };
+			const int cw_flip[6] = { 1, 3, 2, 1, 0, 3 };
+			const int ccw_flip[6] = { 1, 2, 3, 1, 3, 0 };
 			for (int k = 0; k < 6; k++) {
 				d.order[k] = ccw_from_outside ? cw[k] : ccw[k];
+				d.flipped[k] = ccw_from_outside ? cw_flip[k] : ccw_flip[k];
 			}
 		}
 	}
@@ -102,8 +112,13 @@ inline BlockId sample(const ChunkData &c, const ChunkData *const nb[FACE_COUNT],
 	return n ? n->get(x, y, z) : solid_fallback;
 }
 
+// Light for each of the 4 corners: {sky, block, occlusion}.
+struct CornerLight {
+	float sky[4], block[4], ao[4];
+};
+
 void emit_face(Surface &s, const FaceDef &d, float bx, float by, float bz, const AtlasLayout &atlas, int tile,
-		float sky, float block) {
+		const CornerLight &cl) {
 	const int base = static_cast<int>(s.positions.size() / 3);
 	const float tw = 1.0f / (atlas.cols * atlas.cell);
 	const float th = 1.0f / (atlas.rows * atlas.cell);
@@ -120,18 +135,51 @@ void emit_face(Surface &s, const FaceDef &d, float bx, float by, float bz, const
 		s.normals.push_back(static_cast<float>(d.dz));
 		s.uvs.push_back(u0 + d.st[c][0] * tw);
 		s.uvs.push_back(v0 + d.st[c][1] * th);
-		s.colors.insert(s.colors.end(), { sky, block, 0.0f, 1.0f });
+		s.colors.insert(s.colors.end(), { cl.sky[c], cl.block[c], cl.ao[c], 1.0f });
 	}
+	// Split the quad along the diagonal whose corners are more alike, so light
+	// gradients don't show a crease.
+	const float a = cl.ao[0] * (cl.sky[0] + cl.block[0]) + cl.ao[2] * (cl.sky[2] + cl.block[2]);
+	const float b = cl.ao[1] * (cl.sky[1] + cl.block[1]) + cl.ao[3] * (cl.sky[3] + cl.block[3]);
+	const int *order = a < b ? d.flipped : d.order;
 	for (int k = 0; k < 6; k++) {
-		s.indices.push_back(base + d.order[k]);
+		s.indices.push_back(base + order[k]);
 	}
+}
+
+// Smooth light at one corner of a face: average over the cell in front of the
+// face and its 3 neighbours around that corner (skipping solid ones); solid
+// neighbours also darken the corner.
+void corner_light(const LightRegion &light, int fx, int fy, int fz, int ua, int va, int du, int dv,
+		float &sky, float &blk, float &ao) {
+	int p[3] = { fx, fy, fz };
+	int pu[3] = { fx, fy, fz };
+	int pv[3] = { fx, fy, fz };
+	int puv[3] = { fx, fy, fz };
+	pu[ua] += du;
+	pv[va] += dv;
+	puv[ua] += du;
+	puv[va] += dv;
+	const bool side_u = light.opaque_at(pu[0], pu[1], pu[2]);
+	const bool side_v = light.opaque_at(pv[0], pv[1], pv[2]);
+	// Light can't reach the diagonal cell around two solid sides.
+	const bool diag = (side_u && side_v) || light.opaque_at(puv[0], puv[1], puv[2]);
+	float s = light.sky_at(p[0], p[1], p[2]), b = light.block_at(p[0], p[1], p[2]);
+	int n = 1;
+	if (!side_u) { s += light.sky_at(pu[0], pu[1], pu[2]); b += light.block_at(pu[0], pu[1], pu[2]); n++; }
+	if (!side_v) { s += light.sky_at(pv[0], pv[1], pv[2]); b += light.block_at(pv[0], pv[1], pv[2]); n++; }
+	if (!diag) { s += light.sky_at(puv[0], puv[1], puv[2]); b += light.block_at(puv[0], puv[1], puv[2]); n++; }
+	sky = s / (n * float(LIGHT_MAX));
+	blk = b / (n * float(LIGHT_MAX));
+	const int occluders = (side_u && side_v) ? 3 : int(side_u) + int(side_v) + int(diag);
+	ao = 1.0f - 0.18f * occluders;
 }
 
 } // namespace
 
 void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_COUNT],
 		const std::vector<BlockInfo> &blocks, const AtlasLayout &atlas, const LightRegion *light,
-		Surface &opaque, Surface &fluid) {
+		const MeshOptions &options, Surface &opaque, Surface &fluid) {
 	if (chunk.uniform && chunk.uniform_value == AIR) {
 		return;
 	}
@@ -159,17 +207,28 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 					const BlockId nid = sample(chunk, neighbours, blocks, x + d.dx, y + d.dy, z + d.dz, solid_fallback);
 					const BlockInfo *n = nid < count ? &blocks[nid] : nullptr;
 					const bool n_opaque = n && n->opaque;
-					float sky = 1.0f, blk = 0.0f;
-					if (light) {
-						sky = light->sky_at(x + d.dx, y + d.dy, z + d.dz) / float(LIGHT_MAX);
-						blk = light->block_at(x + d.dx, y + d.dy, z + d.dz) / float(LIGHT_MAX);
+					CornerLight cl;
+					const int fx = x + d.dx, fy = y + d.dy, fz = z + d.dz; // the cell in front of the face
+					for (int c = 0; c < 4; c++) {
+						if (!light) {
+							cl.sky[c] = 1.0f;
+							cl.block[c] = 0.0f;
+							cl.ao[c] = 1.0f;
+						} else if (options.smooth_lighting && !info.fluid) {
+							corner_light(*light, fx, fy, fz, d.ua, d.va, d.cu[c] ? 1 : -1, d.cv[c] ? 1 : -1,
+									cl.sky[c], cl.block[c], cl.ao[c]);
+						} else {
+							cl.sky[c] = light->sky_at(fx, fy, fz) / float(LIGHT_MAX);
+							cl.block[c] = light->block_at(fx, fy, fz) / float(LIGHT_MAX);
+							cl.ao[c] = 1.0f;
+						}
 					}
 					if (info.fluid) {
 						// Fluid faces only towards air (not other fluid, not solid blocks).
 						if (nid != AIR) {
 							continue;
 						}
-						emit_face(fluid, d, x, y, z, atlas, info.tiles[f], sky, blk);
+						emit_face(fluid, d, x, y, z, atlas, info.tiles[f], cl);
 					} else {
 						// Opaque faces are hidden by opaque neighbours; see-through
 						// blocks (e.g. glass) also hide faces against the same block.
@@ -177,9 +236,12 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 							continue;
 						}
 						if (info.emit > 0) {
-							blk = info.emit / float(LIGHT_MAX); // glowing blocks are lit by themselves
+							for (int c = 0; c < 4; c++) { // glowing blocks are lit by themselves
+								cl.block[c] = info.emit / float(LIGHT_MAX);
+								cl.ao[c] = 1.0f;
+							}
 						}
-						emit_face(opaque, d, x, y, z, atlas, info.tiles[f], sky, blk);
+						emit_face(opaque, d, x, y, z, atlas, info.tiles[f], cl);
 					}
 				}
 			}

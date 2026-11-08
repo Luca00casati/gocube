@@ -27,7 +27,7 @@ struct LightRegion {
 	static constexpr int MARGIN = LIGHT_MAX;
 	static constexpr int SIZE = CHUNK + 2 * MARGIN;
 
-	std::vector<uint8_t> sky, block;
+	std::vector<uint8_t> sky, block, opaque;
 
 	static inline int index(int x, int y, int z) {
 		return (y * SIZE + z) * SIZE + x;
@@ -38,6 +38,9 @@ struct LightRegion {
 	}
 	inline uint8_t block_at(int x, int y, int z) const {
 		return block[index(x + MARGIN, y + MARGIN, z + MARGIN)];
+	}
+	inline bool opaque_at(int x, int y, int z) const {
+		return opaque[index(x + MARGIN, y + MARGIN, z + MARGIN)] != 0;
 	}
 };
 

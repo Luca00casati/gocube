@@ -45,7 +45,11 @@ Launch options (after `--`): `--world=NAME` skip the menu and load or create tha
 Controls: WASD walk, Space jump (and swim up in water), Ctrl sprint, Shift sneak, F toggle flying (Space/Shift
 up/down; fly down onto the ground to land), mouse look, hold LMB mine / LMB break (creative),
 RMB place (6-block reach), 1-9 / mouse wheel pick a hotbar slot, E inventory and crafting,
-Esc pause. Launch option `--mode=creative|survival` for new worlds.
+Esc pause. Launch option `--mode=creative|survival` for new worlds. All keyboard keys can be
+rebound in **Settings…** (title screen or pause menu), along with view distance, mouse
+sensitivity, frame rate limit, vsync and **smooth lighting** (light blended at block corners
+with soft corner shading, instead of the classic flat look). Settings are saved in
+`user://settings.cfg`.
 
 ## Survival and creative
 New worlds are **survival** by default (chosen in the New world dialog): hold left click to
@@ -89,7 +93,9 @@ creatures) and the engine's phase tests: [PROTOTYPES.md](PROTOTYPES.md),
 - `src/engine/` — `BlockAtlas` (registry → texture atlas + engine block table) and the chunk
   shaders (classic face shading × baked sky/block light; `daylight` uniform).
 - `src/world/world.gd` — `World`: the engine plus the world's save folder and id table.
-- `src/ui/world_menu.gd` — title screen / world select (the main scene).
+- `src/ui/world_menu.gd` — title screen / world select (the main scene); `settings_screen.gd`,
+  `inventory_screen.gd`, `hotbar.gd`.
+- `src/core/settings.gd` — autoload `Settings`: settings file, input actions (key bindings).
 - `src/player/player.gd` — the player: walking/jumping/flying physics, block break/place.
 - `mods/core/` — the base game, written as an ordinary mod.
 - `tools/gen_textures.py` — regenerates the core 32×32 block textures (`python3 tools/gen_textures.py`).
@@ -154,7 +160,7 @@ Mods are **not sandboxed**: only install mods you trust.
 ## Next steps
 - Survival bits: health, fall damage, inventory, mining time per block (`hardness`).
 - Tools (faster mining), a furnace for smelting, dropped item entities, health and fall damage.
-- Flowing water, smooth lighting, sound.
+- Flowing water, sound.
 - Creatures on `GoCubeWorld.move_box` (step-up built in).
 - Windows/macOS builds of the engine library.
 - Consider a double-precision build if worlds get large.

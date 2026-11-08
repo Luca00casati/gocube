@@ -43,7 +43,8 @@ void compute_light(LightRegion &out, const ChunkData *const chunks[27], const Co
 	constexpr int N = S * S * S;
 	out.sky.assign(N, 0);
 	out.block.assign(N, 0);
-	std::vector<uint8_t> opaque(N);
+	out.opaque.assign(N, 0);
+	std::vector<uint8_t> &opaque = out.opaque;
 
 	// Region coordinate -> (which neighbour chunk, local coordinate), per axis.
 	int chunk_offset[S], local[S];

@@ -15,11 +15,18 @@ struct AtlasLayout {
 	int face_x = 1, face_y = 1; // which copy inside the cell faces use
 };
 
+struct MeshOptions {
+	// Per-corner light: each vertex averages the 4 cells touching it on the
+	// face's air side, and solid cells there darken the corner (ambient
+	// occlusion). Off: one flat light value per face (the classic look).
+	bool smooth_lighting = false;
+};
+
 struct Surface {
 	std::vector<float> positions; // xyz, chunk-local
 	std::vector<float> normals;   // xyz
 	std::vector<float> uvs;       // uv
-	std::vector<float> colors;    // rgba: r = sky light, g = block light (0..1), b unused
+	std::vector<float> colors;    // rgba: r = sky light, g = block light (0..1), b = corner occlusion (1 = none)
 	std::vector<int32_t> indices;
 
 	bool empty() const { return indices.empty(); }
@@ -29,6 +36,6 @@ struct Surface {
 // light: per-face light is taken from the cell in front of each face; nullptr = full light.
 void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_COUNT],
 		const std::vector<BlockInfo> &blocks, const AtlasLayout &atlas, const LightRegion *light,
-		Surface &opaque, Surface &fluid);
+		const MeshOptions &options, Surface &opaque, Surface &fluid);
 
 } // namespace gocube

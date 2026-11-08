@@ -3,14 +3,11 @@ extends Control
 ## or join someone else's game.
 ## `-- --world=NAME`, `-- --join=ADDR` or `-- --bench` skip straight to the game.
 
-const SETTINGS_PATH := "user://settings.cfg"
-
 ## Message to show once when the menu opens (e.g. why a connection ended).
 static var notice := ""
 ## Command-line options start the game only once, not every time we return here.
 static var _cli_used := false
 
-var _settings := ConfigFile.new()
 var _name_edit: LineEdit
 var _notice: Label
 var _host: Button
@@ -39,7 +36,6 @@ func _ready() -> void:
 		_start_game.call_deferred({"use_cmdline": true})  # main reads the options itself
 		return
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	_settings.load(SETTINGS_PATH)  # missing file is fine
 	_build_ui()
 	_refresh()
 	_notice.text = notice
@@ -62,8 +58,8 @@ func _start_game(options: Dictionary) -> void:
 
 func _player_name() -> String:
 	var n := _name_edit.text.strip_edges().left(16)
-	_settings.set_value("player", "name", n)
-	_settings.save(SETTINGS_PATH)
+	Settings.config.set_value("player", "name", n)
+	Settings.save()
 	return n if n != "" else "Player"
 
 
@@ -102,7 +98,7 @@ func _build_ui() -> void:
 	name_row.add_child(name_label)
 	_name_edit = LineEdit.new()
 	_name_edit.max_length = 16
-	_name_edit.text = _settings.get_value("player", "name", "Player")
+	_name_edit.text = Settings.config.get_value("player", "name", "Player")
 	_name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	name_row.add_child(_name_edit)
 	box.add_child(name_row)
@@ -132,6 +128,7 @@ func _build_ui() -> void:
 	var join_row := HBoxContainer.new()
 	box.add_child(join_row)
 	_button(join_row, "Join a game…", _on_join)
+	_button(join_row, "Settings…", _on_settings)
 	_button(join_row, "Licenses", _on_licenses)
 	_build_join_dialog()
 
@@ -199,7 +196,7 @@ func _build_join_dialog() -> void:
 	label.text = "Host address (IP, or IP:port)"
 	form.add_child(label)
 	_join_address = LineEdit.new()
-	_join_address.text = _settings.get_value("net", "last_address", "127.0.0.1")
+	_join_address.text = Settings.config.get_value("net", "last_address", "127.0.0.1")
 	_join_address.text_submitted.connect(func(_t): _join_dialog.hide(); _on_join_confirmed())
 	form.add_child(_join_address)
 	var hint := Label.new()
@@ -209,6 +206,12 @@ func _build_join_dialog() -> void:
 	_join_dialog.add_child(form)
 	_join_dialog.confirmed.connect(_on_join_confirmed)
 	add_child(_join_dialog)
+
+
+func _on_settings() -> void:
+	var screen := SettingsScreen.new()
+	screen.closed.connect(screen.queue_free)
+	add_child(screen)
 
 
 ## Shows GoCube's license and every third-party notice the build must carry.
@@ -298,7 +301,7 @@ func _on_join_confirmed() -> void:
 	var text := _join_address.text.strip_edges()
 	if text == "":
 		return
-	_settings.set_value("net", "last_address", text)
+	Settings.config.set_value("net", "last_address", text)
 	var address := text
 	var port := Session.DEFAULT_PORT
 	var colon := text.rfind(":")

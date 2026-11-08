@@ -54,6 +54,9 @@ public:
 	int get_view_distance() const;
 	void set_viewer_position(const godot::Vector3 &position);
 	godot::Vector3 get_viewer_position() const;
+	// Smooth (per-corner) lighting; changing it rebuilds every chunk's mesh.
+	void set_smooth_lighting(bool enabled);
+	bool get_smooth_lighting() const;
 	void set_upload_budget_ms(float ms);
 	float get_upload_budget_ms() const;
 
@@ -133,6 +136,7 @@ private:
 	// Configuration (read-only once started).
 	std::vector<BlockInfo> _blocks;
 	AtlasLayout _atlas;
+	std::atomic<bool> _smooth_lighting{ false };
 	Generator _generator;
 	godot::Ref<godot::Material> _terrain_material, _fluid_material;
 	int _view_distance = 128;
