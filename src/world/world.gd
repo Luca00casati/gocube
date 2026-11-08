@@ -22,6 +22,11 @@ var meta: Dictionary = {}
 var dir := ""
 ## True on a multiplayer client: voxels come from the host, nothing is generated or saved.
 var remote := false
+## Classic column skylight for the terrain shader (see SkyLight).
+var sky: SkyLight
+
+## A column's skylight changed because of an edit (the host forwards it to clients).
+signal sky_changed(column: Vector2i, top: int)
 
 
 ## persistent=false runs the world without reading or writing anything (benchmarks).
@@ -53,6 +58,7 @@ func build(world_name: String, view_distance: int = DEFAULT_VIEW_DISTANCE,
 	var generator := TerrainGenerator.new()
 	generator.setup(int(meta.seed), LIGHTING_PROTOTYPE)
 	terrain.generator = generator
+	sky = SkyLight.new(generator, terrain.material_override, terrain.get_voxel_tool(), meta.get("sky_overrides", {}))
 	if persistent:
 		var stream := VoxelStreamSQLite.new()
 		stream.database_path = ProjectSettings.globalize_path(dir.path_join("blocks.sqlite"))
@@ -64,13 +70,19 @@ func build(world_name: String, view_distance: int = DEFAULT_VIEW_DISTANCE,
 
 ## Client side of a multiplayer game. Uses the host's block table; the terrain
 ## only shows chunks the host sends (the synchronizer disables local loading).
-func build_remote(block_ids: PackedStringArray, view_distance: int) -> void:
+func build_remote(block_ids: PackedStringArray, view_distance: int, world_seed: int,
+		sky_overrides: Dictionary) -> void:
 	remote = true
 	Registry.assign_block_ids(block_ids)
-	meta = {"block_ids": Array(block_ids)}
+	meta = {"block_ids": Array(block_ids), "seed": world_seed}
 	# Slightly larger than the host's, so chunks aren't unloaded before the host
 	# stops sending them (avoids holes at the edge).
 	_make_terrain(view_distance + 16)
+	# The client doesn't generate terrain, but skylight uses the same height
+	# function as the host's generator, so it needs one for that.
+	var heights := TerrainGenerator.new()
+	heights.setup(world_seed)
+	sky = SkyLight.new(heights, terrain.material_override, terrain.get_voxel_tool(), sky_overrides)
 	_add_synchronizer()
 	add_child(terrain)
 
@@ -88,6 +100,9 @@ func _make_terrain(view_distance: int) -> void:
 		var format := VoxelFormat.new()
 		format.set_channel_depth(VoxelBuffer.CHANNEL_COLOR, VoxelBuffer.DEPTH_16_BIT)
 		terrain.format = format
+	# Flat classic look: the shader does face shading; the mesher's per-corner
+	# occlusion is off (terrain.gdshader `use_vertex_ao` turns it back on).
+	mesher.occlusion_enabled = false
 	terrain.mesher = mesher
 	terrain.material_override = blocks.material
 	terrain.max_view_distance = view_distance
@@ -137,6 +152,16 @@ static func delete_world(world_name: String) -> Error:
 	return OS.move_to_trash(ProjectSettings.globalize_path(WORLDS_DIR.path_join(world_name)))
 
 
+## Call after changing a block (locally, or on the host for a client's request).
+func notify_edit(pos: Vector3i, block: int) -> void:
+	if sky:
+		var col := Vector2i(pos.x, pos.z)
+		var before := sky.get_top(col)
+		var top := sky.on_edit(pos, block)
+		if top != before:
+			sky_changed.emit(col, top)
+
+
 func get_tool() -> VoxelTool:
 	return terrain.get_voxel_tool()
 
@@ -151,6 +176,8 @@ func save(player: Dictionary = {}) -> void:
 		return
 	if not player.is_empty():
 		meta.player = player
+	if sky:
+		meta.sky_overrides = sky.serialize()
 	meta.saved = Time.get_datetime_string_from_system()
 	_write_meta()
 	var tracker := terrain.save_modified_blocks()

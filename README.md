@@ -53,7 +53,7 @@ Feasibility results for lighting, caves/trees/water and many creatures: see
 ## Layout
 - `src/core/registry.gd` — autoload `Registry`: blocks, items, recipes (namespaced `mod:name` ids).
 - `src/core/mod_loader.gd` — autoload `ModLoader`: finds, orders and loads mods.
-- `src/world/` — `World` (terrain + save folder), `BlockLibrary` (registry → voxel models + texture atlas), native terrain generator (`VoxelGeneratorGraph`).
+- `src/world/` — `World` (terrain + save folder), classic lighting (`terrain.gdshader`, `SkyLight`), `BlockLibrary` (registry → voxel models + texture atlas), native terrain generator (`VoxelGeneratorGraph`).
 - `src/ui/world_menu.gd` — title screen / world select (the main scene).
 - `src/player/player.gd` — the player: walking/jumping/flying physics, block break/place.
 - `mods/core/` — the base game, written as an ordinary mod.

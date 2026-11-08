@@ -179,7 +179,7 @@ func _build_remap() -> void:
 
 ## Same height the graph computes (float32 there, so rare off-by-one at exact
 ## integer boundaries; a tree may then sit one block high or low).
-func _height_at(x: int, z: int) -> int:
+func height_at(x: int, z: int) -> int:
 	return floori(_height_noise.get_noise_2d(x, z) * AMPLITUDE)
 
 
@@ -188,25 +188,33 @@ func _is_cave(x: int, y: int, z: int) -> bool:
 	return absf(_cave_a.get_noise_3d(x, ys, z)) + absf(_cave_b.get_noise_3d(x, ys, z)) < CAVE_WIDTH
 
 
-func _place_trees(out: VoxelBuffer, origin: Vector3i) -> void:
-	var size := out.get_size()
-	if origin.y > AMPLITUDE + 10 or origin.y + size.y < SEA_LEVEL + 2:
-		return  # no tree can reach this block
+## Trees whose leaves can reach columns in `rect` (x/y = world x/z):
+## [{x, z, ground, trunk}]. Deterministic, so generation and skylight agree.
+func trees_near(rect: Rect2i) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
 	var reach := 3  # leaves extend 2 blocks from the trunk
-	for cz in range(floori(float(origin.z - reach) / TREE_CELL), floori(float(origin.z + size.z + reach) / TREE_CELL) + 1):
-		for cx in range(floori(float(origin.x - reach) / TREE_CELL), floori(float(origin.x + size.x + reach) / TREE_CELL) + 1):
+	for cz in range(floori(float(rect.position.y - reach) / TREE_CELL), floori(float(rect.end.y + reach) / TREE_CELL) + 1):
+		for cx in range(floori(float(rect.position.x - reach) / TREE_CELL), floori(float(rect.end.x + reach) / TREE_CELL) + 1):
 			var r: int = hash([_seed, cx, cz]) & 0x7fffffff
 			if r % 100 >= TREE_CHANCE:
 				continue
 			var tx := cx * TREE_CELL + 1 + (r >> 8) % (TREE_CELL - 2)
 			var tz := cz * TREE_CELL + 1 + (r >> 12) % (TREE_CELL - 2)
-			var ground := _height_at(tx, tz)
+			var ground := height_at(tx, tz)
 			if ground <= SEA_LEVEL + 1 or _is_cave(tx, ground, tz):
 				continue  # beach, sea or a cave mouth: no tree
-			var trunk := 4 + (r >> 16) % 3
-			if ground + trunk + 2 < origin.y or ground + 1 >= origin.y + size.y:
-				continue
-			_tree(out, origin, size, Vector3i(tx, ground + 1, tz), trunk)
+			out.append({"x": tx, "z": tz, "ground": ground, "trunk": 4 + (r >> 16) % 3})
+	return out
+
+
+func _place_trees(out: VoxelBuffer, origin: Vector3i) -> void:
+	var size := out.get_size()
+	if origin.y > AMPLITUDE + 10 or origin.y + size.y < SEA_LEVEL + 2:
+		return  # no tree can reach this block
+	for t in trees_near(Rect2i(origin.x, origin.z, size.x, size.z)):
+		if t.ground + t.trunk + 2 < origin.y or t.ground + 1 >= origin.y + size.y:
+			continue
+		_tree(out, origin, size, Vector3i(t.x, t.ground + 1, t.z), t.trunk)
 
 
 func _tree(out: VoxelBuffer, origin: Vector3i, size: Vector3i, base: Vector3i, trunk: int) -> void:

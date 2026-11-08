@@ -122,7 +122,8 @@ func _start_client() -> void:
 
 
 func _on_welcomed(info: Dictionary) -> void:
-	_world.build_remote(PackedStringArray(info.block_ids), int(info.view_distance))
+	_world.build_remote(PackedStringArray(info.block_ids), int(info.view_distance),
+			int(info.seed), info.sky_overrides)
 	var s: Array = info.spawn  # an eye position next to the host
 	_spawn_player(Vector3(s[0], s[1] - Player.EYE_HEIGHT, s[2]))
 	_player.edit_handler = _session.request_edit
@@ -245,6 +246,8 @@ func _process(_delta: float) -> void:
 		_loading = null
 		_player.set_ready_to_move()
 		_mark("spawn area meshed, loading screen hidden")
+	if _cam and _world.sky:
+		_world.sky.follow(_cam.global_position)
 	if _player and _world.terrain and not _player.autopilot:
 		var eye := Vector3i(_cam.global_position.floor())
 		_underwater.visible = _player._fluid_ids.has(_world.get_tool().get_voxel(eye))

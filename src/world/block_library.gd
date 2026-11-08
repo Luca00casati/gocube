@@ -25,7 +25,10 @@ const FACE_OFFSET := Vector2i(1, 1)
 const MISSING_COLOR := Color(1, 0, 1)  # magenta = no texture or color given
 
 var library: VoxelBlockyLibrary
-var material: StandardMaterial3D
+const TerrainShader := preload("res://src/world/terrain.gdshader")
+
+## Terrain material: classic face shading + column skylight (terrain.gdshader).
+var material: ShaderMaterial
 
 var _fluids: Dictionary = {}  # fluid name -> VoxelBlockyFluid
 var _tiles: Array[Image] = []
@@ -70,16 +73,13 @@ func _init() -> void:
 	library.models = models
 	library.bake()
 
-	material = StandardMaterial3D.new()
 	atlas.generate_mipmaps()
-	material.albedo_texture = ImageTexture.create_from_image(atlas)
-	# Crisp pixels up close, filtered mips at distance (no shimmer). Not the
-	# anisotropic variant: Vulkan lets drivers use linear filtering when
-	# anisotropy is on, and e.g. Intel/Mesa does, which blurs nearby pixel art.
-	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST_WITH_MIPMAPS
-	# The blocky mesher bakes ambient occlusion into vertex colors.
-	material.vertex_color_use_as_albedo = true
-	material.vertex_color_is_srgb = true
+	material = ShaderMaterial.new()
+	material.shader = TerrainShader
+	# Crisp pixels up close, mipmaps at distance (no shimmer). Not anisotropic:
+	# Vulkan lets drivers filter linearly when anisotropy is on, and e.g.
+	# Intel/Mesa does, which blurs nearby pixel art.
+	material.set_shader_parameter("albedo_texture", ImageTexture.create_from_image(atlas))
 
 
 ## A full (source) fluid block. Faces between blocks of the same fluid are

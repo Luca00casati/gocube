@@ -13,10 +13,29 @@ Godot 4.7.2 + voxel module v1.7. Benchmark scenes are in `prototypes/` and can b
 | Trees | **Works** (GDScript pass) | cross chunk borders; ~0.5 ms/chunk extra at the surface |
 | Water rendering + swimming | **Works** | module fluid model; non-solid; buoyancy; underwater tint |
 | Flowing water | Not prototyped | module renders fluid levels; a local GDScript flow sim on edits is expected to be fine |
-| Lighting (dark caves, torches) | **Needs native code** | GDScript far too slow; module tint is per block, not per face |
+| Classic lighting (face shading + column skylight) | **Works** (shader) | shadows under trees, roofs, overhangs, in caves; synced in multiplayer |
+| Light that spreads (torches, light around corners) | **Needs native code** | GDScript far too slow; module tint is per block, not per face |
 | Many creatures | **Works with `VoxelBoxMover`** | ~200 on this laptop; physics-engine bodies collapse past ~50 |
 
-## Lighting
+## Classic lighting (implemented)
+
+`src/world/terrain.gdshader` + `src/world/sky_light.gd`. No real-time lights or shadow maps:
+
+- **Face shading**: top 1.0, north/south 0.8, east/west 0.6, bottom 0.5.
+- **Column skylight**: a face is shadowed (0.55) when the air in front of it is below the
+  highest opaque block of its column. Column tops come from the generator's height function
+  plus tree canopies (no voxel scanning); edits update them and are saved per world
+  (`sky_overrides`) and sent to multiplayer clients. Because the shader samples the air *in
+  front of* each face, walls are lit correctly on each side.
+- The mesher's per-corner occlusion is off for the flat look (`use_vertex_ao` brings it back).
+
+Cost: 51 ms to build the 320×320 column window (behind the loading screen), 11 ms per
+recentre (every 48 blocks travelled). Fly-through benchmark with all terrain features:
+**59.9 FPS, 0 frames over 33 ms**, better than the lit StandardMaterial (≈53 FPS, 34).
+
+Limits: two light levels only (lit / shadow); caves are as dark as any overhang; no torches.
+
+## Spreading light (not implemented)
 
 The module has no light propagation. It can tint each block by a per-voxel colour
 (`VoxelMesherBlocky.TINT_RAW_COLOR` + 16-bit `CHANNEL_COLOR` = RGBA4444, 16 levels/channel,

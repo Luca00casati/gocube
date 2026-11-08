@@ -244,6 +244,7 @@ func _edit(breaking: bool) -> void:
 	var tool := world.get_tool()
 	tool.channel = VoxelBuffer.CHANNEL_TYPE
 	tool.set_voxel(pos, block)
+	world.notify_edit(pos, block)
 
 
 ## Whether a player standing with feet at `feet` overlaps block `cell`.

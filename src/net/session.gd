@@ -182,7 +182,11 @@ func _hello(protocol: int, mods: Array, requested_name: String) -> void:
 		"block_ids": Array(Registry.block_ids),
 		"view_distance": world.terrain.max_view_distance,
 		"spawn": [spawn.x, spawn.y, spawn.z],
+		"seed": int(world.meta.seed),               # clients compute skylight heights
+		"sky_overrides": world.sky.serialize(),     # columns changed by edits
 	})
+	if not world.sky_changed.is_connected(_on_sky_changed):
+		world.sky_changed.connect(_on_sky_changed)
 
 	# A server-side viewer per player makes the terrain load chunks around them
 	# and send those chunks to them. It doesn't need meshes or collisions here.
@@ -246,6 +250,18 @@ func _request_edit(pos: Vector3i, block: int) -> void:
 		return
 	tool.channel = VoxelBuffer.CHANNEL_TYPE
 	tool.set_voxel(pos, block)  # the synchronizer forwards this to everyone nearby
+	world.notify_edit(pos, block)
+
+
+func _on_sky_changed(column: Vector2i, top: int) -> void:
+	if is_host() and not _peers.is_empty():
+		_sky_column.rpc(column, top)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _sky_column(column: Vector2i, top: int) -> void:
+	if world and world.sky:
+		world.sky.set_top(column, top)
 
 
 func _host_states() -> Dictionary:
