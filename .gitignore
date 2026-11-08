@@ -1,0 +1,6 @@
+# Godot 4: commit *.import and *.uid files; only the cache is ignored.
+.godot/
+# Export output
+export/
+# Python
+__pycache__/

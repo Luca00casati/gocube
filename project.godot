@@ -1,0 +1,13 @@
+; Engine configuration file.
+config_version=5
+
+[application]
+
+config/name="GoCube"
+run/main_scene="res://src/ui/world_menu.tscn"
+config/features=PackedStringArray("4.7")
+
+[autoload]
+
+Registry="*res://src/core/registry.gd"
+ModLoader="*res://src/core/mod_loader.gd"

@@ -1,0 +1,55 @@
+{
+  "blocks": {
+    "air": {
+      "solid": false,
+      "transparent": true
+    },
+    "stone": {
+      "hardness": 1.5,
+      "drops": "core:cobblestone",
+      "color": "#7f7f7f",
+      "textures": {
+        "all": "textures/stone.png"
+      }
+    },
+    "cobblestone": {
+      "hardness": 2.0,
+      "color": "#6a6a6a",
+      "textures": {
+        "all": "textures/cobblestone.png"
+      }
+    },
+    "dirt": {
+      "hardness": 0.5,
+      "color": "#8b5a2b",
+      "textures": {
+        "all": "textures/dirt.png"
+      }
+    },
+    "grass": {
+      "hardness": 0.6,
+      "drops": "core:dirt",
+      "color": "#5fa83a",
+      "textures": {
+        "top": "textures/grass_top.png",
+        "side": "textures/grass_side.png",
+        "bottom": "textures/dirt.png"
+      }
+    }
+  },
+  "items": {
+    "stick": {
+      "max_stack": 64
+    }
+  },
+  "recipes": {
+    "stone_from_cobblestone": {
+      "type": "smelting",
+      "input": "core:cobblestone",
+      "output": {
+        "item": "core:stone",
+        "count": 1
+      }
+    }
+  }
+}

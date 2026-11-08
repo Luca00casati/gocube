@@ -1,0 +1,7 @@
+{
+  "id": "core",
+  "name": "GoCube Base Game",
+  "version": "0.1.0",
+  "content": ["content/base.json"],
+  "entry": "main.gd"
+}
