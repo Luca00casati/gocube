@@ -344,7 +344,6 @@ def stick():
 IRON = ramp("#6e6a66", "#9a948e", "#c6c0b8", "#ece6dc")
 GOLD = ramp("#8a5a08", "#c48a16", "#ecc03a", "#fff0a0")
 COAL = ramp("#121214", "#24242a", "#3a3a44", "#5a5a66")
-HIDE = ramp("#6a4024", "#8a5634", "#a86e46", "#c48a5c")
 
 
 def blank():
@@ -379,19 +378,6 @@ def ingot(palette):
                 _px(img, x, y, pick(palette, t))
         return img
     return make
-
-
-def hide():
-    img = blank()
-    pts = [(6, 8), (12, 4), (20, 5), (27, 9), (25, 17), (28, 25), (19, 27), (12, 26), (5, 24), (7, 16)]
-    poly = Image.new("L", (S, S), 0)
-    from PIL import ImageDraw
-    ImageDraw.Draw(poly).polygon(pts, fill=255)
-    for y in range(S):
-        for x in range(S):
-            if poly.getpixel((x, y)):
-                _px(img, x, y, pick(HIDE, 0.3 + fbm(42, x, y, ((8, 0.6), (16, 0.4))) * 0.6))
-    return img
 
 
 def tool(head_palette, kind):
@@ -480,7 +466,6 @@ TEXTURES = {
     "coal": coal_lump,
     "iron_ingot": ingot(IRON),
     "gold_ingot": ingot(GOLD),
-    "hide": hide,
     "wood_pickaxe": tool(WOOD, "pickaxe"),
     "stone_pickaxe": tool(STONE, "pickaxe"),
     "wood_axe": tool(WOOD, "axe"),

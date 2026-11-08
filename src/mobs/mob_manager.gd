@@ -7,6 +7,7 @@ extends Node3D
 
 signal killed(at: Vector3, attacker: int, drops: Array)  # [[item, count], ...]
 signal hurt_at(at: Vector3, variant: String)  # variant: "" or the block id
+signal ate(at: Vector3, block: String)
 
 const MAX_MOBS := 12
 const SPAWN_EVERY := 2.0
@@ -82,6 +83,9 @@ func _physics_process(delta: float) -> void:
 		return
 	for mob in _mobs.values():
 		mob.simulate(delta)
+		if mob.wants_to_eat:
+			mob.wants_to_eat = false
+			_try_eat(mob)
 	_spawn_timer += delta
 	if _spawn_timer >= SPAWN_EVERY:
 		_spawn_timer = 0.0
@@ -102,6 +106,20 @@ func spawn_at(feet: Vector3, variant := "") -> BlockEater:
 	mob.target_position = feet
 	_mobs[mob.id] = mob
 	return mob
+
+
+## Eat the block in front: it disappears and the Block Eater takes its form.
+## Only blocks that have a form; never storage (the contents would spill).
+func _try_eat(mob: BlockEater) -> bool:
+	var pos := mob.eat_target()
+	var block: String = Registry.block_ids[world.get_block(pos)]
+	if not (block in _variants) or Registry.blocks.get(block, {}).has("block_entity"):
+		return false
+	if not world.set_block(pos, Registry.block_index("core:air")):
+		return false
+	mob.set_variant(block)
+	ate.emit(Vector3(pos) + Vector3.ONE * 0.5, block)
+	return true
 
 
 func _try_spawn() -> void:
@@ -182,6 +200,8 @@ func apply_states(states: Dictionary) -> void:
 			add_child(mob)
 			mob.global_position = s[0]
 			_mobs[id] = mob
+		var v := str(s[3]) if Registry.blocks.has(str(s[3])) else ""
+		mob.set_variant(v)  # it may have eaten something
 		mob.target_position = s[0]
 		mob.target_yaw = s[1]
 		mob.walking = s[2]

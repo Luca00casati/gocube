@@ -40,8 +40,8 @@ func test_hits_make_it_flee_and_kill_it() -> void:
 	m.hit(mob.id, Vector3.ZERO, 7)
 	check_eq(m.count(), 0, "three hits kill")
 	check_eq(drops.size(), 1, "killed once")
-	check_eq(drops[0][0], 7, "the last attacker gets the drop")
-	check_eq(drops[0][1][0][0], "core:hide", "drops hide")
+	check_eq(drops[0][0], 7, "the last attacker is reported")
+	check_eq(drops[0][1], [], "the regular one drops nothing")
 
 
 func test_pick_under_crosshair() -> void:
@@ -99,3 +99,28 @@ func test_block_variants() -> void:
 	m.spawn_at(Vector3(3.5, 60, 0.5), "core:log")
 	client.apply_states(m.states())
 	check_eq(client.mobs()[0].variant, "core:log", "variant reaches clients")
+
+
+func test_eating_changes_form() -> void:
+	var w := await make_world()
+	var m := _manager(w)
+	var g := _ground(w, 0, 0)
+	var mob := m.spawn_at(Vector3(0.5, g + 1, 0.5))
+	var target := mob.eat_target()
+	w.set_block(target, Registry.block_index("core:gold_ore"))
+	var eaten := []
+	m.ate.connect(func(_at, block): eaten.append(block))
+	check(m._try_eat(mob), "eats the block in front")
+	check_eq(w.get_block(target), 0, "the block is gone")
+	check_eq(mob.variant, "core:gold_ore", "becomes the Gold Ore form")
+	check_eq(eaten, ["core:gold_ore"], "reports what it ate")
+	var mob2 := m.spawn_at(Vector3(20.5, g + 1, 0.5))
+	w.set_block(mob2.eat_target(), Registry.block_index("core:chest"))
+	check(not m._try_eat(mob2), "never eats storage")
+	check_eq(mob2.variant, "", "stays regular")
+	var client := _manager(w)
+	client.apply_states(m.states())
+	mob2.set_variant("core:sand")
+	client.apply_states(m.states())
+	var forms := client.mobs().map(func(x): return x.variant)
+	check("core:sand" in forms and "core:gold_ore" in forms, "form changes reach clients")

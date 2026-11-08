@@ -1,8 +1,9 @@
 class_name BlockEater
 extends Node3D
 ## A Block Eater: a squat, slow grazer. The regular one is slim with a cushion
-## of moss on its back; every solid block also has its own, built from that
-## block's textures, which drops that block. Passive: wanders and grazes, hops
+## of moss on its back and drops nothing; now and then it eats the block in
+## front of it and becomes that block's form, built from its textures, which
+## drops that block. Passive: wanders and grazes, hops
 ## up 1-block steps, avoids water and drops, and runs off when hit. The node
 ## origin is at the feet.
 ##
@@ -14,6 +15,9 @@ const WALK_SPEED := 1.2
 const FLEE_SPEED := 3.4
 const GRAVITY := 24.0
 const MAX_HEALTH := 8
+## Chance that a regular one eats the block in front each time it starts
+## grazing (every ~8 s on average): it then takes that block's form.
+const EAT_CHANCE := 0.02
 
 var id := 0
 ## "" = the regular (mossy) one, otherwise the block id it is made of.
@@ -36,6 +40,8 @@ var _legs: Array[Node3D] = []
 var _body: Node3D
 var _walk_phase := 0.0
 var _hurt_time := 0.0
+## Set when it starts grazing and decides to eat the block in front (regular only).
+var wants_to_eat := false
 
 static var _mats := {}
 ## Set by MobManager: block textures for the block variants.
@@ -152,6 +158,25 @@ func _build_model() -> void:
 		_legs.append(hip)
 
 
+## Become another form (after eating a block): rebuilds the model.
+func set_variant(block: String) -> void:
+	if block == variant:
+		return
+	variant = block
+	if _body:
+		_body.queue_free()
+		_body = null
+		_legs.clear()
+		_build_model()
+		_hurt_time = 0.3  # a little squash as it changes
+
+
+## The block in front of its feet that it would eat.
+func eat_target() -> Vector3i:
+	var fwd := Vector3(-sin(rotation.y), 0, -cos(rotation.y))
+	return Vector3i((global_position + fwd * 0.9 + Vector3(0, -0.5, 0)).floor())
+
+
 ## Display name, e.g. "Block Eater" or "Stone Block Eater".
 func display_name() -> String:
 	return "Block Eater" if variant == "" else "%s Block Eater" % variant.get_slice(":", 1).capitalize()
@@ -159,7 +184,7 @@ func display_name() -> String:
 
 ## What it drops when defeated: [[item, count], ...].
 func drops(rng: RandomNumberGenerator) -> Array:
-	return [["core:hide", 1 + rng.randi() % 2]] if variant == "" else [[variant, 1]]
+	return [] if variant == "" else [[variant, 1]]
 
 
 func _process(delta: float) -> void:
@@ -215,6 +240,7 @@ func _pick_state() -> void:
 	if _state == "flee" or _rng.randf() < 0.45:
 		_state = "idle"  # graze a while
 		_state_time = _rng.randf_range(2.0, 5.0)
+		wants_to_eat = variant == "" and _rng.randf() < EAT_CHANCE
 	else:
 		_state = "wander"
 		_state_time = _rng.randf_range(2.5, 6.0)

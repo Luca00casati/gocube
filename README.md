@@ -72,12 +72,14 @@ multiplayer the host keeps them and runs the furnaces.
 
 **Creatures**: Block Eaters, slow grazers, spawn on grass around players by day (up to 12),
 wander, avoid water and drops, and run off when hit; three hits defeat one. The regular one
-(3 in 4) is slim with moss on its back and drops hide. Every other solid block, mods' blocks
-included, has its own Block Eater built from that block's textures, which drops that block
-(the lamp one glows). Ore, lamp, chest and furnace ones are rare (a chest one drops an empty chest). A block's
-`"eater_weight"` sets how often its Block Eater turns up (1 = an ordinary block, 0 = never).
-In multiplayer the host simulates them and sends positions (`src/mobs/`). **Creative**: every block in the
-inventory, instant breaking, nothing is used up. Worlds from before game modes are creative.
+(3 in 4) is slim with moss on its back and drops nothing, but now and then it eats the block
+in front of it (the block is gone) and becomes that block's form. Every solid block, mods'
+blocks included, has a form built from its textures, which drops that block when defeated
+(the lamp one glows). Forms also spawn directly (ore, lamp, chest and furnace ones rarely); a
+block's `"eater_weight"` sets how often its Block Eater turns up (1 = an ordinary block, 0 = never).
+In multiplayer the host simulates them and sends positions (`src/mobs/`).
+
+**Creative**: every block in the inventory, instant breaking, nothing is used up. Worlds from before game modes are creative.
 
 Survival also has **health** (20 points, shown as a bar above the hotbar): falls of more than 3 blocks hurt
 (1 point per extra block), running out of breath underwater (10 s, a blue bar while underwater) hurts,
@@ -207,7 +209,7 @@ Mods are **not sandboxed**: only install mods you trust.
 
 ## Next steps
 - Dropped items are only visible to the player they belong to; share them in multiplayer.
-- More creatures (night creatures, more animals), a use for hide.
+- More creatures (night creatures, more animals).
 - Windows/macOS builds of the engine library.
 - Consider a double-precision build if worlds get large.
 - Evaluate [Godot Mod Loader](https://github.com/GodotModding/godot-mod-loader) if you

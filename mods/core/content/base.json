@@ -237,9 +237,6 @@
     "gold_ingot": {
       "texture": "textures/gold_ingot.png"
     },
-    "hide": {
-      "texture": "textures/hide.png"
-    },
     "wood_pickaxe": {
       "texture": "textures/wood_pickaxe.png",
       "tool": "pickaxe",

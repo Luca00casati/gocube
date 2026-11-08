@@ -109,6 +109,7 @@ func _ready() -> void:
 			_sounds.play("core:effects", "hurt", at, -4.0)
 		else:
 			_sounds.play_block(variant, "break", at))
+	_mobs.ate.connect(func(at, block): _sounds.play_block(block, "break", at))
 	_mobs.killed.connect(func(at, attacker, items):
 		if attacker == 0:
 			for it in items:
