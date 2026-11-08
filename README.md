@@ -37,7 +37,8 @@ terrain themselves from the seed; only edits travel over the network.
 
 Launch options (after `--`): `--world=NAME` skip the menu and load or create that world,
 `--host` (with `--world`) host it, `--join=ADDR` join a game, `--port=N`, `--name=NAME`,
-`--seed=N` seed for a new world (random otherwise), `--view=N` view distance (default 128), `--shadows` /
+`--seed=N` seed for a new world (random otherwise), `--time=0..1` time of day (0 midnight,
+0.25 sunrise, 0.5 noon, 0.75 sunset), `--day-length=SECONDS` (default 1200), `--view=N` view distance (default 128), `--shadows` /
 `--cheap-shadows` (off by default: they cost ~40% FPS on integrated GPUs), `--bench`
 (fly forward 20 s and print FPS stats), `--profile-startup` (time each startup step and list slow frames). Try `--rendering-method gl_compatibility` on old GPUs.
 
@@ -75,6 +76,15 @@ creatures) and the engine's phase tests: [PROTOTYPES.md](PROTOTYPES.md),
 - `mods/core/` — the base game, written as an ordinary mod.
 - `tools/gen_textures.py` — regenerates the core 32×32 block textures (`python3 tools/gen_textures.py`).
 
+## World generation and time
+Hills, beaches, sea, caves, trees and ore veins come from the C++ generator
+(`engine/src/generator.cpp`), deterministic per seed. Ores replace stone in random-walk
+veins: coal (common, y ≤ 40), iron (y ≤ 8), gold (y ≤ −28), crystal (rare, y ≤ −56).
+
+A day lasts 20 minutes (`DayCycle`, `src/world/day_cycle.gd`): sky light dims to a moonlit
+level at night while lamps stay bright; the sky colours and sun follow the time, which is
+saved with the world and synced from the host in multiplayer.
+
 ## Saving
 Worlds live in `user://worlds/<name>/` (on Linux `~/.local/share/godot/app_userdata/GoCube/`):
 `world.json` (seed, block id table, player position) and `chunks/` (only chunks the player
@@ -109,7 +119,7 @@ Mods are **not sandboxed**: only install mods you trust.
 
 ## Next steps
 - Survival bits: health, fall damage, inventory, mining time per block (`hardness`).
-- Ore generation, flowing water, smooth lighting, a day/night cycle (`daylight` uniform).
+- Flowing water, smooth lighting, mining time per block, ore drops.
 - Creatures on `GoCubeWorld.move_box` (step-up built in).
 - Windows/macOS builds of the engine library.
 - Consider a double-precision build if worlds get large.

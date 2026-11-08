@@ -9,6 +9,19 @@ namespace gocube {
 void Generator::configure(uint32_t seed, const GeneratorIds &ids) {
 	_seed = seed;
 	_ids = ids;
+	// Common and shallow -> rare and deep.
+	_ores.clear();
+	const OreKind kinds[] = {
+		{ ids.coal_ore, -90, 40, 18, 6, 14 },
+		{ ids.iron_ore, -96, 8, 12, 4, 9 },
+		{ ids.gold_ore, -96, -28, 4, 3, 7 },
+		{ ids.crystal_ore, -96, -56, 2, 2, 5 },
+	};
+	for (const OreKind &k : kinds) {
+		if (k.id != 0) {
+			_ores.push_back(k);
+		}
+	}
 }
 
 int Generator::height_at(int x, int z) const {
@@ -66,7 +79,9 @@ void Generator::generate(ChunkData &chunk, int ox, int oy, int oz) const {
 	}
 	const bool below_caves = top_y < CAVE_MIN_Y && top_y < min_h - DIRT_DEPTH;
 	if (below_caves) {
-		chunk.uniform_value = _ids.stone; // uniform stone
+		chunk.uniform_value = _ids.stone; // all stone, apart from ore veins
+		place_ores(chunk, ox, oy, oz);
+		chunk.compact();
 		return;
 	}
 
@@ -100,6 +115,8 @@ void Generator::generate(ChunkData &chunk, int ox, int oy, int oz) const {
 		}
 	}
 
+	place_ores(chunk, ox, oy, oz);
+
 	// Trees can cross chunk borders, so every chunk places the parts it contains.
 	if (oy <= max_h + 10 && top_y >= SEA_LEVEL + 2) {
 		std::vector<Tree> trees;
@@ -109,6 +126,50 @@ void Generator::generate(ChunkData &chunk, int ox, int oy, int oz) const {
 		}
 	}
 	chunk.compact();
+}
+
+// Veins start in some chunk and wander up to ~max_size blocks, so they can reach
+// into neighbours: each chunk replays the veins of its 3x3x3 neighbourhood and
+// keeps the blocks that land inside it. Only stone is replaced.
+void Generator::place_ores(ChunkData &chunk, int ox, int oy, int oz) const {
+	if (_ores.empty() || (chunk.uniform && chunk.uniform_value != _ids.stone)) {
+		return; // no stone here (uniform air)
+	}
+	static const int STEPS[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+	const int ccx = ox / CHUNK, ccy = oy / CHUNK, ccz = oz / CHUNK; // origins are multiples of CHUNK
+	for (int dy = -1; dy <= 1; dy++) {
+		for (int dz = -1; dz <= 1; dz++) {
+			for (int dx = -1; dx <= 1; dx++) {
+				const int sx = (ccx + dx) * CHUNK, sy = (ccy + dy) * CHUNK, sz = (ccz + dz) * CHUNK;
+				for (size_t k = 0; k < _ores.size(); k++) {
+					const OreKind &ore = _ores[k];
+					if (sy > ore.max_y || sy + CHUNK <= ore.min_y) {
+						continue;
+					}
+					for (int v = 0; v < ore.veins_per_chunk; v++) {
+						uint32_t h = hash_point(ccx + dx, (ccy + dy) * 64 + v, ccz + dz, _seed + 911u * uint32_t(k + 1));
+						int x = sx + int(h % CHUNK), y = sy + int((h >> 5) % CHUNK), z = sz + int((h >> 10) % CHUNK);
+						if (y < ore.min_y || y > ore.max_y) {
+							continue;
+						}
+						const int size = ore.min_size + int((h >> 15) % uint32_t(ore.max_size - ore.min_size + 1));
+						for (int s = 0; s < size; s++) {
+							const int lx = x - ox, ly = y - oy, lz = z - oz;
+							if (lx >= 0 && ly >= 0 && lz >= 0 && lx < CHUNK && ly < CHUNK && lz < CHUNK &&
+									chunk.get(lx, ly, lz) == _ids.stone) {
+								chunk.set(lx, ly, lz, ore.id);
+							}
+							h = hash_point(x, y, z, h);
+							const int *step = STEPS[h % 6];
+							x += step[0];
+							y += step[1];
+							z += step[2];
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 void Generator::place_tree(ChunkData &chunk, int ox, int oy, int oz, const Tree &t) const {

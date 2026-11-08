@@ -10,6 +10,15 @@ namespace gocube {
 
 struct GeneratorIds {
 	BlockId stone = 0, dirt = 0, grass = 0, sand = 0, water = 0, log = 0, leaves = 0;
+	BlockId coal_ore = 0, iron_ore = 0, gold_ore = 0, crystal_ore = 0; // 0 = not generated
+};
+
+// One kind of ore: veins are random walks through stone.
+struct OreKind {
+	BlockId id;
+	int min_y, max_y;      // vein starting points lie in this range
+	int veins_per_chunk;   // attempts per 32^3 chunk
+	int min_size, max_size; // blocks per vein (before clipping to stone)
 };
 
 struct Tree {
@@ -44,7 +53,10 @@ private:
 	uint32_t _seed = 0;
 	GeneratorIds _ids;
 
+	std::vector<OreKind> _ores;
+
 	void place_tree(ChunkData &chunk, int ox, int oy, int oz, const Tree &t) const;
+	void place_ores(ChunkData &chunk, int ox, int oy, int oz) const;
 };
 
 } // namespace gocube

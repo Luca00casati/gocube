@@ -36,6 +36,7 @@ var _saving := false
 var _leaving := false
 var _pause_menu: Control
 var _underwater: ColorRect
+var _day: DayCycle
 
 
 func _ready() -> void:
@@ -71,6 +72,9 @@ func _ready() -> void:
 	_session.world = _world
 	_add_environment()
 	_add_hud()
+	# Offline, pausing stops time too; in multiplayer the world keeps going.
+	_day.process_mode = Node.PROCESS_MODE_PAUSABLE if net_mode == "offline" else Node.PROCESS_MODE_ALWAYS
+	_session.day_cycle = _day
 
 	if net_mode == "client":
 		_start_client()
@@ -91,6 +95,8 @@ func _start_local() -> void:
 			ProjectSettings.globalize_path(_world.dir) if _world.is_persistent() else "<not saved>"])
 	if net_mode == "host":
 		print("Hosting on port %d (%s)" % [port, ", ".join(_lan_addresses())])
+	_start_day(float(_args.get("time", _world.meta.get("time", DayCycle.START_TIME))),
+			float(_args.get("day-length", DayCycle.DEFAULT_DAY_LENGTH)))
 	_mark("world built")
 
 	_spawn_player(Vector3(0, 40, 0))
@@ -124,12 +130,20 @@ func _start_client() -> void:
 func _on_welcomed(info: Dictionary) -> void:
 	_world.build_remote(PackedStringArray(info.block_ids), int(info.view_distance),
 			int(info.seed), info.chunks)
+	_start_day(float(info.get("time", DayCycle.START_TIME)), float(info.get("day_length", DayCycle.DEFAULT_DAY_LENGTH)))
 	var s: Array = info.spawn  # an eye position next to the host
 	_spawn_player(Vector3(s[0], s[1] - Player.EYE_HEIGHT, s[2]))
 	_player.edit_handler = _session.request_edit
 	_set_loading_text("Loading world…")
 	_loading_since = Time.get_ticks_msec()
 	print("Joined %s:%d" % [join_address, port])
+
+
+func _start_day(time: float, day_length: float) -> void:
+	_day.materials = [_world.terrain_material, _world.fluid_material]
+	_day.time = fposmod(time, 1.0)
+	_day.day_length = maxf(10.0, day_length)
+	_day.apply()
 
 
 func _on_session_ended(reason: String) -> void:
@@ -215,6 +229,7 @@ func save_game() -> void:
 		await get_tree().process_frame
 	_saving = true
 	var t := Time.get_ticks_msec()
+	_world.meta.time = _day.time
 	await _world.save(_player_state())
 	_saving = false
 	print("World saved in %d ms" % (Time.get_ticks_msec() - t))
@@ -249,7 +264,7 @@ func _process(_delta: float) -> void:
 	if _player and _world.engine and not _player.autopilot:
 		var eye := Vector3i(_cam.global_position.floor())
 		_underwater.visible = _world.is_fluid(_world.get_block(eye))
-	var status := "%d FPS" % Engine.get_frames_per_second()
+	var status := "%d FPS · %s" % [Engine.get_frames_per_second(), _day.clock_text()]
 	if _player and not _player.autopilot:
 		var block: String = _player.selected_block()
 		var def: Dictionary = Registry.blocks.get(block, {})
@@ -275,7 +290,6 @@ static func _lan_addresses() -> PackedStringArray:
 
 func _add_environment() -> void:
 	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-55, -30, 0)
 	sun.shadow_enabled = _args.has("shadows") or _args.has("cheap-shadows")
 	if _args.has("cheap-shadows"):
 		sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
@@ -292,6 +306,13 @@ func _add_environment() -> void:
 	# blocks are fully rough, so a tiny one looks identical.
 	env.environment.sky.radiance_size = Sky.RADIANCE_SIZE_32
 	add_child(env)
+
+	_day = DayCycle.new()
+	_day.name = "DayCycle"
+	_day.sky_material = env.environment.sky.sky_material
+	_day.environment = env.environment
+	_day.sun = sun
+	add_child(_day)
 
 
 func _add_hud() -> void:

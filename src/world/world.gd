@@ -92,8 +92,9 @@ func _make_engine(distance: int, world_seed: int) -> void:
 	engine.set_atlas_layout(atlas.cols, atlas.rows, BlockAtlas.CELL, BlockAtlas.FACE_OFFSET)
 	engine.set_materials(terrain_material, fluid_material)
 	var ids := {}
-	for key in ["stone", "dirt", "grass", "sand", "water", "log", "leaves"]:
-		ids[key] = Registry.block_index("core:" + key)
+	for key in ["stone", "dirt", "grass", "sand", "water", "log", "leaves",
+			"coal_ore", "iron_ore", "gold_ore", "crystal_ore"]:
+		ids[key] = maxi(0, Registry.block_index("core:" + key))  # -1 (missing) -> not generated
 	engine.configure_generator(world_seed, ids)
 	engine.view_distance = distance
 

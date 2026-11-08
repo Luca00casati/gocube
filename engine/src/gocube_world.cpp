@@ -110,6 +110,10 @@ void GoCubeWorld::configure_generator(int seed, const Dictionary &ids) {
 	g.water = static_cast<BlockId>(int(ids.get("water", 0)));
 	g.log = static_cast<BlockId>(int(ids.get("log", 0)));
 	g.leaves = static_cast<BlockId>(int(ids.get("leaves", 0)));
+	g.coal_ore = static_cast<BlockId>(int(ids.get("coal_ore", 0)));
+	g.iron_ore = static_cast<BlockId>(int(ids.get("iron_ore", 0)));
+	g.gold_ore = static_cast<BlockId>(int(ids.get("gold_ore", 0)));
+	g.crystal_ore = static_cast<BlockId>(int(ids.get("crystal_ore", 0)));
 	_generator.configure(static_cast<uint32_t>(seed), g);
 }
 

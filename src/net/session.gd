@@ -27,6 +27,7 @@ const MAX_PLAYERS := 8
 const STATE_INTERVAL := 0.05       # seconds between position updates (20 Hz)
 const EDIT_REACH := 16.0           # max distance from a player to a block they edit
 const CONNECT_TIMEOUT_MS := 8000
+const TIME_SYNC_SECONDS := 5.0     # host corrects clients' clocks this often
 
 enum Mode { OFFLINE, HOST, CLIENT }
 
@@ -35,6 +36,8 @@ var world: World
 ## The local player's eyes (camera); its position is what others see.
 var local_player: Node3D
 var player_name := "Player"
+## Time of day; the host's is authoritative.
+var day_cycle: DayCycle
 
 ## Host only: peer id -> {name, position: Vector3, yaw: float}
 var _peers := {}
@@ -42,6 +45,7 @@ var _peers := {}
 var _avatars := {}
 var _player_count := 1
 var _send_timer := 0.0
+var _time_sync_timer := 0.0
 var _connect_started := 0
 var _welcomed := false
 var _ended := false
@@ -185,6 +189,8 @@ func _hello(protocol: int, mods: Array, requested_name: String) -> void:
 		"spawn": [spawn.x, spawn.y, spawn.z],
 		"seed": int(world.meta.seed),
 		"chunks": world.edited_chunks(),  # {Vector3i: PackedByteArray}
+		"time": day_cycle.time if day_cycle else DayCycle.START_TIME,
+		"day_length": day_cycle.day_length if day_cycle else DayCycle.DEFAULT_DAY_LENGTH,
 	})
 	if not world.block_changed.is_connected(_on_block_changed):
 		world.block_changed.connect(_on_block_changed)
@@ -247,6 +253,15 @@ func _block(pos: Vector3i, block: int) -> void:
 		_request_chunk.rpc_id(1, World.chunk_of(pos))  # not loaded here: get the whole chunk
 
 
+## Client: the host's time of day (snap only if we drifted noticeably).
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _time(host_time: float) -> void:
+	if day_cycle:
+		var drift := absf(wrapf(host_time - day_cycle.time, -0.5, 0.5))
+		if drift > 0.0005:  # ~0.6 s with a 20-minute day
+			day_cycle.time = host_time
+
+
 @rpc("any_peer", "call_remote", "reliable")
 func _request_chunk(chunk_pos: Vector3i) -> void:
 	var id := multiplayer.get_remote_sender_id()
@@ -278,6 +293,11 @@ func _process(delta: float) -> void:
 			and Time.get_ticks_msec() - _connect_started > CONNECT_TIMEOUT_MS:
 		_end("Connection timed out.")
 		return
+	if is_host() and day_cycle and not _peers.is_empty():
+		_time_sync_timer += delta
+		if _time_sync_timer >= TIME_SYNC_SECONDS:
+			_time_sync_timer = 0.0
+			_time.rpc(day_cycle.time)
 	_send_timer += delta
 	if _send_timer < STATE_INTERVAL or local_player == null:
 		return
