@@ -14,6 +14,7 @@ const AUTOSAVE_SECONDS := 60.0
 ## Set by the world menu before the scene enters the tree.
 var world_name := "default"
 var new_seed := -1
+var game_mode := "survival"  # for new worlds
 var net_mode := "offline"  # "offline", "host" or "client"
 var join_address := "127.0.0.1"
 var port := Session.DEFAULT_PORT
@@ -37,6 +38,9 @@ var _leaving := false
 var _pause_menu: Control
 var _underwater: ColorRect
 var _day: DayCycle
+var _hud: CanvasLayer
+var _hotbar: Hotbar
+var _inventory_screen: InventoryScreen
 
 
 func _ready() -> void:
@@ -47,6 +51,7 @@ func _ready() -> void:
 		for a in OS.get_cmdline_user_args():
 			var kv := a.trim_prefix("--").split("=", true, 1)
 			_args[kv[0]] = kv[1] if kv.size() > 1 else "1"
+	game_mode = _args.get("mode", game_mode)
 	world_name = _args.get("world", world_name)
 	new_seed = int(_args.get("seed", new_seed))
 	if _args.has("host"):
@@ -90,7 +95,7 @@ func _start_local() -> void:
 			_leave_to_menu.call_deferred("Couldn't host on port %d: %s" % [port, error_string(err)])
 			return
 	_world.build(world_name, int(_args.get("view", World.DEFAULT_VIEW_DISTANCE)),
-			new_seed, not _args.has("bench"))
+			new_seed, not _args.has("bench"), game_mode)
 	print("World '%s' (seed %d) at %s" % [world_name, int(_world.meta.seed),
 			ProjectSettings.globalize_path(_world.dir) if _world.is_persistent() else "<not saved>"])
 	if net_mode == "host":
@@ -129,7 +134,7 @@ func _start_client() -> void:
 
 func _on_welcomed(info: Dictionary) -> void:
 	_world.build_remote(PackedStringArray(info.block_ids), int(info.view_distance),
-			int(info.seed), info.chunks)
+			int(info.seed), info.chunks, str(info.get("mode", "survival")))
 	_start_day(float(info.get("time", DayCycle.START_TIME)), float(info.get("day_length", DayCycle.DEFAULT_DAY_LENGTH)))
 	var s: Array = info.spawn  # an eye position next to the host
 	_spawn_player(Vector3(s[0], s[1] - Player.EYE_HEIGHT, s[2]))
@@ -159,9 +164,17 @@ func _spawn_player(feet: Vector3) -> void:
 	player.position = feet
 	player.autopilot = _args.has("bench")
 	player.process_mode = Node.PROCESS_MODE_PAUSABLE
+	player.creative = _world.meta.get("mode", "survival") == "creative"
 	add_child(player)
 	_world.set_viewer(player.global_position)
 	_player = player
+	if player.creative:
+		player.fill_creative()
+	_hotbar = Hotbar.new()
+	_hotbar.player = player
+	_hotbar.atlas = _world.atlas
+	_hud.add_child(_hotbar)
+	_hud.move_child(_hotbar, 1)
 	_cam = player.camera
 	_session.local_player = player.camera
 
@@ -177,9 +190,31 @@ func _exit_tree() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if _player and not _loading and not get_tree().paused and _inventory_screen == null \
+			and event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_E:
+		_open_inventory()
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed(&"ui_cancel") and not _loading and not _args.has("bench"):
 		set_paused(not get_tree().paused)
 		get_viewport().set_input_as_handled()
+
+
+func _open_inventory() -> void:
+	_inventory_screen = InventoryScreen.new()
+	_inventory_screen.player = _player
+	_inventory_screen.atlas = _world.atlas
+	_inventory_screen.closed.connect(_close_inventory)
+	_hud.add_child(_inventory_screen)
+	_player.ui_open = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func _close_inventory() -> void:
+	_inventory_screen.queue_free()
+	_inventory_screen = null
+	_player.ui_open = false
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 ## In multiplayer the world keeps running for everyone; this only freezes our camera.
@@ -240,8 +275,11 @@ func _player_state() -> Dictionary:
 	if _player == null:
 		return {}
 	var p := _player.global_position
-	return {"position": [p.x, p.y, p.z], "rotation": [_player.look_pitch(), _player.look_yaw()],
-			"flying": _player.flying}
+	var state := {"position": [p.x, p.y, p.z], "rotation": [_player.look_pitch(), _player.look_yaw()],
+			"flying": _player.flying, "selected": _player.selected}
+	if not _player.creative:
+		state.inventory = _player.inventory.serialize()
+	return state
 
 
 func _restore_player(state: Dictionary) -> void:
@@ -251,6 +289,9 @@ func _restore_player(state: Dictionary) -> void:
 	if state.has("rotation"):
 		_player.set_look(state.rotation[0], state.rotation[1])
 	_player.flying = bool(state.get("flying", false))
+	_player.selected = clampi(int(state.get("selected", 0)), 0, Inventory.HOTBAR - 1)
+	if not _player.creative and state.has("inventory"):
+		_player.inventory.deserialize(state.inventory)
 
 
 func _process(_delta: float) -> void:
@@ -266,10 +307,8 @@ func _process(_delta: float) -> void:
 		_underwater.visible = _world.is_fluid(_world.get_block(eye))
 	var status := "%d FPS · %s" % [Engine.get_frames_per_second(), _day.clock_text()]
 	if _player and not _player.autopilot:
-		var block: String = _player.selected_block()
-		var def: Dictionary = Registry.blocks.get(block, {})
-		status += " · %s · placing %s (1-9 / wheel)" % ["flying (F)" if _player.flying else "walking (F to fly)",
-				def.get("name", block.get_slice(":", 1).capitalize())]
+		status += " · %s · %s · E inventory" % ["creative" if _player.creative else "survival",
+				"flying (F)" if _player.flying else "walking (F to fly)"]
 	if _session.is_host():
 		status += " · hosting on %s port %d · %d player(s)" % [
 				" / ".join(_lan_addresses()), port, _session.player_count()]
@@ -317,6 +356,7 @@ func _add_environment() -> void:
 
 func _add_hud() -> void:
 	var hud := CanvasLayer.new()
+	_hud = hud
 	_fps_label = Label.new()
 	_fps_label.position = Vector2(8, 8)
 	hud.add_child(_fps_label)

@@ -188,6 +188,7 @@ func _hello(protocol: int, mods: Array, requested_name: String) -> void:
 		"view_distance": world.view_distance,
 		"spawn": [spawn.x, spawn.y, spawn.z],
 		"seed": int(world.meta.seed),
+		"mode": world.meta.get("mode", "survival"),
 		"chunks": world.edited_chunks(),  # {Vector3i: PackedByteArray}
 		"time": day_cycle.time if day_cycle else DayCycle.START_TIME,
 		"day_length": day_cycle.day_length if day_cycle else DayCycle.DEFAULT_DAY_LENGTH,

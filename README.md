@@ -43,8 +43,20 @@ Launch options (after `--`): `--world=NAME` skip the menu and load or create tha
 (fly forward 20 s and print FPS stats), `--profile-startup` (time each startup step and list slow frames). Try `--rendering-method gl_compatibility` on old GPUs.
 
 Controls: WASD walk, Space jump (and swim up in water), Ctrl sprint, Shift sneak, F toggle flying (Space/Shift
-up/down; fly down onto the ground to land), mouse look, LMB break, RMB place (6-block
-reach), 1-9 / mouse wheel pick block, Esc pause.
+up/down; fly down onto the ground to land), mouse look, hold LMB mine / LMB break (creative),
+RMB place (6-block reach), 1-9 / mouse wheel pick a hotbar slot, E inventory and crafting,
+Esc pause. Launch option `--mode=creative|survival` for new worlds.
+
+## Survival and creative
+New worlds are **survival** by default (chosen in the New world dialog): hold left click to
+mine (time = the block's `hardness` × 0.75 s), the block's `"drops"` (or the block itself)
+goes into the 36-slot inventory, and placing uses items up. **Creative**: every block in the
+inventory, instant breaking, nothing is used up. Worlds from before game modes are creative.
+
+Crafting (E) lists every hand recipe and crafts straight from the inventory. Recipe types:
+`"shapeless"` (`"ingredients": {"core:log": 1}`) and `"shaped"` (`"pattern"` + `"key"`;
+only the ingredient counts matter). `"smelting"` recipes need a furnace (not in yet).
+Items can set `"max_stack"` and `"texture"` (their inventory icon).
 
 ## Exporting
 `export_presets.cfg` has a Linux preset using Godot's official export templates (install
@@ -57,6 +69,12 @@ release library:
 
 The preset includes `*.json` (mod manifests and content are not Godot resources, so
 they'd be left out otherwise) and the license files.
+
+## Tests
+    godot4 --headless -s res://tests/run_tests.gd [-- filter]   # unit + engine tests
+    bash tests/mp_smoke.sh godot4                                # host + client processes
+A test fails on a failed check, a file that doesn't compile, or any error logged while it
+runs. CI (`.github/workflows/ci.yml`) builds the engine and runs both on every push.
 
 ## Prototypes
 Feasibility results that led to the own engine (lighting, caves/trees/water, many
@@ -77,9 +95,24 @@ creatures) and the engine's phase tests: [PROTOTYPES.md](PROTOTYPES.md),
 - `tools/gen_textures.py` — regenerates the core 32×32 block textures (`python3 tools/gen_textures.py`).
 
 ## World generation and time
-Hills, beaches, sea, caves, trees and ore veins come from the C++ generator
-(`engine/src/generator.cpp`), deterministic per seed. Ores replace stone in random-walk
-veins: coal (common, y ≤ 40), iron (y ≤ 8), gold (y ≤ −28), crystal (rare, y ≤ −56).
+The terrain shape (hills, beaches, sea, caves) comes from the C++ generator
+(`engine/src/generator.cpp`), deterministic per seed. **Ores and trees are defined by
+mods** in content files; the core mod's own are in `mods/core/content/base.json`:
+
+```json
+"ores": {
+  "ruby": {"block": "mymod:ruby_ore", "min_y": -96, "max_y": -40,
+           "veins_per_chunk": 3, "size": [2, 5], "replaces": "core:stone"}
+},
+"trees": {
+  "birch": {"log": "mymod:birch_log", "leaves": "mymod:birch_leaves",
+            "trunk": [5, 7], "chance": 10}
+}
+```
+Ores are random-walk veins through the `replaces` block (default stone), keyed to the ore's
+id so installing more mods doesn't move existing veins. Trees share the same spots: each
+spot gets one tree kind by `chance` (percent), or none. Core: coal (y ≤ 40), iron (y ≤ 8),
+gold (y ≤ −28), crystal (y ≤ −56), oak trees (30%).
 
 A day lasts 20 minutes (`DayCycle`, `src/world/day_cycle.gd`): sky light dims to a moonlit
 level at night while lamps stay bright; the sky colours and sun follow the time, which is
@@ -108,7 +141,8 @@ neighbours or block light), `"fluid": "water"`, `"light": 0..15` (glows, e.g. `c
 
 ## Writing a mod
 Create `user://mods/<id>/mod.json` (see the header of `mod_loader.gd`), add JSON
-content files and/or an `entry` script with `init_mod(registry)`.
+content files and/or an `entry` script with `init_mod(registry)`. Set `"api_version": 1`;
+mods written for a newer API version than the game supports are refused.
 
 To distribute it as a pack: make a Godot project with the same engine build whose files
 live under `mods/<id>/`, add an export preset with `include_filter="*.json"`, and run
@@ -119,7 +153,8 @@ Mods are **not sandboxed**: only install mods you trust.
 
 ## Next steps
 - Survival bits: health, fall damage, inventory, mining time per block (`hardness`).
-- Flowing water, smooth lighting, mining time per block, ore drops.
+- Tools (faster mining), a furnace for smelting, dropped item entities, health and fall damage.
+- Flowing water, smooth lighting, sound.
 - Creatures on `GoCubeWorld.move_box` (step-up built in).
 - Windows/macOS builds of the engine library.
 - Consider a double-precision build if worlds get large.

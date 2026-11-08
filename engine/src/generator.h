@@ -8,21 +8,31 @@
 
 namespace gocube {
 
+// Terrain blocks the base shape is made of.
 struct GeneratorIds {
-	BlockId stone = 0, dirt = 0, grass = 0, sand = 0, water = 0, log = 0, leaves = 0;
-	BlockId coal_ore = 0, iron_ore = 0, gold_ore = 0, crystal_ore = 0; // 0 = not generated
+	BlockId stone = 0, dirt = 0, grass = 0, sand = 0, water = 0;
 };
 
-// One kind of ore: veins are random walks through stone.
+// One kind of ore (defined by mods): veins are random walks through `replaces`.
 struct OreKind {
 	BlockId id;
-	int min_y, max_y;      // vein starting points lie in this range
-	int veins_per_chunk;   // attempts per 32^3 chunk
-	int min_size, max_size; // blocks per vein (before clipping to stone)
+	BlockId replaces;        // usually stone
+	int min_y, max_y;        // vein starting points lie in this range
+	int veins_per_chunk;     // attempts per 32^3 chunk
+	int min_size, max_size;  // blocks per vein (before clipping)
+	uint32_t salt;           // from the ore's id, so adding mods doesn't move veins
+};
+
+// One kind of tree (defined by mods).
+struct TreeKind {
+	BlockId log, leaves;
+	int min_trunk, max_trunk;
+	int chance;              // percent of tree cells that get this tree
 };
 
 struct Tree {
 	int x, z, ground, trunk;
+	int kind;                // index into the tree kinds
 };
 
 class Generator {
@@ -36,9 +46,10 @@ public:
 	static constexpr float CAVE_Y_SQUASH = 1.6f;
 	static constexpr int CAVE_MIN_Y = -60;
 	static constexpr int TREE_CELL = 8;
-	static constexpr int TREE_CHANCE = 30; // percent of cells
 
-	void configure(uint32_t seed, const GeneratorIds &ids);
+
+	void configure(uint32_t seed, const GeneratorIds &ids, const std::vector<OreKind> &ores,
+			const std::vector<TreeKind> &trees);
 
 	// Surface height (y of the topmost terrain block) at a column.
 	int height_at(int x, int z) const;
@@ -54,6 +65,7 @@ private:
 	GeneratorIds _ids;
 
 	std::vector<OreKind> _ores;
+	std::vector<TreeKind> _trees;
 
 	void place_tree(ChunkData &chunk, int ox, int oy, int oz, const Tree &t) const;
 	void place_ores(ChunkData &chunk, int ox, int oy, int oz) const;

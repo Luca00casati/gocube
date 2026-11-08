@@ -25,6 +25,7 @@ var dir := ""
 ## nothing is saved here.
 var remote := false
 var view_distance := DEFAULT_VIEW_DISTANCE
+var atlas: BlockAtlas
 var terrain_material: ShaderMaterial
 var fluid_material: ShaderMaterial
 ## Block index -> true, for fluid blocks (swimming, underwater view).
@@ -32,8 +33,9 @@ var fluid_ids := {}
 
 
 ## persistent=false runs the world without reading or writing anything (benchmarks).
+## new_mode ("survival" / "creative") applies to new worlds only.
 func build(world_name: String, distance: int = DEFAULT_VIEW_DISTANCE, new_seed: int = -1,
-		persistent: bool = true) -> void:
+		persistent: bool = true, new_mode: String = "survival") -> void:
 	if persistent:
 		dir = WORLDS_DIR.path_join(world_name)
 		DirAccess.make_dir_recursive_absolute(dir.path_join("chunks"))
@@ -42,8 +44,10 @@ func build(world_name: String, distance: int = DEFAULT_VIEW_DISTANCE, new_seed: 
 		push_warning("World '%s' was made with the old voxel engine; its terrain is regenerated and old edits are not carried over" % world_name)
 		meta.erase("player")  # the old position may now be inside terrain
 	if meta.is_empty():
-		meta = {"seed": new_seed if new_seed >= 0 else randi(),
+		meta = {"seed": new_seed if new_seed >= 0 else randi(), "mode": new_mode,
 				"created": Time.get_datetime_string_from_system()}
+	elif not meta.has("mode"):
+		meta.mode = "creative"  # worlds from before game modes played like creative
 	elif int(meta.get("format", 0)) > FORMAT_VERSION:
 		push_error("World '%s' was saved by a newer version of the game" % world_name)
 	meta.format = FORMAT_VERSION
@@ -63,10 +67,11 @@ func build(world_name: String, distance: int = DEFAULT_VIEW_DISTANCE, new_seed: 
 
 ## Client side of a multiplayer game: same seed and block table as the host,
 ## plus the host's edited chunks; terrain is generated locally.
-func build_remote(block_ids: PackedStringArray, distance: int, world_seed: int, chunks: Dictionary) -> void:
+func build_remote(block_ids: PackedStringArray, distance: int, world_seed: int, chunks: Dictionary,
+		mode: String = "survival") -> void:
 	remote = true
 	Registry.assign_block_ids(block_ids)
-	meta = {"block_ids": Array(block_ids), "seed": world_seed, "format": FORMAT_VERSION}
+	meta = {"block_ids": Array(block_ids), "seed": world_seed, "format": FORMAT_VERSION, "mode": mode}
 	_make_engine(distance, world_seed)
 	for pos in chunks:
 		engine.set_chunk_override(pos, chunks[pos])
@@ -76,7 +81,7 @@ func build_remote(block_ids: PackedStringArray, distance: int, world_seed: int, 
 
 func _make_engine(distance: int, world_seed: int) -> void:
 	view_distance = distance
-	var atlas := BlockAtlas.new()
+	atlas = BlockAtlas.new()
 	terrain_material = ShaderMaterial.new()
 	terrain_material.shader = preload("res://src/engine/chunk.gdshader")
 	terrain_material.set_shader_parameter("albedo_texture", ImageTexture.create_from_image(atlas.atlas))
@@ -92,11 +97,50 @@ func _make_engine(distance: int, world_seed: int) -> void:
 	engine.set_atlas_layout(atlas.cols, atlas.rows, BlockAtlas.CELL, BlockAtlas.FACE_OFFSET)
 	engine.set_materials(terrain_material, fluid_material)
 	var ids := {}
-	for key in ["stone", "dirt", "grass", "sand", "water", "log", "leaves",
-			"coal_ore", "iron_ore", "gold_ore", "crystal_ore"]:
-		ids[key] = maxi(0, Registry.block_index("core:" + key))  # -1 (missing) -> not generated
-	engine.configure_generator(world_seed, ids)
+	for key in ["stone", "dirt", "grass", "sand", "water"]:
+		ids[key] = maxi(0, Registry.block_index("core:" + key))
+	engine.configure_generator(world_seed, ids, _ore_table(), _tree_table())
 	engine.view_distance = distance
+
+
+## Registered ores/trees -> engine tables. Sorted by id so every player builds
+## the same tables; each ore's veins are keyed to its id, so adding a mod
+## doesn't move existing veins.
+static func _ore_table() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	var ids := Registry.ores.keys()
+	ids.sort()
+	for id in ids:
+		var def: Dictionary = Registry.ores[id]
+		var block := Registry.block_index(str(def.get("block", "")))
+		var replaces := Registry.block_index(str(def.get("replaces", "core:stone")))
+		if block <= 0 or replaces <= 0:
+			push_warning("Ore '%s': unknown block; not generated" % id)
+			continue
+		var size: Array = def.get("size", [3, 6])
+		out.append({"block": block, "replaces": replaces,
+				"min_y": int(def.get("min_y", -96)), "max_y": int(def.get("max_y", 0)),
+				"veins_per_chunk": int(def.get("veins_per_chunk", 4)),
+				"min_size": int(size[0]), "max_size": int(size[-1]),
+				"salt": hash(id) & 0x7fffffff})
+	return out
+
+
+static func _tree_table() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	var ids := Registry.trees.keys()
+	ids.sort()
+	for id in ids:
+		var def: Dictionary = Registry.trees[id]
+		var log_id := Registry.block_index(str(def.get("log", "")))
+		var leaves := Registry.block_index(str(def.get("leaves", "")))
+		if log_id <= 0 or leaves <= 0:
+			push_warning("Tree '%s': unknown block; not generated" % id)
+			continue
+		var trunk: Array = def.get("trunk", [4, 6])
+		out.append({"log": log_id, "leaves": leaves, "min_trunk": int(trunk[0]),
+				"max_trunk": int(trunk[-1]), "chance": int(def.get("chance", 30))})
+	return out
 
 
 # --- Blocks ------------------------------------------------------------------------

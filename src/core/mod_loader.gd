@@ -7,7 +7,8 @@ extends Node
 ##     "name": "My Mod", "version": "1.0.0",
 ##     "dependencies": ["othermod"],        # "core" is implicit
 ##     "content": ["content/blocks.json"],  # data-only content (optional)
-##     "entry": "main.gd"                   # code entry point (optional)
+##     "entry": "main.gd",                  # code entry point (optional)
+##     "api_version": 1                     # modding API it was written for (default 1)
 ##   }
 ##
 ## Sources, in order:
@@ -23,6 +24,9 @@ signal mods_loaded
 const BUILTIN_DIR := "res://mods"
 const USER_DIR := "user://mods"
 const CORE_ID := "core"
+## Version of the modding API (registry, content files, mod.json). Raise it when
+## something changes in a way that breaks existing mods.
+const API_VERSION := 1
 
 ## Manifests of successfully loaded mods, in load order. Each has a "path" key.
 var mods: Array[Dictionary] = []
@@ -79,6 +83,10 @@ func _scan(dir: String, found: Dictionary) -> void:
 		var m = JSON.parse_string(FileAccess.get_file_as_string(manifest_path))
 		if not m is Dictionary or not _id_regex.search(str(m.get("id", ""))):
 			push_error("Invalid mod.json: " + manifest_path)
+			continue
+		if int(m.get("api_version", 1)) > API_VERSION:
+			push_error("Mod '%s' needs a newer game (mod API %d, this game has %d); skipping it"
+					% [m.id, int(m.api_version), API_VERSION])
 			continue
 		if found.has(m.id):
 			push_warning("Duplicate mod id '%s' at %s, ignoring" % [m.id, root])
@@ -151,7 +159,8 @@ func _load_mod(m: Dictionary) -> void:
 	print("Loaded mod %s %s" % [m.id, m.get("version", "")])
 
 
-## Content file format: { "blocks": {id: def}, "items": {id: def}, "recipes": {id: def} }
+## Content file format: { "blocks": {id: def}, "items": {id: def}, "recipes": {id: def},
+##                        "ores": {id: def}, "trees": {id: def} }
 func _load_content_file(path: String) -> void:
 	var data = JSON.parse_string(FileAccess.get_file_as_string(path))
 	if not data is Dictionary:
@@ -163,3 +172,7 @@ func _load_content_file(path: String) -> void:
 		Registry.register_item(id, data.items[id])
 	for id in data.get("recipes", {}):
 		Registry.register_recipe(id, data.recipes[id])
+	for id in data.get("ores", {}):
+		Registry.register_ore(id, data.ores[id])
+	for id in data.get("trees", {}):
+		Registry.register_tree(id, data.trees[id])

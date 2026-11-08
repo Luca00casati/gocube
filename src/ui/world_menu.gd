@@ -27,6 +27,7 @@ var _new_dialog: ConfirmationDialog
 var _new_name: LineEdit
 var _new_seed: LineEdit
 var _new_error: Label
+var _new_mode: OptionButton
 var _delete_dialog: ConfirmationDialog
 
 
@@ -173,6 +174,13 @@ func _build_new_dialog() -> void:
 	_new_seed.placeholder_text = "random"
 	_new_seed.text_changed.connect(func(_t): _validate_new())
 	form.add_child(_new_seed)
+	var mode_label := Label.new()
+	mode_label.text = "Mode"
+	form.add_child(mode_label)
+	_new_mode = OptionButton.new()
+	_new_mode.add_item("Survival: mine, collect, craft")
+	_new_mode.add_item("Creative: every block, instant breaking")
+	form.add_child(_new_mode)
 	_new_error = Label.new()
 	_new_error.modulate = Color(1, 0.5, 0.45)
 	form.add_child(_new_error)
@@ -262,7 +270,7 @@ func _update_buttons() -> void:
 	if w.is_empty():
 		_info.text = "No worlds yet. Create one to start." if _worlds.is_empty() else ""
 	else:
-		_info.text = "Seed %d · created %s" % [int(w.meta.get("seed", 0)),
+		_info.text = "%s · seed %d · created %s" % [str(w.meta.get("mode", "creative")).capitalize(), int(w.meta.get("seed", 0)),
 				str(w.meta.get("created", "?")).replace("T", " ").left(16)]
 
 
@@ -338,6 +346,7 @@ func _on_create() -> void:
 	var seed_text := _new_seed.text.strip_edges()
 	var new_seed := absi(seed_text.to_int()) if seed_text != "" else -1
 	_start_game({"world_name": _new_name.text.strip_edges(), "new_seed": new_seed,
+			"game_mode": "creative" if _new_mode.selected == 1 else "survival",
 			"player_name": _player_name()})
 
 

@@ -43,7 +43,11 @@ public:
 	void configure_blocks(const godot::TypedArray<godot::Dictionary> &blocks);
 	void set_atlas_layout(int cols, int rows, int cell, const godot::Vector2i &face_offset);
 	void set_materials(const godot::Ref<godot::Material> &terrain, const godot::Ref<godot::Material> &fluid);
-	void configure_generator(int seed, const godot::Dictionary &ids);
+	// ids: terrain blocks {stone, dirt, grass, sand, water}.
+	// ores: [{block, replaces, min_y, max_y, veins_per_chunk, min_size, max_size, salt}]
+	// trees: [{log, leaves, min_trunk, max_trunk, chance}]
+	void configure_generator(int seed, const godot::Dictionary &ids, const godot::TypedArray<godot::Dictionary> &ores,
+			const godot::TypedArray<godot::Dictionary> &trees);
 	void start();
 
 	void set_view_distance(int blocks);

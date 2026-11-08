@@ -4,8 +4,11 @@ extends Node3D
 ##
 ## Walk: WASD, Space jump, Ctrl sprint, Shift sneak.  Fly: WASD, Space up, Shift down
 ## (descending onto the ground lands), Ctrl faster.  In water: Space swims up.
-## Mouse to look, left click breaks, right click places the selected block
-## (1-9 / wheel to pick). Pausing is handled by the game scene, which pauses this node.
+## Mouse to look, 1-9 / wheel pick a hotbar slot, right click places its block.
+## Survival: hold left click to mine (time from the block's "hardness"); the
+## drop goes into the inventory, and placing uses items up.
+## Creative: left click breaks instantly, nothing is used up.
+## Pausing is handled by the game scene, which pauses this node.
 ##
 ## The node origin is at the feet; `camera` sits at eye height.
 
@@ -28,6 +31,8 @@ const BENCH_SPEED := 20.0
 const SWIM_SPEED_FACTOR := 0.6
 const SWIM_UP_SPEED := 3.5
 const SINK_SPEED := 2.0
+const MINE_SECONDS_PER_HARDNESS := 0.75
+const MIN_MINE_SECONDS := 0.1
 
 @export var mouse_sensitivity := 0.003
 ## Benchmark mode: fly straight ahead without collisions, don't grab the mouse.
@@ -38,6 +43,12 @@ var edit_handler := Callable()
 
 var world: World
 var camera: Camera3D
+var inventory := Inventory.new()
+var creative := false
+## Set by the game while a screen (inventory, pause) has the mouse.
+var ui_open := false
+## 0..1 while holding left click on a block in survival (for the HUD).
+var mining_progress := 0.0
 var velocity := Vector3.ZERO
 var flying := false
 var in_water := false
@@ -45,9 +56,9 @@ var on_floor := false
 ## Movement stays off until the ground around the player has loaded.
 ## See set_ready_to_move().
 var _frozen := true
-var _placeable: PackedStringArray = []
-var _selected := 0
+var selected := 0  # hotbar slot
 var _outline: MeshInstance3D
+var _mining_target := Vector3i(1 << 30, 0, 0)
 
 
 func _ready() -> void:
@@ -61,10 +72,6 @@ func _ready() -> void:
 	add_child(_outline)
 	_outline.top_level = true
 
-	for id in Registry.block_ids:
-		var def = Registry.blocks.get(id)
-		if def != null and def.get("solid", true) and not def.has("fluid"):
-			_placeable.append(id)
 	if autopilot:
 		flying = true
 		return
@@ -95,35 +102,49 @@ func set_look(pitch: float, yaw: float) -> void:
 		ready.connect(func(): camera.rotation.x = pitch, CONNECT_ONE_SHOT)
 
 
-func selected_block() -> String:
-	return _placeable[_selected] if not _placeable.is_empty() else ""
+## The item in the selected hotbar slot ("" if empty).
+func selected_item() -> String:
+	return inventory.slots[selected].get("id", "")
+
+
+static func is_placeable(id: String) -> bool:
+	var def = Registry.blocks.get(id)
+	return def != null and def.get("solid", true) and not def.has("fluid") and id != "core:air"
+
+
+## Creative: one of every placeable block (counts are never used up).
+func fill_creative() -> void:
+	var ids := Array(Registry.block_ids).filter(func(id): return is_placeable(id))
+	for i in mini(ids.size(), Inventory.SIZE):
+		inventory.slots[i] = {"id": ids[i], "count": 1}
+	inventory.changed.emit()
 
 
 # --- Input ---------------------------------------------------------------------------
 
 func _unhandled_input(event: InputEvent) -> void:
-	if autopilot:
+	if autopilot or ui_open:
 		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		rotation.y -= event.relative.x * mouse_sensitivity
 		camera.rotation.x = clampf(camera.rotation.x - event.relative.y * mouse_sensitivity, -1.55, 1.55)
 	elif event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode >= KEY_1 and event.keycode <= KEY_9:
-			_selected = mini(event.keycode - KEY_1, _placeable.size() - 1)
+			selected = event.keycode - KEY_1
 		elif event.keycode == KEY_F:
 			flying = not flying
 			velocity.y = 0.0
 	elif event is InputEventMouseButton and event.pressed:
 		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-		elif event.button_index == MOUSE_BUTTON_LEFT:
-			_edit(true)
+		elif event.button_index == MOUSE_BUTTON_LEFT and creative:
+			_break_target()  # survival mines over time in _process
 		elif event.button_index == MOUSE_BUTTON_RIGHT:
-			_edit(false)
+			_place()
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			_selected = (_selected + 1) % _placeable.size()
+			selected = (selected + 1) % Inventory.HOTBAR
 		elif event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			_selected = (_selected - 1 + _placeable.size()) % _placeable.size()
+			selected = (selected - 1 + Inventory.HOTBAR) % Inventory.HOTBAR
 
 
 # --- Movement --------------------------------------------------------------------------
@@ -197,31 +218,80 @@ func _unstuck() -> void:
 
 # --- Building ----------------------------------------------------------------------------
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if autopilot or world == null:
 		return
 	var hit := _target()
 	_outline.visible = hit.hit
 	if hit.hit:
 		_outline.global_position = Vector3(hit.position) + Vector3.ONE * 0.5
+	_update_mining(hit, delta)
+
+
+## Survival mining: hold left click on the same block until it breaks.
+func _update_mining(hit: Dictionary, delta: float) -> void:
+	var holding := not creative and not ui_open and not _frozen \
+			and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
+			and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+	if not holding or not hit.hit:
+		mining_progress = 0.0
+		_mining_target = Vector3i(1 << 30, 0, 0)
+		return
+	if hit.position != _mining_target:
+		_mining_target = hit.position
+		mining_progress = 0.0
+	mining_progress += delta / mine_seconds(Registry.block_ids[hit.block])
+	if mining_progress >= 1.0:
+		mining_progress = 0.0
+		_break_target()
+
+
+static func mine_seconds(block_id: String) -> float:
+	var def: Dictionary = Registry.blocks.get(block_id, {})
+	return maxf(MIN_MINE_SECONDS, float(def.get("hardness", 1.0)) * MINE_SECONDS_PER_HARDNESS)
+
+
+## What breaking a block gives: its "drops" ("" = nothing), else the block itself.
+static func drop_of(block_id: String) -> String:
+	var def: Dictionary = Registry.blocks.get(block_id, {})
+	return str(def.get("drops", block_id))
 
 
 func _target() -> Dictionary:
 	return world.raycast(camera.global_position, -camera.global_basis.z, REACH)
 
 
-func _edit(breaking: bool) -> void:
+func _break_target() -> void:
 	var hit := _target()
 	if not hit.hit:
 		return
-	var pos: Vector3i = hit.position if breaking else hit.previous
-	if not breaking and overlaps_block(global_position, pos):
-		return  # don't build inside yourself
-	var block := Registry.block_index("core:air") if breaking else Registry.block_index(_placeable[_selected])
+	var broken: String = Registry.block_ids[hit.block]
+	_apply_edit(hit.position, Registry.block_index("core:air"))
+	if not creative:
+		var drop := drop_of(broken)
+		if drop != "":
+			inventory.add(drop, 1)  # a full inventory loses it (no dropped items yet)
+
+
+func _place() -> void:
+	var item := selected_item()
+	if not is_placeable(item):
+		return
+	var hit := _target()
+	if not hit.hit or overlaps_block(global_position, hit.previous):
+		return  # nothing to place against, or it would be inside you
+	_apply_edit(hit.previous, Registry.block_index(item))
+	if not creative:
+		inventory.take_one(selected)
+
+
+## Changes a block here, or asks the host in multiplayer (which applies it and
+## sends it back). Inventory changes happen right away either way.
+func _apply_edit(pos: Vector3i, block: int) -> void:
 	if edit_handler.is_valid():
 		edit_handler.call(pos, block)
-		return
-	world.set_block(pos, block)
+	else:
+		world.set_block(pos, block)
 
 
 ## Whether a player standing with feet at `feet` overlaps block `cell`.

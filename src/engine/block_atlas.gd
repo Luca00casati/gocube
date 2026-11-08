@@ -21,6 +21,8 @@ var block_table: Array[Dictionary] = []
 
 var _tiles: Array[Image] = []
 var _tile_index := {}
+var _icon_tiles := {}   # block id -> tile index used as its icon
+var _icons := {}        # item/block id -> Texture2D (cache)
 
 
 func _init() -> void:
@@ -37,6 +39,7 @@ func _init() -> void:
 			# Engine face order: +X, -X, +Y, -Y, +Z, -Z.
 			for face in ["side", "side", "top", "bottom", "side", "side"]:
 				tiles.append(_face_tile(def, face))
+			_icon_tiles[id] = tiles[0]  # the side face shows best as a flat icon
 		block_table.append({"solid": solid, "opaque": opaque, "fluid": fluid, "tiles": tiles,
 				"light": int(def.get("light", 0))})
 	atlas = _build_atlas()
@@ -110,3 +113,24 @@ func _build_atlas() -> Image:
 				img.blit_rect(_tiles[i], rect, cell + Vector2i(x, y) * TILE_SIZE)
 	img.generate_mipmaps()
 	return img
+
+
+## Icon for an inventory slot: a block's side texture, an item's "texture",
+## or a flat colour.
+func icon(id: String) -> Texture2D:
+	if _icons.has(id):
+		return _icons[id]
+	var img: Image = null
+	if _icon_tiles.has(id):
+		img = _tiles[_icon_tiles[id]]
+	else:
+		var def: Dictionary = Registry.items.get(id, {})
+		if def.has("texture"):
+			img = _load_image(ModLoader.get_mod_path(def.get("mod", "")).path_join(def.texture))
+		if img == null:
+			img = Image.create(TILE_SIZE, TILE_SIZE, false, Image.FORMAT_RGBA8)
+			img.fill(Color.html(def.get("color", "#b0a080")))
+	var tex := ImageTexture.create_from_image(img)
+	_icons[id] = tex
+	return tex
+

@@ -10,6 +10,9 @@ signal content_registered(kind: StringName, id: String)
 var blocks: Dictionary = {}   # id -> definition
 var items: Dictionary = {}
 var recipes: Dictionary = {}
+## World generation (see README "World generation from mods").
+var ores: Dictionary = {}
+var trees: Dictionary = {}
 
 ## Numeric voxel ids. block_ids[n] is the string id of voxel n; "core:air" is
 ## always 0. Assigned at freeze, then re-assigned per world from its saved table
@@ -31,6 +34,18 @@ func register_item(id: String, def: Dictionary = {}) -> String:
 
 func register_recipe(id: String, def: Dictionary) -> String:
 	return _register(recipes, &"recipe", id, def)
+
+
+## {"block": "mod:ore_block", "min_y": -96, "max_y": 0, "veins_per_chunk": 4,
+##  "size": [3, 6], "replaces": "core:stone"}
+func register_ore(id: String, def: Dictionary) -> String:
+	return _register(ores, &"ore", id, def)
+
+
+## {"log": "mod:log", "leaves": "mod:leaves", "trunk": [4, 6], "chance": 30}
+## chance: percent of tree spots that get this tree (all trees share the spots).
+func register_tree(id: String, def: Dictionary) -> String:
+	return _register(trees, &"tree", id, def)
 
 
 func block_index(id: String) -> int:

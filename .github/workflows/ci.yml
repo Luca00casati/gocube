@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  GODOT_VERSION: 4.7.2-stable
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Cache engine build (godot-cpp takes ~8 minutes to compile)
+        uses: actions/cache@v4
+        with:
+          path: engine/build
+          key: engine-${{ runner.os }}-${{ hashFiles('engine/CMakeLists.txt', '.gitmodules') }}-${{ hashFiles('engine/godot-cpp/gdextension/extension_api.json') }}-${{ hashFiles('engine/src/**') }}
+          restore-keys: |
+            engine-${{ runner.os }}-${{ hashFiles('engine/CMakeLists.txt', '.gitmodules') }}-${{ hashFiles('engine/godot-cpp/gdextension/extension_api.json') }}-
+
+      - name: Build the engine (GDExtension)
+        run: |
+          cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build engine/build -j"$(nproc)"
+
+      - name: Download Godot ${{ env.GODOT_VERSION }} (checksum-verified)
+        run: |
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}"
+          zip="Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          curl -fsSLO "$base/SHA512-SUMS.txt"
+          curl -fsSLO "$base/$zip"
+          grep " $zip\$" SHA512-SUMS.txt | sha512sum -c -
+          unzip -q "$zip"
+          mv "Godot_v${GODOT_VERSION}_linux.x86_64" godot
+          ./godot --version
+
+      - name: Import the project
+        # The headless import has crashed intermittently on a fresh cache; retry.
+        run: |
+          for attempt in 1 2 3; do
+            ./godot --headless --import && exit 0
+            echo "import attempt $attempt failed, retrying"
+          done
+          exit 1
+
+      - name: Tests
+        run: ./godot --headless -s res://tests/run_tests.gd
+
+      - name: Multiplayer smoke test
+        run: bash tests/mp_smoke.sh ./godot

@@ -112,7 +112,8 @@
   },
   "items": {
     "stick": {
-      "max_stack": 64
+      "max_stack": 64,
+      "texture": "textures/stick.png"
     }
   },
   "recipes": {
@@ -123,6 +124,80 @@
         "item": "core:stone",
         "count": 1
       }
+    },
+    "log_to_planks": {
+      "type": "shapeless",
+      "ingredients": {
+        "core:log": 1
+      },
+      "output": {
+        "item": "core:planks",
+        "count": 4
+      }
+    },
+    "lamp": {
+      "type": "shapeless",
+      "ingredients": {
+        "core:crystal_ore": 1,
+        "core:planks": 4
+      },
+      "output": {
+        "item": "core:lamp",
+        "count": 1
+      }
+    }
+  },
+  "ores": {
+    "coal": {
+      "block": "core:coal_ore",
+      "min_y": -90,
+      "max_y": 40,
+      "veins_per_chunk": 18,
+      "size": [
+        6,
+        14
+      ]
+    },
+    "iron": {
+      "block": "core:iron_ore",
+      "min_y": -96,
+      "max_y": 8,
+      "veins_per_chunk": 12,
+      "size": [
+        4,
+        9
+      ]
+    },
+    "gold": {
+      "block": "core:gold_ore",
+      "min_y": -96,
+      "max_y": -28,
+      "veins_per_chunk": 4,
+      "size": [
+        3,
+        7
+      ]
+    },
+    "crystal": {
+      "block": "core:crystal_ore",
+      "min_y": -96,
+      "max_y": -56,
+      "veins_per_chunk": 2,
+      "size": [
+        2,
+        5
+      ]
+    }
+  },
+  "trees": {
+    "oak": {
+      "log": "core:log",
+      "leaves": "core:leaves",
+      "trunk": [
+        4,
+        6
+      ],
+      "chance": 30
     }
   }
 }

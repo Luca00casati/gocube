@@ -100,21 +100,49 @@ void GoCubeWorld::set_materials(const Ref<Material> &terrain, const Ref<Material
 	_fluid_material = fluid;
 }
 
-void GoCubeWorld::configure_generator(int seed, const Dictionary &ids) {
+void GoCubeWorld::configure_generator(int seed, const Dictionary &ids, const TypedArray<Dictionary> &ores,
+		const TypedArray<Dictionary> &trees) {
 	ERR_FAIL_COND_MSG(_started, "configure_generator() must be called before start()");
+	auto block = [&](const Dictionary &d, const char *k) {
+		const int v = d.get(k, 0);
+		return static_cast<BlockId>(v > 0 && v < int(_blocks.size()) ? v : 0);
+	};
 	GeneratorIds g;
-	g.stone = static_cast<BlockId>(int(ids.get("stone", 0)));
-	g.dirt = static_cast<BlockId>(int(ids.get("dirt", 0)));
-	g.grass = static_cast<BlockId>(int(ids.get("grass", 0)));
-	g.sand = static_cast<BlockId>(int(ids.get("sand", 0)));
-	g.water = static_cast<BlockId>(int(ids.get("water", 0)));
-	g.log = static_cast<BlockId>(int(ids.get("log", 0)));
-	g.leaves = static_cast<BlockId>(int(ids.get("leaves", 0)));
-	g.coal_ore = static_cast<BlockId>(int(ids.get("coal_ore", 0)));
-	g.iron_ore = static_cast<BlockId>(int(ids.get("iron_ore", 0)));
-	g.gold_ore = static_cast<BlockId>(int(ids.get("gold_ore", 0)));
-	g.crystal_ore = static_cast<BlockId>(int(ids.get("crystal_ore", 0)));
-	_generator.configure(static_cast<uint32_t>(seed), g);
+	g.stone = block(ids, "stone");
+	g.dirt = block(ids, "dirt");
+	g.grass = block(ids, "grass");
+	g.sand = block(ids, "sand");
+	g.water = block(ids, "water");
+	std::vector<OreKind> ore_kinds;
+	for (int64_t i = 0; i < ores.size(); i++) {
+		const Dictionary d = ores[i];
+		OreKind k;
+		k.id = block(d, "block");
+		k.replaces = d.has("replaces") ? block(d, "replaces") : g.stone;
+		k.min_y = d.get("min_y", -96);
+		k.max_y = d.get("max_y", 0);
+		k.veins_per_chunk = std::clamp(int(d.get("veins_per_chunk", 4)), 0, 256);
+		k.min_size = std::max(1, int(d.get("min_size", 3)));
+		k.max_size = std::max(k.min_size, int(d.get("max_size", 6)));
+		k.salt = static_cast<uint32_t>(int64_t(d.get("salt", i * 911 + 1)));
+		if (k.id != 0 && k.replaces != 0) {
+			ore_kinds.push_back(k);
+		}
+	}
+	std::vector<TreeKind> tree_kinds;
+	for (int64_t i = 0; i < trees.size(); i++) {
+		const Dictionary d = trees[i];
+		TreeKind t;
+		t.log = block(d, "log");
+		t.leaves = block(d, "leaves");
+		t.min_trunk = std::clamp(int(d.get("min_trunk", 4)), 2, 20);
+		t.max_trunk = std::clamp(int(d.get("max_trunk", 6)), t.min_trunk, 20);
+		t.chance = std::clamp(int(d.get("chance", 30)), 0, 100);
+		if (t.log != 0 && t.leaves != 0 && t.chance > 0) {
+			tree_kinds.push_back(t);
+		}
+	}
+	_generator.configure(static_cast<uint32_t>(seed), g, ore_kinds, tree_kinds);
 }
 
 void GoCubeWorld::start() {
@@ -925,7 +953,7 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("configure_blocks", "blocks"), &GoCubeWorld::configure_blocks);
 	ClassDB::bind_method(D_METHOD("set_atlas_layout", "cols", "rows", "cell", "face_offset"), &GoCubeWorld::set_atlas_layout);
 	ClassDB::bind_method(D_METHOD("set_materials", "terrain", "fluid"), &GoCubeWorld::set_materials);
-	ClassDB::bind_method(D_METHOD("configure_generator", "seed", "ids"), &GoCubeWorld::configure_generator);
+	ClassDB::bind_method(D_METHOD("configure_generator", "seed", "ids", "ores", "trees"), &GoCubeWorld::configure_generator);
 	ClassDB::bind_method(D_METHOD("start"), &GoCubeWorld::start);
 	ClassDB::bind_method(D_METHOD("get_block", "position"), &GoCubeWorld::get_block);
 	ClassDB::bind_method(D_METHOD("set_block", "position", "id"), &GoCubeWorld::set_block);

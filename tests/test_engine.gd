@@ -1,0 +1,124 @@
+extends "res://tests/test_suite.gd"
+## The native engine (GoCubeWorld) through World.
+
+const BODY := Vector3(0.6, 1.8, 0.6)
+
+
+func _surface(w: World, x: int, z: int) -> int:
+	return w.raycast(Vector3(x + 0.5, 100, z + 0.5), Vector3.DOWN, 300).position.y
+
+
+func test_generation_is_deterministic() -> void:
+	var a := await make_world(777)
+	var samples := []
+	for i in 40:
+		samples.append(a.get_block(Vector3i(i * 3 - 60, (i % 7) * 5 - 20, i * 2 - 40)))
+	a.queue_free()
+	await frames(2)
+	var b := await make_world(777)
+	var same := true
+	for i in 40:
+		same = same and b.get_block(Vector3i(i * 3 - 60, (i % 7) * 5 - 20, i * 2 - 40)) == samples[i]
+	check(same, "same seed -> same blocks")
+	check(samples.any(func(v): return v != 0) and samples.any(func(v): return v == 0), "samples hit both air and blocks")
+
+
+func test_raycast_edit_and_unloaded() -> void:
+	var w := await make_world()
+	var hit := w.raycast(Vector3(0.5, 100, 0.5), Vector3.DOWN, 300)
+	check(hit.hit, "raycast down hits the ground")
+	check_eq(hit.normal, Vector3i(0, 1, 0), "hit the top face")
+	var above: Vector3i = hit.previous
+	check(w.set_block(above, Registry.block_index("core:planks")), "set_block on loaded chunk")
+	check_eq(w.get_block(above), Registry.block_index("core:planks"), "get_block sees the edit")
+	check(not w.set_block(Vector3i(5000, 0, 5000), 1), "set_block on unloaded chunk fails")
+	check(not w.raycast(Vector3(0.5, 100, 0.5), Vector3.UP, 50).hit, "nothing above the sky")
+
+
+func test_box_collision() -> void:
+	var w := await make_world()
+	var top := _surface(w, 4, 4)
+	var pos := Vector3(4.5, top + 15, 4.5)
+	var vel := Vector3.ZERO
+	var landed := false
+	for i in 240:
+		vel.y = maxf(vel.y - 28.0 / 60.0, -60.0)
+		var r: Dictionary = w.move_box(pos, BODY, vel / 60.0)
+		pos = r.position
+		if r.on_floor:
+			vel.y = 0.0
+			landed = true
+	check(landed, "falling body lands")
+	check_near(pos.y, top + 1, 0.01, "feet rest on the ground")
+	# A 1-high platform blocks without step-up and is climbed with step_height 1.
+	var f := Vector3i(8, top + 1, 8)
+	for x in range(f.x - 1, f.x + 10):
+		w.set_block(Vector3i(x, f.y - 1, f.z), Registry.block_index("core:stone"))
+		for y in range(0, 4):
+			w.set_block(Vector3i(x, f.y + y, f.z), 0)
+	for x in range(f.x + 3, f.x + 9):
+		w.set_block(Vector3i(x, f.y, f.z), Registry.block_index("core:stone"))
+	var p := Vector3(f.x + 0.5, f.y, f.z + 0.5)
+	for i in 90:  # 3 blocks of walking: reaches the platform edge at f.x + 3
+		p = w.move_box(p, BODY, Vector3(2.0 / 60.0, -0.3, 0), 0.0).position
+	check_near(p.x, f.x + 2.7, 0.01, "blocked by the step without step-up")
+	for i in 60:
+		p = w.move_box(p, BODY, Vector3(2.0 / 60.0, -0.3, 0), 1.0).position
+	check(p.x > f.x + 4 and p.y >= f.y + 0.99, "climbed the 1-high step (x=%.2f y=%.2f)" % [p.x, p.y])
+	check(not w.is_box_free(Vector3(5000, 0, 5000), BODY), "unloaded space is solid")
+
+
+func test_chunk_bytes_round_trip() -> void:
+	var a := await make_world(11)
+	var pos := Vector3i(3, _surface(a, 3, 3) + 1, 3)
+	a.set_block(pos, Registry.block_index("core:lamp"))
+	var chunk := World.chunk_of(pos)
+	var bytes := a.chunk_bytes(chunk)
+	check(not bytes.is_empty(), "chunk encodes")
+	check(a.edited_chunks().has(chunk), "edited chunk listed for multiplayer")
+	a.queue_free()
+	await frames(2)
+	var b := await make_world(11)
+	check(b.get_block(pos) != Registry.block_index("core:lamp"), "fresh world doesn't have the lamp")
+	b.set_chunk(chunk, bytes)
+	check_eq(b.get_block(pos), Registry.block_index("core:lamp"), "chunk data applied")
+
+
+func test_ores_generate_deep() -> void:
+	var w := await make_world(4242, "", 64, Vector3(0.5, -50, 0.5))
+	var counts := {}
+	for x in range(-16, 16):
+		for z in range(-16, 16):
+			for y in range(-90, -20, 2):
+				var name: String = Registry.block_ids[w.get_block(Vector3i(x, y, z))]
+				if name.ends_with("_ore"):
+					counts[name] = counts.get(name, 0) + 1
+	check(counts.get("core:coal_ore", 0) > 0, "coal generates (%s)" % counts)
+	check(counts.get("core:iron_ore", 0) > 0, "iron generates (%s)" % counts)
+
+
+func test_mod_defined_ore_generates() -> void:
+	# As if a mod registered an ore made of lamps: lots of small veins.
+	Registry.ores["test:lamp_ore"] = {"block": "core:lamp", "min_y": -90, "max_y": 30,
+			"veins_per_chunk": 40, "size": [3, 5], "mod": "test", "id": "test:lamp_ore"}
+	var w := await make_world(4242, "", 64, Vector3(0.5, -30, 0.5))
+	Registry.ores.erase("test:lamp_ore")
+	var lamps := 0
+	for x in range(-16, 16):
+		for z in range(-16, 16):
+			for y in range(-60, 0, 2):
+				if w.get_block(Vector3i(x, y, z)) == Registry.block_index("core:lamp"):
+					lamps += 1
+	check(lamps > 20, "a registered ore appears underground (%d found)" % lamps)
+
+
+func test_trees_come_from_the_registry() -> void:
+	check(Registry.trees.has("core:oak"), "core registers its tree as data")
+	var w := await make_world()
+	var logs := 0
+	for x in range(-24, 24):
+		for z in range(-24, 24):
+			for y in range(-4, 30):
+				if w.get_block(Vector3i(x, y, z)) == Registry.block_index("core:log"):
+					logs += 1
+	check(logs > 0, "trees generate (%d log blocks)" % logs)

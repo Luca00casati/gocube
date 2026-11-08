@@ -326,6 +326,19 @@ def lamp():
     return image(px)
 
 
+def stick():
+    """Item icon (transparent background): a short diagonal wooden stick."""
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    for i in range(6, S - 6):
+        x, y = i, S - 1 - i
+        for w in (-1, 0, 1):
+            c = WOOD[3] if w < 0 else (WOOD[1] if w > 0 else WOOD[2])
+            img.putpixel((x, y + w), c + (255,))
+    for x, y in ((6, S - 7), (S - 7, 6)):  # darker cut ends
+        img.putpixel((x, y), WOOD[0] + (255,))
+    return img
+
+
 TEXTURES = {
     "stone": stone,
     "cobblestone": cobblestone,
@@ -343,6 +356,7 @@ TEXTURES = {
     "gold_ore": lambda: ore("gold", ("#9c7210", "#dcae26", "#fde877"), 23, blobs=5),
     "crystal_ore": lambda: ore("crystal", ("#18707c", "#38bcc6", "#b2f6f3"), 24, blobs=4),
     "lamp": lamp,
+    "stick": stick,
 }
 
 if __name__ == "__main__":
