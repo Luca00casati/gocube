@@ -131,6 +131,7 @@ func _build_ui() -> void:
 	var join_row := HBoxContainer.new()
 	box.add_child(join_row)
 	_button(join_row, "Join a game…", _on_join)
+	_button(join_row, "Licenses", _on_licenses)
 	_build_join_dialog()
 
 	_build_new_dialog()
@@ -200,6 +201,41 @@ func _build_join_dialog() -> void:
 	_join_dialog.add_child(form)
 	_join_dialog.confirmed.connect(_on_join_confirmed)
 	add_child(_join_dialog)
+
+
+## Shows GoCube's license and every third-party notice the build must carry.
+func _on_licenses() -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "Licenses"
+	var text := TextEdit.new()
+	text.editable = false
+	text.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	text.custom_minimum_size = Vector2(760, 460)
+	text.text = license_text()
+	dialog.add_child(text)
+	dialog.confirmed.connect(dialog.queue_free)
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	dialog.popup_centered()
+
+
+static func license_text() -> String:
+	var parts := PackedStringArray()
+	for entry in [["GoCube", "res://LICENSE.md"],
+			["Godot Engine", "res://licenses/godot.txt"],
+			["Voxel Tools for Godot (voxel module)", "res://licenses/voxel_module.txt"]]:
+		parts.append("==== %s ====\n\n%s" % [entry[0], FileAccess.get_file_as_string(entry[1]).strip_edges()])
+	# Libraries bundled in this engine build, straight from the engine.
+	var lines := PackedStringArray(["==== Third-party libraries in the Godot engine ===="])
+	for component in Engine.get_copyright_info():
+		for part in component.parts:
+			lines.append("\n%s\n  %s\n  License: %s" % [component.name,
+					"\n  ".join(part.copyright), part.license])
+	parts.append("\n".join(lines))
+	var licenses: Dictionary = Engine.get_license_info()
+	for license_name in licenses:
+		parts.append("==== License: %s ====\n\n%s" % [license_name, licenses[license_name].strip_edges()])
+	return "\n\n\n".join(parts)
 
 
 func _refresh() -> void:

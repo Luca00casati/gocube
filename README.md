@@ -92,3 +92,14 @@ Mods are **not sandboxed**: only install mods you trust.
 - Consider a double-precision build if worlds get large.
 - Evaluate [Godot Mod Loader](https://github.com/GodotModding/godot-mod-loader) if you
   want script hooks/extensions beyond this registry.
+
+## License
+GoCube is **source-available**: you may build it yourself and play your own build for free
+(personal, non-commercial use); ready-made builds are distributed only by the author, who may
+sell them. Redistributing builds or the source, and commercial use, need written permission.
+Mods you make are yours. Full terms: [LICENSE.md](LICENSE.md).
+
+Third-party components (Godot Engine, the voxel module, and libraries bundled in Godot) keep
+their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Their texts ship with
+the game (title screen → **Licenses**).
+
