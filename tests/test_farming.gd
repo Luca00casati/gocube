@@ -79,13 +79,14 @@ func test_tall_grass_drops() -> void:
 	for i in 400:
 		seeds += Player.drops_of("core:tall_grass").count("core:seeds")
 	check(seeds > 30 and seeds < 100, "tall grass sometimes gives seeds (%d / 400)" % seeds)
-	# The world grows no tall grass: digging grass is the other way to find seeds.
+	# The world grows no tall grass: tilling grass with a hoe sometimes turns
+	# up a seed instead (breaking it only gives dirt).
 	seeds = 0
 	for i in 400:
-		var got := Player.drops_of("core:grass")
-		check(got.has("core:dirt"), "grass always gives dirt")
-		seeds += got.count("core:seeds")
-	check(seeds > 15 and seeds < 70, "grass sometimes gives seeds (%d / 400)" % seeds)
+		check_eq(Player.drops_of("core:grass"), ["core:dirt"], "breaking grass gives dirt only")
+		seeds += Player.till_drops_of("core:grass").count("core:seeds")
+	check(seeds > 15 and seeds < 70, "tilling grass sometimes gives a seed (%d / 400)" % seeds)
+	check(Player.till_drops_of("core:dirt").is_empty(), "tilling dirt never does")
 	var ripe := Player.drops_of("core:wheat_7")
 	check(ripe.has("core:wheat") and ripe.count("core:seeds") >= 1, "ripe wheat gives wheat and seeds")
 
@@ -127,3 +128,34 @@ func test_tree_table_keeps_classic_oak_in_old_worlds() -> void:
 	var oak := World._tree_order().find("core:oak")
 	check_eq(int(World._tree_table(2)[oak].style), World.TREE_STYLES.find("oak"), "older worlds: classic oak")
 	check_eq(int(World._tree_table(3)[oak].style), World.TREE_STYLES.find("round_oak"), "new worlds: round oak")
+
+
+
+## A hoe on grass makes farmland and now and then turns up a seed (dropped
+## on the ground); on dirt it never does.
+func test_hoe_on_grass_finds_seeds() -> void:
+	var w := await make_world(4242, "", 64, Vector3(0.5, 70, 0.5))
+	var p = Player.new()
+	p.world = w
+	p.position = Vector3(0.5, 72, 0.5)
+	add(p)
+	await frames(2)
+	p.creative = false
+	p.inventory.slots[0] = {"id": "core:wood_hoe", "count": 1}
+	p.selected = 0
+	var found := []
+	p.dropped.connect(func(item, _at): found.append(item))
+	seed(7)
+	for soil in ["core:grass", "core:dirt"]:
+		found.clear()
+		for i in 60:
+			w.set_block(Vector3i(0, 70, -2), Registry.block_index(soil))
+			w.set_block(Vector3i(0, 71, -2), 0)
+			p.global_position = Vector3(0.5, 72, 0.5)
+			preload("res://tests/mp_play.gd").aim(p, Vector3(0.5, 71, -1.5))  # the top of the soil
+			p._place()
+			check_eq(Registry.block_ids[w.get_block(Vector3i(0, 70, -2))], "core:farmland", "tilled " + soil)
+		if soil == "core:grass":
+			check(found.size() > 0 and found.all(func(f): return f == "core:seeds"), "grass turned up seeds (%d / 60)" % found.size())
+		else:
+			check(found.is_empty(), "dirt turned up nothing")

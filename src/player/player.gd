@@ -599,6 +599,17 @@ static func drops_of(block_id: String, tool_item: String = "") -> Array:
 	return out
 
 
+## What tilling a block with a hoe turns up: its "till_drops" ([[item,
+## count, chance], ...]), rolled now (grass: sometimes a seed).
+static func till_drops_of(block_id: String) -> Array:
+	var out := []
+	for e in Registry.blocks.get(block_id, {}).get("till_drops", []):
+		if randf() < float(e[2]):
+			for i in int(e[1]):
+				out.append(str(e[0]))
+	return out
+
+
 ## Tool tier: wood 1, stone 2, iron 3 (0: not a tool).
 static func tool_tier(item: String) -> int:
 	return int(Registry.items.get(item, {}).get("tier", 0))
@@ -665,8 +676,10 @@ func _break_target() -> void:
 func confirm_break(pos: Vector3i) -> void:
 	var items: Array = pending_drops.get(pos, [])
 	pending_drops.erase(pos)
+	# Out of where the block was, or on top of what stands there now (tilled farmland).
+	var at := Vector3(pos) + (Vector3.ONE * 0.5 if world.get_block(pos) == 0 else Vector3(0.5, 1.2, 0.5))
 	for drop in items:
-		dropped.emit(drop, Vector3(pos) + Vector3.ONE * 0.5)
+		dropped.emit(drop, at)
 
 
 func _place() -> void:
@@ -704,8 +717,15 @@ func _place() -> void:
 	# Hoe: grass or dirt with air above becomes farmland.
 	if tool_kind(item) == "hoe":
 		if target in ["core:grass", "core:dirt"] and world.get_block(hit.position + Vector3i.UP) == 0:
+			# Grass may turn up a seed: dropped once the change really happened
+			# (multiplayer: when the host confirms it, like breaking).
+			var found := till_drops_of(target)
+			if not found.is_empty():
+				pending_drops[hit.position] = found
 			_apply_edit(hit.position, Registry.block_index("core:farmland"))
 			block_placed.emit("core:farmland", Vector3(hit.position) + Vector3.ONE * 0.5)
+			if not edit_handler.is_valid():
+				confirm_break(hit.position)
 		return
 	# Seeds: plant on top of the right block.
 	if item_def.has("plants"):

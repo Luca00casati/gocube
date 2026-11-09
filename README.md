@@ -119,7 +119,8 @@ and crystal need iron. Tools hit harder than a bare hand (`"damage"`), and nothi
 out. Iron armour (helmet, chestplate, leggings, boots: 15 points) goes in the armour
 slots in the inventory and takes 4% per point off creature damage (up to 60%).
 
-**Farming**: a hoe turns grass or dirt into farmland; seeds (from tall grass, sometimes)
+**Farming**: a hoe turns grass or dirt into farmland; tilling grass sometimes turns up a
+seed (1 in 10, `"till_drops"`); seeds
 planted on it grow through 8 stages over a few minutes (`"grows_into"`, `"grow_seconds"`;
 `src/world/plant_sim.gd`, saved with the world); ripe wheat gives wheat and seeds; 3 wheat
 make bread, and eating food (`"food"`) heals when you're hurt.
@@ -215,7 +216,7 @@ creatures) and the engine's phase tests: [PROTOTYPES.md](PROTOTYPES.md),
 ## World generation and time
 The terrain comes from the C++ generator (`engine/src/generator.cpp`), deterministic per
 seed. The generator supports **biomes**; the core mod loads only one, **vanilla**: plains
-(tall grass, flowers, scattered round oaks, lakes) with **mountain ranges** rising out of
+(flowers, scattered round oaks, lakes) with **mountain ranges** rising out of
 them (grass on the lower slopes, bare stone from y 26, a thin layer of snow on the peaks
 from y 36; no trees on the rock). The **snow layer** (`core:snow`) is 1/16 of a block high: you
 walk on it, it needs ground under it, and placing a block on its spot replaces it. Breaking
@@ -315,7 +316,7 @@ in 1/16 units (the cactus). Shapes that face a way get variant blocks (`<id>_e`,
 `<id>_wall_n`, `<id>_n_upper_open`, …) chosen when placing; they drop the base item. The
 engine draws and collides with the actual boxes. More keys: `"plant_on": [blocks]`,
 `"needs_support"`, `"climbable"`, `"replaceable"` (tall grass), `"falls"`, `"leaves"`,
-`"extra_drops": [[item, count, chance]]`, `"min_tier"`, `"hidden"`; fluids: `"flow_step"`,
+`"extra_drops": [[item, count, chance]]`, `"till_drops"` (the same, when tilled with a hoe), `"min_tier"`, `"hidden"`; fluids: `"flow_step"`,
 `"damage"`.
 
 ## Writing a mod

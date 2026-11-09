@@ -39,7 +39,7 @@
     "grass": {
       "hardness": 0.6,
       "drops": "core:dirt",
-      "extra_drops": [
+      "till_drops": [
         [
           "core:seeds",
           1,

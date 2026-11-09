@@ -228,6 +228,28 @@ func test_two_players() -> void:
 	p.sneaking = false
 	p.inventory.slots[0] = {}
 
+	# Tilling grass: the farmland goes through the host, and a seed it turns up
+	# is dropped only once the host has made the farmland.
+	_give("core:wood_hoe", 1)
+	var tilled := 0
+	seed(11)
+	for i in 30:
+		host._world.set_block(o + Vector3i(1, -1, -1), Registry.block_index("core:grass"))
+		await _until(func(): return _block(client, Vector3i(1, -1, -1)) == "core:grass", "grass to till")
+		_aim(Vector3(1.5, 0, -0.5))
+		p._place()
+		if await _until(func(): return _block(host, Vector3i(1, -1, -1)) == "core:farmland", "tilling"):
+			tilled += 1
+	check_eq(tilled, 30, "every till went through the host")
+	check(await wait_until(func(): return p.inventory.count_of("core:seeds") > 0, 5), "and seeds turned up (%d)" % p.inventory.count_of("core:seeds"))
+	check(p.pending_drops.is_empty(), "nothing left waiting for the host")
+	p.inventory.slots[0] = {}
+	for i in Inventory.SIZE:
+		if p.inventory.slots[i].get("id", "") == "core:seeds":
+			p.inventory.slots[i] = {}
+	host._world.set_block(o + Vector3i(1, -1, -1), Registry.block_index("core:stone"))
+	await _until(func(): return _block(client, Vector3i(1, -1, -1)) == "core:stone", "the floor back")
+
 	# Throwing an item: the host owns it, both see it, walking over picks it up.
 	client.spawn_drop("core:stick", 1, Vector3(o) + Vector3(-5.5, 0.5, 2.5))
 	check(await wait_until(func(): return host._drops_node.count() == 1 and client._drops_node.count() == 1, 5),
