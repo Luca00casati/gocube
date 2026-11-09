@@ -165,6 +165,27 @@ void emit_face(Surface &s, const FaceDef &d, float bx, float by, float bz, const
 	}
 }
 
+// A quad with flat light: corners pos[4] (chunk-local), texture coords st[4]
+// inside the tile, triangle order (front-facing winding).
+void emit_quad(Surface &s, const float pos[4][3], const float st[4][2], const float normal[3], const AtlasLayout &atlas,
+		int tile, float sky, float blk, const int order[6]) {
+	const int base = static_cast<int>(s.positions.size() / 3);
+	const float tw = 1.0f / (atlas.cols * atlas.cell);
+	const float th = 1.0f / (atlas.rows * atlas.cell);
+	const float u0 = ((tile % atlas.cols) * atlas.cell + atlas.face_x) * tw;
+	const float v0 = ((tile / atlas.cols) * atlas.cell + atlas.face_y) * th;
+	for (int c = 0; c < 4; c++) {
+		s.positions.insert(s.positions.end(), { pos[c][0], pos[c][1], pos[c][2] });
+		s.normals.insert(s.normals.end(), { normal[0], normal[1], normal[2] });
+		s.uvs.push_back(u0 + st[c][0] * tw);
+		s.uvs.push_back(v0 + st[c][1] * th);
+		s.colors.insert(s.colors.end(), { sky, blk, 1.0f, 1.0f });
+	}
+	for (int k = 0; k < 6; k++) {
+		s.indices.push_back(base + order[k]);
+	}
+}
+
 // Smooth light at one corner of a face: average over the cell in front of the
 // face and its 3 neighbours around that corner (skipping solid ones); solid
 // neighbours also darken the corner.
@@ -195,6 +216,97 @@ void corner_light(const LightRegion &light, int fx, int fy, int fz, int ua, int 
 
 } // namespace
 
+namespace {
+
+// Everything that isn't a full cube: boxes, crossed plants, fences. Light is
+// flat per face: the cell in front for faces on the block's edge, else the
+// block's own cell (shaped blocks let light in).
+template <typename Sample>
+void emit_shape(Surface &s, const FaceTable &table, const BlockInfo &info, BlockId id, int x, int y, int z,
+		const std::vector<BlockInfo> &blocks, const AtlasLayout &atlas, const LightRegion *light, Sample sample) {
+	const BlockId count = static_cast<BlockId>(blocks.size());
+	auto light_at = [&](int lx, int ly, int lz, float &sky, float &blk) {
+		if (!light) {
+			sky = 1.0f;
+			blk = 0.0f;
+		} else {
+			sky = light->sky_at(lx, ly, lz) / float(LIGHT_MAX);
+			blk = light->block_at(lx, ly, lz) / float(LIGHT_MAX);
+		}
+		if (info.emit > 0) {
+			blk = std::max(blk, info.emit / float(LIGHT_MAX));
+		}
+	};
+	if (info.shape == SHAPE_CROSS) {
+		float sky, blk;
+		light_at(x, y, z, sky, blk);
+		const float a = 0.15f, b = 0.85f;
+		const float quads[2][4][3] = {
+			{ { a, 0, a }, { b, 0, b }, { b, 1, b }, { a, 1, a } },
+			{ { a, 0, b }, { b, 0, a }, { b, 1, a }, { a, 1, b } },
+		};
+		const float st[4][2] = { { 0, 1 }, { 1, 1 }, { 1, 0 }, { 0, 0 } };
+		const float normal[3] = { 0, 0, 1 }; // shaded like a north/south side
+		const int front[6] = { 0, 1, 2, 0, 2, 3 };
+		const int back[6] = { 0, 2, 1, 0, 3, 2 };
+		for (const auto &q : quads) {
+			float pos[4][3];
+			for (int c = 0; c < 4; c++) {
+				pos[c][0] = x + q[c][0];
+				pos[c][1] = y + q[c][1];
+				pos[c][2] = z + q[c][2];
+			}
+			emit_quad(s, pos, st, normal, atlas, info.tiles[0], sky, blk, front);
+			emit_quad(s, pos, st, normal, atlas, info.tiles[0], sky, blk, back);
+		}
+		return;
+	}
+	std::vector<Box> fence;
+	const std::vector<Box> *boxes = &info.model;
+	if (info.shape == SHAPE_FENCE) {
+		auto connects = [&](int nx, int ny, int nz) {
+			const BlockId n = sample(nx, ny, nz);
+			return n < count && n != AIR && (blocks[n].shape == SHAPE_FENCE || blocks[n].opaque);
+		};
+		fence_boxes(connects(x, y, z - 1), connects(x + 1, y, z), connects(x, y, z + 1), connects(x - 1, y, z), false, fence);
+		boxes = &fence;
+	}
+	for (const Box &bx : *boxes) {
+		for (int f = 0; f < FACE_COUNT; f++) {
+			const FaceDef &d = table.f[f];
+			const int axis = d.dx ? 0 : (d.dy ? 1 : 2);
+			const bool positive = (d.dx + d.dy + d.dz) > 0;
+			const bool on_edge = positive ? bx.mx[axis] >= 1.0f : bx.mn[axis] <= 0.0f;
+			float sky, blk;
+			if (on_edge) {
+				const BlockId n = sample(x + d.dx, y + d.dy, z + d.dz);
+				if (n < count && (blocks[n].opaque || (n == id && !info.opaque && blocks[n].shape == SHAPE_CUBE))) {
+					continue; // covered by the neighbour
+				}
+				light_at(x + d.dx, y + d.dy, z + d.dz, sky, blk);
+			} else {
+				light_at(x, y, z, sky, blk);
+			}
+			float pos[4][3], st[4][2];
+			for (int c = 0; c < 4; c++) {
+				float p[3];
+				for (int k = 0; k < 3; k++) {
+					p[k] = d.corners[c][k] > 0.5f ? bx.mx[k] : bx.mn[k];
+				}
+				pos[c][0] = x + p[0];
+				pos[c][1] = y + p[1];
+				pos[c][2] = z + p[2];
+				st[c][0] = p[d.ua];
+				st[c][1] = axis == 1 ? p[d.va] : 1.0f - (p[d.va] - bx.ty);
+			}
+			const float normal[3] = { float(d.dx), float(d.dy), float(d.dz) };
+			emit_quad(s, pos, st, normal, atlas, info.tiles[f], sky, blk, d.order);
+		}
+	}
+}
+
+} // namespace
+
 void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_COUNT],
 		const std::vector<BlockInfo> &blocks, const AtlasLayout &atlas, const LightRegion *light,
 		const MeshOptions &options, Surface &opaque, Surface &fluid) {
@@ -220,6 +332,11 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 					continue;
 				}
 				const BlockInfo &info = blocks[id];
+				if (info.shape != SHAPE_CUBE) {
+					emit_shape(opaque, table, info, id, x, y, z, blocks, atlas, light,
+							[&](int nx, int ny, int nz) { return sample(chunk, neighbours, blocks, nx, ny, nz, solid_fallback); });
+					continue;
+				}
 				for (int f = 0; f < FACE_COUNT; f++) {
 					const FaceDef &d = table.f[f];
 					const BlockId nid = sample(chunk, neighbours, blocks, x + d.dx, y + d.dy, z + d.dz, solid_fallback);

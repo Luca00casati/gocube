@@ -62,7 +62,7 @@ func _ready() -> void:
 		results["sees the host's creatures"] = await _wait_for(func(): return game._mobs.count() >= 1, 5)
 		# Breaking: the drop appears only once the host has confirmed it.
 		var drops: Node = game._drops_node
-		game._player.pending_drops[target] = "core:planks"
+		game._player.pending_drops[target] = ["core:planks"]
 		game._player._apply_edit(target, 0)
 		var early := drops.get_child_count()
 		results["drop after host confirms"] = early == 0 and await _wait_for(

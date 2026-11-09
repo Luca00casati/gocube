@@ -1,0 +1,84 @@
+extends "res://tests/test_suite.gd"
+## Biomes, legacy worlds, falling blocks, leaf decay, lava.
+
+const Y := 70
+
+
+func _legacy_world() -> World:
+	# A world made before biomes: its meta has no "generator".
+	var w := World.new()
+	add(w)
+	w.meta = {}
+	Registry.assign_block_ids()
+	w._make_engine(64, 4242, 1)
+	w.add_child(w.engine)
+	w.engine.start()
+	w.set_viewer(Vector3(0.5, 20, 0.5))
+	await wait_until(func(): return w.is_area_meshed(AABB(Vector3(-16, -20, -16), Vector3(32, 80, 32))))
+	return w
+
+
+func test_new_worlds_have_biomes() -> void:
+	var w := await make_world(777)
+	check_eq(int(w.meta.generator), World.GENERATOR_VERSION, "new worlds use the newest generator")
+	var seen := {}
+	for r in range(0, 3000, 64):
+		for a in range(0, 360, 30):
+			seen[w.biome_name(int(cos(deg_to_rad(a)) * r), int(sin(deg_to_rad(a)) * r))] = true
+	for b in ["core:plains", "core:forest", "core:desert", "core:snow"]:
+		check(seen.has(b), b + " exists")
+
+
+func test_legacy_worlds_keep_their_terrain() -> void:
+	var w := await _legacy_world()
+	check_eq(w.biome_name(0, 0), "", "no biomes")
+	var plants := 0
+	for x in range(-16, 16):
+		for z in range(-16, 16):
+			var hit := w.raycast(Vector3(x + 0.5, 100, z + 0.5), Vector3.DOWN, 200)
+			if hit.hit and Registry.block_ids[hit.block] in ["core:tall_grass", "core:bluebell", "core:sunpetal"]:
+				plants += 1
+	check_eq(plants, 0, "no new plants in old worlds")
+
+
+func test_sand_falls() -> void:
+	var w := await make_world()
+	var p := Vector3i(0, Y + 5, 0)
+	w.set_block(Vector3i(0, Y, 0), Registry.block_index("core:stone"))
+	w.set_block(p, Registry.block_index("core:sand"))
+	for i in 10:
+		w.plants._process(0.016)
+	check_eq(w.get_block(p), 0, "sand left its spot")
+	check_eq(Registry.block_ids[w.get_block(Vector3i(0, Y + 1, 0))], "core:sand", "and landed on the stone")
+
+
+func test_leaves_decay_without_their_tree() -> void:
+	var w := await make_world()
+	var log_pos := Vector3i(0, Y, 0)
+	w.set_block(log_pos, Registry.block_index("core:log"))
+	var leaves := Registry.block_index("core:leaves")
+	for x in range(-1, 2):
+		w.set_block(log_pos + Vector3i(x, 1, 0), leaves)
+	w.set_block(log_pos + Vector3i(3, 1, 0), Registry.block_index("core:leaves_placed"))
+	w.set_block(log_pos + Vector3i(4, 1, 0), Registry.block_index("core:leaves_placed"))
+	for i in 5:
+		w.plants._process(1.0)
+	check_eq(w.get_block(log_pos + Vector3i(1, 1, 0)), leaves, "leaves next to a log stay")
+	w.set_block(log_pos, 0)  # chop the tree
+	for i in 30:
+		w.plants._process(0.5)
+	for x in range(-1, 2):
+		check_eq(w.get_block(log_pos + Vector3i(x, 1, 0)), 0, "leaves decay once the log is gone")
+	check_eq(Registry.block_ids[w.get_block(log_pos + Vector3i(4, 1, 0))], "core:leaves_placed", "placed leaves stay")
+
+
+func test_lava_meets_water() -> void:
+	var w := await make_world()
+	for x in range(-2, 3):
+		for z in range(-2, 3):
+			w.set_block(Vector3i(x, Y, z), Registry.block_index("core:stone"))
+	w.set_block(Vector3i(0, Y + 1, 0), Registry.block_index("core:lava"))
+	w.set_block(Vector3i(1, Y + 1, 0), Registry.block_index("core:water"))
+	for i in 8:
+		w.fluids._process(0.3)
+	check_eq(Registry.block_ids[w.get_block(Vector3i(0, Y + 1, 0))], "core:stone", "a lava source next to water turns to stone")

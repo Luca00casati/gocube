@@ -1,15 +1,21 @@
 class_name MobManager
 extends Node3D
 ## Creatures. Where the world is owned (single player / host) this spawns them
-## on grass around players by day, despawns them when nobody is near, runs
-## their behaviour and handles hits. On multiplayer clients it only shows what
-## the host sends (Session).
+## around players (Block Eaters on grass by day, ninjas at night), despawns them
+## when nobody is near, runs their behaviour and handles hits. On multiplayer
+## clients it only shows what the host sends (Session).
 
 signal killed(at: Vector3, attacker: int, drops: Array)  # [[item, count], ...]
 signal hurt_at(at: Vector3, variant: String)  # variant: "" or the block id
 signal ate(at: Vector3, block: String)
+## A ninja hit a player (peer 0 = the local one).
+signal struck(peer: int, damage: int, push: Vector3)
+## A ninja caught by the sun.
+signal vanished(at: Vector3)
 
 const MAX_MOBS := 12
+const MAX_NINJAS := 6
+const NINJA_NIGHT := 0.15   # day_amount below which ninjas come out
 const SPAWN_EVERY := 2.0
 const SPAWN_MIN := 20.0
 const SPAWN_MAX := 48.0
@@ -22,7 +28,11 @@ var world: World
 var player_positions := Callable()
 ## Returns 0..1 daylight (spawning only by day).
 var day_amount := Callable()
-var _mobs := {}  # id -> BlockEater
+## Returns the survival players ninjas may chase: [{"position", "peer"}].
+var player_targets := Callable()
+## Ninjas only in survival worlds.
+var ninjas_enabled := true
+var _mobs := {}  # id -> BlockEater or Ninja
 var _next_id := 1
 var _spawn_timer := 0.0
 var _rng := RandomNumberGenerator.new()
@@ -81,7 +91,17 @@ func _process(_delta: float) -> void:
 func _physics_process(delta: float) -> void:
 	if world == null or world.remote:
 		return
+	var day: float = day_amount.call() if day_amount.is_valid() else 1.0
+	var targets: Array = player_targets.call() if player_targets.is_valid() else []
 	for mob in _mobs.values():
+		if mob is Ninja:
+			var strike: Dictionary = mob.simulate(delta, targets)
+			if not strike.is_empty():
+				struck.emit(strike.peer, strike.damage, strike.push)
+			if mob.in_sunlight(day):
+				vanished.emit(mob.global_position + Vector3(0, 0.9, 0))
+				_remove(mob.id)
+			continue
 		mob.simulate(delta)
 		if mob.wants_to_eat:
 			mob.wants_to_eat = false
@@ -90,8 +110,44 @@ func _physics_process(delta: float) -> void:
 	if _spawn_timer >= SPAWN_EVERY:
 		_spawn_timer = 0.0
 		_despawn_far()
-		if _mobs.size() < MAX_MOBS and (not day_amount.is_valid() or day_amount.call() > 0.3):
+		if day > 0.3 and count_kind(BlockEater) < MAX_MOBS:
 			_try_spawn()
+		elif ninjas_enabled and day < NINJA_NIGHT and count_kind(Ninja) < MAX_NINJAS:
+			_try_spawn_ninja()
+
+
+func count_kind(kind) -> int:
+	return _mobs.values().filter(func(m): return is_instance_of(m, kind)).size()
+
+
+func spawn_ninja(feet: Vector3) -> Ninja:
+	var n := Ninja.new()
+	n.id = _next_id
+	_next_id += 1
+	n.world = world
+	add_child(n)
+	n.global_position = feet
+	n.target_position = feet
+	_mobs[n.id] = n
+	return n
+
+
+## A ninja on solid ground 20-40 blocks from a player, with room to stand.
+func _try_spawn_ninja() -> void:
+	var players: Array = player_positions.call() if player_positions.is_valid() else []
+	if players.is_empty():
+		return
+	var around: Vector3 = players[_rng.randi() % players.size()]
+	var angle := _rng.randf() * TAU
+	var dist := _rng.randf_range(20.0, 40.0)
+	var x := floori(around.x + cos(angle) * dist)
+	var z := floori(around.z + sin(angle) * dist)
+	var hit := world.raycast(Vector3(x + 0.5, World.TOP_Y, z + 0.5), Vector3.DOWN, 400)
+	if not hit.hit or Registry.blocks.get(Registry.block_ids[hit.block], {}).get("leaves", false):
+		return
+	var feet := Vector3(x + 0.5, hit.position.y + 1, z + 0.5)
+	if world.is_box_free(feet, Ninja.BOX) and not world.is_fluid(world.get_block(Vector3i(feet.floor()))):
+		spawn_ninja(feet)
 
 
 func spawn_at(feet: Vector3, variant := "") -> BlockEater:
@@ -142,7 +198,7 @@ func _try_spawn() -> void:
 func _despawn_far() -> void:
 	var players: Array = player_positions.call() if player_positions.is_valid() else []
 	for id in _mobs.keys():
-		var mob: BlockEater = _mobs[id]
+		var mob: Node3D = _mobs[id]
 		var near := players.any(func(p): return (p as Vector3).distance_to(mob.global_position) < DESPAWN_DISTANCE)
 		if not near or mob.global_position.y < -200:
 			_remove(id)
@@ -154,14 +210,17 @@ func _remove(id: int) -> void:
 		_mobs.erase(id)
 
 
+## Every creature's state for clients: {id: [position, yaw, walking, variant, kind, attacking]}.
+
+
 ## An attack from a player standing at `from` (attacker: peer id, 0 = local).
-func hit(id: int, from: Vector3, attacker: int) -> void:
-	var mob: BlockEater = _mobs.get(id)
+func hit(id: int, from: Vector3, attacker: int, damage: int = ATTACK_DAMAGE) -> void:
+	var mob = _mobs.get(id)
 	if mob == null:
 		return
 	hurt_at.emit(mob.global_position, mob.variant)
-	if mob.hurt(ATTACK_DAMAGE, from):
-		var at := mob.global_position + Vector3(0, 0.5, 0)
+	if mob.hurt(damage, from):
+		var at: Vector3 = mob.global_position + Vector3(0, 0.5, 0)
 		killed.emit(at, attacker, mob.drops(_rng))
 		_remove(id)
 
@@ -178,11 +237,12 @@ func pick(origin: Vector3, dir: Vector3, max_distance: float) -> Dictionary:
 
 # --- Multiplayer -------------------------------------------------------------------------
 
-## Host: positions to send to clients: {id: [position, yaw, walking, variant]}.
+## Host: positions to send to clients (see above).
 func states() -> Dictionary:
 	var out := {}
 	for mob in _mobs.values():
-		out[mob.id] = [mob.global_position, mob.rotation.y, mob.walking, mob.variant]
+		out[mob.id] = [mob.global_position, mob.rotation.y, mob.walking, mob.variant, mob.KIND,
+				mob.attacking > 0.0 if mob is Ninja else false]
 	return out
 
 
@@ -190,18 +250,24 @@ func states() -> Dictionary:
 func apply_states(states: Dictionary) -> void:
 	for id in states:
 		var s: Array = states[id]
-		var mob: BlockEater = _mobs.get(id)
+		var mob = _mobs.get(id)
+		var kind := str(s[4]) if s.size() > 4 else BlockEater.KIND
 		if mob == null:
-			BlockEater.atlas = world.atlas
-			mob = BlockEater.new()
+			if kind == Ninja.KIND:
+				mob = Ninja.new()
+			else:
+				BlockEater.atlas = world.atlas
+				mob = BlockEater.new()
+				mob.variant = str(s[3]) if Registry.blocks.has(str(s[3])) else ""
 			mob.id = id
-			mob.variant = str(s[3]) if Registry.blocks.has(str(s[3])) else ""
 			mob.world = world
 			add_child(mob)
 			mob.global_position = s[0]
 			_mobs[id] = mob
-		var v := str(s[3]) if Registry.blocks.has(str(s[3])) else ""
-		mob.set_variant(v)  # it may have eaten something
+		if mob is BlockEater:
+			mob.set_variant(str(s[3]) if Registry.blocks.has(str(s[3])) else "")  # it may have eaten something
+		elif s.size() > 5 and s[5] and mob.attacking <= 0.0:
+			mob.attacking = 0.35
 		mob.target_position = s[0]
 		mob.target_yaw = s[1]
 		mob.walking = s[2]

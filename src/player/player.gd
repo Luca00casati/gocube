@@ -22,6 +22,7 @@ signal open_block(position: Vector3i)
 ## Left click on a creature (main decides: local hit or through the host).
 signal attack(mob_id: int)
 signal block_placed(block_id: String, at: Vector3)
+signal ate(item: String)
 signal splashed(at: Vector3)
 signal hurt(amount: int)
 signal died
@@ -45,6 +46,7 @@ const ACCEL_AIR := 3.0
 const REACH := 6.0
 const BENCH_SPEED := 20.0
 const SWIM_SPEED_FACTOR := 0.6
+const CLIMB_SPEED := 3.0
 const SWIM_UP_SPEED := 3.5
 const SINK_SPEED := 2.0
 const MINE_SECONDS_PER_HARDNESS := 0.75
@@ -94,6 +96,8 @@ var on_floor := false
 ## See set_ready_to_move().
 var _frozen := true
 var selected := 0  # hotbar slot
+var on_ladder := false
+var _burn_timer := 0.5
 ## Survival: what a break we asked for will drop, by position, until confirmed.
 var pending_drops := {}
 var _outline: MeshInstance3D
@@ -146,9 +150,22 @@ func selected_item() -> String:
 	return inventory.slots[selected].get("id", "")
 
 
+## Whether a block placed at `cell` has what it needs to hang on or stand on
+## (see PlantSim.supported, which also pops blocks whose support goes).
+func supported(id: String, cell: Vector3i) -> bool:
+	return PlantSim.supported(world, id, cell)
+
+
+## A ladder (or anything "climbable") in the block at this position.
+func is_climbable(at: Vector3) -> bool:
+	var def = Registry.blocks.get(Registry.block_ids[world.get_block(Vector3i(at.floor()))])
+	return def is Dictionary and def.get("climbable", false)
+
+
 static func is_placeable(id: String) -> bool:
 	var def = Registry.blocks.get(id)
-	return def != null and def.get("solid", true) and not def.has("fluid") and id != "core:air"
+	return def != null and not def.has("fluid") and id != "core:air" and not def.has("variant_of") \
+			and not def.get("hidden", false)
 
 
 ## Creative: one of every placeable block (counts are never used up).
@@ -208,6 +225,7 @@ func _physics_process(delta: float) -> void:
 	var sneak := Input.is_action_pressed(&"sneak") and not ui_open
 	var jump := Input.is_action_pressed(&"jump") and not ui_open
 	in_water = world.is_fluid(world.get_block(Vector3i((global_position + Vector3(0, 0.9, 0)).floor())))
+	on_ladder = is_climbable(global_position) or is_climbable(global_position + Vector3(0, 1.0, 0))
 
 	if flying:
 		var speed := FLY_SPRINT_SPEED if sprint else FLY_SPEED
@@ -224,7 +242,16 @@ func _physics_process(delta: float) -> void:
 				Vector2(wish.x, wish.z) * speed, 1.0 - exp(-accel * delta))
 		velocity.x = horizontal.x
 		velocity.z = horizontal.y
-		if in_water:
+		if on_ladder:
+			# Climbing: up with Space or walking into it, down slowly otherwise;
+			# sneaking holds on.
+			if jump or input.y < -0.1:
+				velocity.y = CLIMB_SPEED
+			elif sneak:
+				velocity.y = 0.0
+			else:
+				velocity.y = maxf(velocity.y - GRAVITY * delta, -CLIMB_SPEED)
+		elif in_water:
 			# buoyant: sink slowly, Space swims up
 			velocity.y = maxf(velocity.y - GRAVITY * 0.3 * delta, -SINK_SPEED)
 			if jump:
@@ -256,8 +283,8 @@ func _physics_process(delta: float) -> void:
 func _after_move(moved: Vector3, vertical_speed: float, sneak: bool, delta: float) -> void:
 	var below := Registry.block_ids[world.get_block(Vector3i((global_position + Vector3(0, -0.1, 0)).floor()))]
 	# Falling: remember the highest point since leaving the ground.
-	if on_floor or in_water or flying:
-		if on_floor and not _was_on_floor and not in_water and not flying:
+	if on_floor or in_water or flying or on_ladder:
+		if on_floor and not _was_on_floor and not in_water and not flying and not on_ladder:
 			var fall := _fall_peak - global_position.y
 			if fall > 0.6:
 				footstep.emit(below, global_position)
@@ -281,6 +308,16 @@ func _after_move(moved: Vector3, vertical_speed: float, sneak: bool, delta: floa
 
 	if creative:
 		return
+	# Fluids that hurt ("damage": lava) burn every half second.
+	var body_def: Dictionary = Registry.blocks.get(Registry.block_ids[world.get_block(
+			Vector3i((global_position + Vector3(0, 0.4, 0)).floor()))], {})
+	if body_def.has("damage"):
+		_burn_timer += delta
+		if _burn_timer >= 0.5:
+			_burn_timer = 0.0
+			damage(int(body_def.damage), "lava")
+	else:
+		_burn_timer = 0.5  # the first touch hurts at once
 	var head_in_water := world.is_fluid(world.get_block(Vector3i(camera.global_position.floor())))
 	if head_in_water:
 		breath = maxf(0.0, breath - delta)
@@ -300,9 +337,13 @@ func _after_move(moved: Vector3, vertical_speed: float, sneak: bool, delta: floa
 			health += 1
 
 
-func damage(amount: int) -> void:
+## source "mob": armour takes off 4% per point (up to 60%).
+func damage(amount: int, source := "") -> void:
 	if creative or dead or amount <= 0:
 		return
+	if source == "mob":
+		var reduced := float(amount) * (1.0 - minf(0.6, inventory.armor_points() * 0.04))
+		amount = maxi(1, roundi(reduced))
 	health = maxi(0, health - amount)
 	_since_damage = 0.0
 	_regen_timer = 0.0
@@ -372,7 +413,7 @@ static func mine_seconds(block_id: String, tool_item: String = "") -> float:
 	var def: Dictionary = Registry.blocks.get(block_id, {})
 	var seconds := maxf(MIN_MINE_SECONDS, float(def.get("hardness", 1.0)) * MINE_SECONDS_PER_HARDNESS)
 	if def.has("tool"):
-		if tool_kind(tool_item) == def.tool:
+		if tool_kind(tool_item) == def.tool and tool_tier(tool_item) >= int(def.get("min_tier", 1)):
 			return maxf(MIN_MINE_SECONDS, seconds / tool_speed(tool_item))
 		if def.get("requires_tool", false):
 			return seconds * 3.0
@@ -383,9 +424,34 @@ static func mine_seconds(block_id: String, tool_item: String = "") -> float:
 ## itself; nothing if it "requires_tool" and the right tool isn't held.
 static func drop_of(block_id: String, tool_item: String = "") -> String:
 	var def: Dictionary = Registry.blocks.get(block_id, {})
-	if def.get("requires_tool", false) and tool_kind(tool_item) != def.get("tool", ""):
+	if def.get("requires_tool", false) and (tool_kind(tool_item) != def.get("tool", "")
+			or tool_tier(tool_item) < int(def.get("min_tier", 1))):
 		return ""
-	return str(def.get("drops", block_id))
+	return str(def.get("drops", BlockShapes.base_of(block_id)))
+
+
+## Everything breaking a block gives: drop_of plus its "extra_drops"
+## ([[item, count, chance], ...]), rolled now.
+static func drops_of(block_id: String, tool_item: String = "") -> Array:
+	var out := []
+	var main := drop_of(block_id, tool_item)
+	if main != "":
+		out.append(main)
+	for e in Registry.blocks.get(block_id, {}).get("extra_drops", []):
+		if randf() < float(e[2]):
+			for i in int(e[1]):
+				out.append(str(e[0]))
+	return out
+
+
+## Tool tier: wood 1, stone 2, iron 3 (0: not a tool).
+static func tool_tier(item: String) -> int:
+	return int(Registry.items.get(item, {}).get("tier", 0))
+
+
+## Damage a hit does with this item in hand (bare hand: 2).
+static func attack_damage(item: String) -> int:
+	return int(Registry.items.get(item, {}).get("damage", 2))
 
 
 static func tool_kind(item: String) -> String:
@@ -430,8 +496,11 @@ func _break_target() -> void:
 	var broken: String = Registry.block_ids[hit.block]
 	var at := Vector3(hit.position) + Vector3.ONE * 0.5
 	if not creative:
-		pending_drops[hit.position] = drop_of(broken, selected_item())
+		pending_drops[hit.position] = drops_of(broken, selected_item())
 	_apply_edit(hit.position, Registry.block_index("core:air"))
+	var other = BlockShapes.door_other_half(broken, hit.position)
+	if other != null and BlockShapes.base_of(Registry.block_ids[world.get_block(other)]) == BlockShapes.base_of(broken):
+		_apply_edit(other, Registry.block_index("core:air"))  # a door goes as a whole
 	block_broken.emit(broken, at)
 	if not edit_handler.is_valid():
 		confirm_break(hit.position)  # local: the block is gone, drop it now
@@ -439,9 +508,9 @@ func _break_target() -> void:
 
 ## The block at `pos` really was broken (multiplayer: the host confirmed it).
 func confirm_break(pos: Vector3i) -> void:
-	var drop: String = pending_drops.get(pos, "")
+	var items: Array = pending_drops.get(pos, [])
 	pending_drops.erase(pos)
-	if drop != "":
+	for drop in items:
 		dropped.emit(drop, Vector3(pos) + Vector3.ONE * 0.5)
 
 
@@ -452,13 +521,66 @@ func _place() -> void:
 			and Registry.blocks.get(Registry.block_ids[hit.block], {}).has("block_entity"):
 		open_block.emit(hit.position)
 		return
+	# Doors open and close (sneak to place against them instead).
+	if hit.hit and not Input.is_action_pressed(&"sneak"):
+		var toggle := BlockShapes.toggle_door(Registry.block_ids[hit.block], hit.position)
+		if not toggle.is_empty():
+			for t in toggle:
+				_apply_edit(t[0], Registry.block_index(t[1]))
+			block_placed.emit(Registry.block_ids[hit.block], Vector3(hit.position) + Vector3.ONE * 0.5)
+			return
 	var item := selected_item()
+	var item_def: Dictionary = Registry.items.get(item, {})
+	# Food: eat it (when hurt).
+	if item_def.has("food"):
+		if not creative and health < MAX_HEALTH:
+			health = mini(MAX_HEALTH, health + int(item_def.food))
+			inventory.take_one(selected)
+			ate.emit(item)
+		return
+	if not hit.hit:
+		return
+	var target: String = Registry.block_ids[hit.block]
+	# Hoe: grass or dirt with air above becomes farmland.
+	if tool_kind(item) == "hoe":
+		if target in ["core:grass", "core:dirt"] and world.get_block(hit.position + Vector3i.UP) == 0:
+			_apply_edit(hit.position, Registry.block_index("core:farmland"))
+			block_placed.emit("core:farmland", Vector3(hit.position) + Vector3.ONE * 0.5)
+		return
+	# Seeds: plant on top of the right block.
+	if item_def.has("plants"):
+		if target in item_def.get("plant_on", []) and hit.normal == Vector3i.UP and world.get_block(hit.previous) == 0:
+			_apply_edit(hit.previous, Registry.block_index(item_def.plants))
+			block_placed.emit(item_def.plants, Vector3(hit.previous) + Vector3.ONE * 0.5)
+			if not creative:
+				inventory.take_one(selected)
+		return
 	if not is_placeable(item):
 		return
-	if not hit.hit or overlaps_block(global_position, hit.previous):
-		return  # nothing to place against, or it would be inside you
-	_apply_edit(hit.previous, Registry.block_index(item))
-	block_placed.emit(item, Vector3(hit.previous) + Vector3.ONE * 0.5)
+	# Placing into tall grass or a flower replaces it.
+	if Registry.blocks.get(target, {}).get("replaceable", false):
+		hit = hit.duplicate()
+		hit.previous = hit.position
+		hit.normal = Vector3i.UP
+	var look := -camera.global_basis.z
+	var hit_point := camera.global_position + look * float(hit.distance)
+	var places := BlockShapes.placement(item, hit, look, hit_point)
+	for p in places:
+		var cell: Vector3i = p[0]
+		var def: Dictionary = Registry.blocks.get(p[1], {})
+		var there: int = world.get_block(cell)
+		if there != 0 and not world.is_fluid(there) \
+				and not Registry.blocks.get(Registry.block_ids[there], {}).get("replaceable", false):
+			return  # occupied (e.g. no room for a door's upper half)
+		if not supported(p[1], cell):
+			return  # a torch or ladder needs something to hang on
+		if def.get("solid", true) and overlaps_block(global_position, cell):
+			return  # it would be inside you
+	if places.is_empty():
+		return
+	for p in places:
+		_apply_edit(p[0], Registry.block_index(p[1]))
+	block_placed.emit(item, Vector3(places[0][0]) + Vector3.ONE * 0.5)
 	if not creative:
 		inventory.take_one(selected)
 

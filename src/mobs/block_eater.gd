@@ -10,6 +10,7 @@ extends Node3D
 ## Where the world is owned (single player / host) MobManager calls simulate();
 ## on multiplayer clients the node only shows positions the host sends.
 
+const KIND := "eater"
 const BOX := Vector3(0.9, 0.95, 0.9)   # collision box (width, height, depth)
 const WALK_SPEED := 1.2
 const FLEE_SPEED := 3.4

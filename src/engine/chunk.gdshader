@@ -28,5 +28,9 @@ void fragment() {
 			: (n.y < -0.5 ? face_light.w : (abs(n.z) > 0.5 ? face_light.y : face_light.z));
 	vec3 light = max(vec3(light_curve(COLOR.r) * daylight), block_light_color * light_curve(COLOR.g));
 	light = max(light, vec3(min_light));
-	ALBEDO = texture(albedo_texture, UV).rgb * face * light * COLOR.b;
+	vec4 tex = texture(albedo_texture, UV);
+	if (tex.a < 0.5) {
+		discard;  // see-through pixels: glass, torches, ladders, plants
+	}
+	ALBEDO = tex.rgb * face * light * COLOR.b;
 }

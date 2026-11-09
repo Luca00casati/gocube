@@ -26,6 +26,8 @@ var use_cmdline := false
 ## --world / --seed / --host / --join=ADDR / --port / --name override the above.
 var _args := {}
 var _fps_label: Label
+var _debug_label: Label   # F3
+var _debug_timer := 0.0
 var _loading: Control
 var _loading_since := 0
 var _world: World
@@ -104,6 +106,18 @@ func _ready() -> void:
 			return []
 		return [_player.global_position] + _session.peer_positions()
 	_mobs.day_amount = func(): return _day.day_amount()
+	_mobs.player_targets = func():
+		var out := []
+		if _player and not _loading and not _player.creative and not _player.dead:
+			out.append({"position": _player.global_position, "peer": 0})
+		return out + _session.peer_targets()
+	_mobs.struck.connect(func(peer, damage, push):
+		if peer == 0:
+			_take_hit(damage, push)
+		else:
+			_session.strike_player(peer, damage, push))
+	_mobs.vanished.connect(_smoke_puff)
+	_session.struck.connect(_take_hit)
 	_mobs.hurt_at.connect(func(at, variant):
 		if variant == "":
 			_sounds.play("core:effects", "hurt", at, -4.0)
@@ -180,7 +194,7 @@ func _start_client() -> void:
 func _on_welcomed(info: Dictionary) -> void:
 	# Clients generate terrain themselves, so they can use their own view distance.
 	_world.build_remote(PackedStringArray(info.block_ids), int(_args.get("view", Settings.view_distance)),
-			int(info.seed), info.chunks, str(info.get("mode", "survival")))
+			int(info.seed), info.chunks, str(info.get("mode", "survival")), int(info.get("generator", 1)))
 	_start_day(float(info.get("time", DayCycle.START_TIME)), float(info.get("day_length", DayCycle.DEFAULT_DAY_LENGTH)))
 	var s: Array = info.spawn  # an eye position next to the host
 	_spawn_player(Vector3(s[0], s[1] - Player.EYE_HEIGHT, s[2]))
@@ -236,13 +250,25 @@ func _spawn_player(feet: Vector3) -> void:
 	player.dropped.connect(func(item, at): spawn_drop(item, 1, at))
 	player.open_block.connect(_open_container)
 	player.mob_picker = _mobs.pick
+	var hand := Hand.new()
+	hand.player = player
+	hand.atlas = _world.atlas
+	player.camera.add_child(hand)
+	player.attack.connect(func(_id): hand.swing())
+	player.block_placed.connect(func(_b, _at): hand.swing())
+	player.block_broken.connect(func(_b, _at): hand.swing())
+	player.ate.connect(func(_i): hand.swing())
+	_mobs.ninjas_enabled = not player.creative
 	player.attack.connect(func(id):
 		if _world.remote:
-			_session.hit_mob(id)
+			_session.hit_mob(id, player.selected_item())
 		else:
-			_mobs.hit(id, player.global_position, 0))
+			_mobs.hit(id, player.global_position, 0, Player.attack_damage(player.selected_item())))
 	if _world.block_entities:
 		_world.block_entities.spilled.connect(_on_spilled)
+	if _world.plants:
+		_world.plants.popped.connect(_on_spilled)
+	player.ate.connect(func(_item): _sounds.play("core:effects", "pickup", player.global_position, -4.0))
 	_hotbar = Hotbar.new()
 	_hotbar.player = player
 	_hotbar.atlas = _world.atlas
@@ -263,6 +289,11 @@ func _exit_tree() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_F3:
+		_debug_label.visible = not _debug_label.visible
+		_fps_label.visible = not _debug_label.visible
+		get_viewport().set_input_as_handled()
+		return
 	if _player and not _loading and not get_tree().paused and _inventory_screen == null \
 			and _death_screen == null and _container_screen == null and event.is_action_pressed(&"inventory"):
 		_open_inventory()
@@ -342,6 +373,75 @@ func _open_container(pos: Vector3i) -> void:
 	_hud.add_child(_container_screen)
 	_player.ui_open = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+## A creature hit the local player: damage (armour counts) and a shove.
+func _take_hit(damage: int, push: Vector3) -> void:
+	if _player == null or _player.dead:
+		return
+	_player.damage(damage, "mob")
+	_player.velocity += push
+
+
+## A little cloud of smoke (a ninja vanishing in the sun).
+func _smoke_puff(at: Vector3) -> void:
+	var p := CPUParticles3D.new()
+	p.one_shot = true
+	p.emitting = true
+	p.amount = 24
+	p.lifetime = 0.9
+	p.explosiveness = 0.95
+	p.direction = Vector3.UP
+	p.spread = 70.0
+	p.initial_velocity_min = 1.0
+	p.initial_velocity_max = 2.5
+	p.gravity = Vector3(0, 0.8, 0)
+	p.scale_amount_min = 0.2
+	p.scale_amount_max = 0.45
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3.ONE
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(0.82, 0.82, 0.86)
+	mesh.material = mat
+	p.mesh = mesh
+	add_child(p)
+	p.global_position = at
+	get_tree().create_timer(1.5).timeout.connect(p.queue_free)
+	_sounds.play("core:effects", "splash", at, -12.0)
+
+
+## The F3 screen: where you are, what you look at, and how the world is doing.
+func _debug_text() -> String:
+	if _player == null or _world.engine == null:
+		return ""
+	var p: Vector3 = _player.global_position
+	var b := Vector3i(p.floor())
+	var c: Vector3i = _world.chunk_of(p)
+	var yaw := fposmod(rad_to_deg(_player.rotation.y), 360.0)
+	var facing: String = ["north (-Z)", "west (-X)", "south (+Z)", "east (+X)"][int(round(yaw / 90.0)) % 4]
+	var lines := [
+		"GoCube · %d FPS · %s" % [Engine.get_frames_per_second(), _day.clock_text(Settings.clock_24h)],
+		"",
+		"XYZ: %.2f / %.2f / %.2f" % [p.x, p.y, p.z],
+		"Block: %d %d %d" % [b.x, b.y, b.z],
+		"Chunk: %d %d %d  (in chunk: %d %d %d)" % [c.x, c.y, c.z, posmod(b.x, 32), posmod(b.y, 32), posmod(b.z, 32)],
+		"Facing: %s  (%.0f°)" % [facing, yaw],
+	]
+	var biome := _world.biome_name(b.x, b.z)
+	lines.append("Biome: %s" % (biome.get_slice(":", 1).capitalize() if biome != "" else "(original world)"))
+	var hit: Dictionary = _player._target()
+	if hit.hit:
+		lines.append("Looking at: %s at %d %d %d" % [Registry.block_ids[hit.block], hit.position.x, hit.position.y, hit.position.z])
+	lines.append("")
+	var st: Dictionary = _world.engine.get_stats()
+	lines.append("Chunks: %d loaded, %d meshed, %d queued" % [st.get("chunks", 0), st.get("meshed", 0), st.get("queued_jobs", 0)])
+	lines.append("Generate %.1f ms · light %.1f ms · mesh %.1f ms (per chunk)" % [st.get("generate_ms_avg", 0.0),
+			st.get("light_ms_avg", 0.0), st.get("mesh_ms_avg", 0.0)])
+	lines.append("Creatures: %d · drops: %d · view %d blocks" % [_mobs.count(), _drops_node.get_child_count(), _world.view_distance])
+	lines.append("Memory: %.0f MB · %s" % [OS.get_static_memory_usage() / 1048576.0,
+			"multiplayer (%d players)" % _session.player_count() if net_mode != "offline" else "single player"])
+	return "\n".join(lines)
 
 
 func _on_hurt(_amount: int) -> void:
@@ -524,12 +624,18 @@ func _process(_delta: float) -> void:
 		_world.set_viewer(_cam.global_position)  # chunks load around the local player
 	if _player and _world.engine and not _player.autopilot:
 		var eye := Vector3i(_cam.global_position.floor())
-		_underwater.visible = _world.is_fluid(_world.get_block(eye))
+		var eye_block := _world.get_block(eye)
+		_underwater.visible = _world.is_fluid(eye_block)
+		if _underwater.visible:  # blue in water, orange in lava
+			var lava: bool = Registry.blocks.get(Registry.block_ids[eye_block], {}).get("fluid") == "lava"
+			_underwater.color = Color(0.9, 0.35, 0.05, 0.75) if lava else Color(0.1, 0.3, 0.55, 0.45)
 		_sounds.set_underwater(_underwater.visible)
 	if _sounds:
 		_sounds.update_ambience(_day.day_amount())
 	if _day:
 		ItemDrop.set_daylight(_day.day_amount())
+		if _player:
+			_player.set_meta("daylight", _day.daylight())
 	var status := "%d FPS · %s" % [Engine.get_frames_per_second(), _day.clock_text(Settings.clock_24h)]
 	if _player and not _player.autopilot:
 		status += " · %s · %s · E inventory" % ["creative" if _player.creative else "survival",
@@ -540,6 +646,11 @@ func _process(_delta: float) -> void:
 	elif _session.is_client():
 		status += " · connected to %s · %d player(s)" % [join_address, _session.player_count()]
 	_fps_label.text = status
+	if _debug_label.visible:
+		_debug_timer -= _delta
+		if _debug_timer <= 0.0:
+			_debug_timer = 0.2
+			_debug_label.text = _debug_text()
 
 
 static func _lan_addresses() -> PackedStringArray:
@@ -584,6 +695,13 @@ func _add_environment() -> void:
 func _add_hud() -> void:
 	var hud := CanvasLayer.new()
 	_hud = hud
+	_debug_label = Label.new()
+	_debug_label.position = Vector2(8, 8)
+	_debug_label.visible = false
+	_debug_label.add_theme_constant_override("outline_size", 4)
+	_debug_label.add_theme_color_override("font_outline_color", Color.BLACK)
+	_debug_label.add_theme_font_size_override("font_size", 14)
+	hud.add_child(_debug_label)
 	_fps_label = Label.new()
 	_fps_label.position = Vector2(8, 8)
 	hud.add_child(_fps_label)

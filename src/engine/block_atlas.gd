@@ -33,16 +33,18 @@ func _init() -> void:
 		var fluid := def.has("fluid")
 		var opaque: bool = solid and not def.get("transparent", false)
 		var tiles := PackedInt32Array()
-		if id == "core:air" or (not solid and not fluid):
+		if id == "core:air" or (not solid and not fluid and def.get("shape", "cube") == "cube"):
 			tiles.resize(6)
 		else:
 			# Engine face order: +X, -X, +Y, -Y, +Z, -Z.
 			for face in ["side", "side", "top", "bottom", "side", "side"]:
 				tiles.append(_face_tile(def, face))
 			_icon_tiles[id] = tiles[0]  # the side face shows best as a flat icon
-		block_table.append({"solid": solid, "opaque": opaque, "fluid": fluid, "tiles": tiles,
+		var entry := {"solid": solid, "opaque": opaque, "fluid": fluid, "tiles": tiles,
 				"light": int(def.get("light", 0)), "fluid_level": int(def.get("level", 8)),
-				"random_rotation": bool(def.get("random_rotation", false))})
+				"random_rotation": bool(def.get("random_rotation", false))}
+		entry.merge(BlockShapes.engine_fields(def))
+		block_table.append(entry)
 	atlas = _build_atlas()
 
 
@@ -131,7 +133,7 @@ const ICON_SIZE := 64
 
 ## A block drawn as a small 3D cube (top, left and right faces, shaded like the
 ## terrain) for inventory slots.
-func _cube_icon(block_index: int) -> Image:
+func _cube_icon(block_index: int, height := 1.0) -> Image:
 	var tiles: PackedInt32Array = block_table[block_index].tiles
 	var top: Image = _tiles[tiles[2]]
 	var left: Image = _tiles[tiles[5]]   # -Z: the face towards the viewer on the left
@@ -143,7 +145,13 @@ func _cube_icon(block_index: int) -> Image:
 	var back := Vector2(32, 4) * k
 	var front := Vector2(32, 32) * k
 	var rgt := Vector2(60, 18) * k
-	var down := Vector2(0, 30) * k
+	var down := Vector2(0, 30) * k * height
+	# A lower block (slab) sits at the bottom of the icon.
+	var drop := Vector2(0, 30) * k * (1.0 - height)
+	l += drop
+	back += drop
+	front += drop
+	rgt += drop
 	var faces := [
 		[top, l, back - l, front - l, 1.0],
 		[left, l, front - l, down, 0.8],
@@ -164,7 +172,8 @@ func _cube_icon(block_index: int) -> Image:
 				if u < 0.0 or u >= 1.0 or v < 0.0 or v >= 1.0:
 					continue
 				var tex: Image = f[0]
-				var c := tex.get_pixel(int(u * TILE_SIZE), int(v * TILE_SIZE))
+				var ty := v if f[0] == top else 1.0 - (1.0 - v) * height
+				var c := tex.get_pixel(int(u * TILE_SIZE), mini(int(ty * TILE_SIZE), TILE_SIZE - 1))
 				if c.a < 0.5:
 					continue
 				var shade: float = f[4]
@@ -177,8 +186,14 @@ func icon(id: String) -> Texture2D:
 	if _icons.has(id):
 		return _icons[id]
 	var img: Image = null
-	if _icon_tiles.has(id):
-		img = _cube_icon(Registry.block_index(id))
+	var shape: String = Registry.blocks.get(id, {}).get("shape", "cube")
+	if Registry.blocks.has(id) and Registry.blocks[id].has("icon"):
+		var def: Dictionary = Registry.blocks[id]
+		img = _load_image(ModLoader.get_mod_path(def.get("mod", "")).path_join(def.icon))
+	elif _icon_tiles.has(id) and shape in ["torch", "ladder", "cross", "door"]:
+		img = _tiles[_icon_tiles[id]]  # flat things show their texture
+	elif _icon_tiles.has(id):
+		img = _cube_icon(Registry.block_index(id), 0.5 if shape == "slab" else 1.0)
 	else:
 		var def: Dictionary = Registry.items.get(id, {})
 		if def.has("texture"):

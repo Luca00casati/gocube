@@ -81,6 +81,18 @@ void GoCubeWorld::configure_blocks(const TypedArray<Dictionary> &blocks) {
 		b.emit = static_cast<uint8_t>(std::clamp(int(d.get("light", 0)), 0, LIGHT_MAX));
 		b.fluid_level = static_cast<uint8_t>(std::clamp(int(d.get("fluid_level", 8)), 1, 8));
 		b.random_rotation = d.get("random_rotation", false);
+		b.shape = static_cast<uint8_t>(std::clamp(int(d.get("shape", 0)), 0, int(SHAPE_FENCE)));
+		auto read_boxes = [](const PackedFloat32Array &a, std::vector<Box> &out) {
+			for (int64_t k = 0; k + 6 < a.size(); k += 7) {
+				out.push_back({ { a[k], a[k + 1], a[k + 2] }, { a[k + 3], a[k + 4], a[k + 5] }, a[k + 6] });
+			}
+		};
+		read_boxes(d.get("model", PackedFloat32Array()), b.model);
+		if (d.has("collision")) {
+			read_boxes(d.get("collision", PackedFloat32Array()), b.collision);
+		} else if (b.solid) {
+			b.collision.push_back({ { 0, 0, 0 }, { 1, 1, 1 } });
+		}
 		const PackedInt32Array tiles = d.get("tiles", PackedInt32Array());
 		for (int f = 0; f < FACE_COUNT; f++) {
 			b.tiles[f] = f < tiles.size() ? tiles[f] : 0;
@@ -102,6 +114,51 @@ void GoCubeWorld::set_materials(const Ref<Material> &terrain, const Ref<Material
 	_fluid_material = fluid;
 }
 
+// Biomes for new worlds (call before configure_generator; none = the original
+// generator). Each: temperature, humidity, height, base, surface, filler,
+// filler_depth, under, under_depth, trees [[kind index, percent]], plants
+// [[block, per mille]], frozen, lakes (percent).
+void GoCubeWorld::configure_biomes(const TypedArray<Dictionary> &biomes) {
+	ERR_FAIL_COND_MSG(_started, "configure_biomes() must be called before start()");
+	auto block = [&](const Variant &v) {
+		const int id = v;
+		return static_cast<BlockId>(id > 0 && id < int(_blocks.size()) ? id : 0);
+	};
+	_biome_kinds.clear();
+	for (int64_t i = 0; i < biomes.size(); i++) {
+		const Dictionary d = biomes[i];
+		BiomeKind b;
+		b.temperature = float(d.get("temperature", 0.0));
+		b.humidity = float(d.get("humidity", 0.0));
+		b.height = float(d.get("height", 20.0));
+		b.base = float(d.get("base", 0.0));
+		b.surface = block(d.get("surface", 0));
+		b.filler = block(d.get("filler", 0));
+		b.filler_depth = std::clamp(int(d.get("filler_depth", 3)), 1, 16);
+		b.under = block(d.get("under", 0));
+		b.under_depth = std::clamp(int(d.get("under_depth", 0)), 0, 16);
+		b.frozen = d.get("frozen", false);
+		b.lakes = std::clamp(int(d.get("lakes", 20)), 0, 100);
+		const Array trees = d.get("trees", Array());
+		for (int64_t k = 0; k < trees.size(); k++) {
+			const Array e = trees[k];
+			b.trees.push_back({ int(e[0]), int(e[1]) });
+		}
+		const Array plants = d.get("plants", Array());
+		for (int64_t k = 0; k < plants.size(); k++) {
+			const Array e = plants[k];
+			b.plants.push_back({ block(e[0]), int(e[1]) });
+		}
+		if (b.surface && b.filler) {
+			_biome_kinds.push_back(b);
+		}
+	}
+}
+
+int GoCubeWorld::biome_at(int x, int z) const {
+	return _generator.biome_at(x, z);
+}
+
 void GoCubeWorld::configure_generator(int seed, const Dictionary &ids, const TypedArray<Dictionary> &ores,
 		const TypedArray<Dictionary> &trees) {
 	ERR_FAIL_COND_MSG(_started, "configure_generator() must be called before start()");
@@ -115,6 +172,8 @@ void GoCubeWorld::configure_generator(int seed, const Dictionary &ids, const Typ
 	g.grass = block(ids, "grass");
 	g.sand = block(ids, "sand");
 	g.water = block(ids, "water");
+	g.lava = block(ids, "lava");
+	g.ice = block(ids, "ice");
 	std::vector<OreKind> ore_kinds;
 	for (int64_t i = 0; i < ores.size(); i++) {
 		const Dictionary d = ores[i];
@@ -140,10 +199,10 @@ void GoCubeWorld::configure_generator(int seed, const Dictionary &ids, const Typ
 		t.min_trunk = std::clamp(int(d.get("min_trunk", 4)), 2, 20);
 		t.max_trunk = std::clamp(int(d.get("max_trunk", 6)), t.min_trunk, 20);
 		t.chance = std::clamp(int(d.get("chance", 30)), 0, 100);
-		if (t.log != 0 && t.leaves != 0 && t.chance > 0) {
-			tree_kinds.push_back(t);
-		}
+		t.style = static_cast<uint8_t>(std::clamp(int(d.get("style", 0)), 0, int(TREE_CACTUS)));
+		tree_kinds.push_back(t); // every kind, so biomes can refer to them by index
 	}
+	_generator.set_biomes(_biome_kinds);
 	_generator.configure(static_cast<uint32_t>(seed), g, ore_kinds, tree_kinds);
 }
 
@@ -451,13 +510,57 @@ Dictionary GoCubeWorld::raycast(const Vector3 &origin, const Vector3 &direction,
 		}
 		const BlockId id = data->get(local.x, local.y, local.z);
 		if (id != AIR && id < _blocks.size() && !_blocks[id].fluid) {
-			result["hit"] = true;
-			result["position"] = cell;
-			result["previous"] = previous;
-			result["normal"] = normal;
-			result["block"] = int(id);
-			result["distance"] = t;
-			return result;
+			if (_blocks[id].shape == SHAPE_CUBE) {
+				result["hit"] = true;
+				result["position"] = cell;
+				result["previous"] = previous;
+				result["normal"] = normal;
+				result["block"] = int(id);
+				result["distance"] = t;
+				return result;
+			}
+			// Shaped block: the nearest of its boxes along the ray, if any.
+			std::vector<Box> boxes;
+			block_boxes(cell.x, cell.y, cell.z, id, false, boxes);
+			float best = INFINITY;
+			Vector3i best_normal;
+			for (const Box &bx : boxes) {
+				float t0 = 0.0f, t1 = max_distance;
+				int axis = -1;
+				bool miss = false;
+				for (int k = 0; k < 3 && !miss; k++) {
+					if (dir[k] == 0.0f) {
+						miss = origin[k] < bx.mn[k] || origin[k] > bx.mx[k];
+						continue;
+					}
+					float ta = (bx.mn[k] - origin[k]) / dir[k], tb = (bx.mx[k] - origin[k]) / dir[k];
+					if (ta > tb) {
+						std::swap(ta, tb);
+					}
+					if (ta > t0) {
+						t0 = ta;
+						axis = k;
+					}
+					t1 = std::min(t1, tb);
+					miss = t0 > t1;
+				}
+				if (!miss && t0 < best) {
+					best = t0;
+					best_normal = Vector3i();
+					if (axis >= 0) {
+						best_normal[axis] = dir[axis] > 0 ? -1 : 1;
+					}
+				}
+			}
+			if (best <= max_distance) {
+				result["hit"] = true;
+				result["position"] = cell;
+				result["previous"] = cell + best_normal; // the cell on the side we hit
+				result["normal"] = best_normal;
+				result["block"] = int(id);
+				result["distance"] = best;
+				return result;
+			}
 		}
 		const int a = (t_max[0] < t_max[1]) ? (t_max[0] < t_max[2] ? 0 : 2) : (t_max[1] < t_max[2] ? 1 : 2);
 		previous = cell;
@@ -470,55 +573,112 @@ Dictionary GoCubeWorld::raycast(const Vector3 &origin, const Vector3 &direction,
 	return result;
 }
 
-// How far a box [mn, mx] can move along `axis` (signed), stopping at the
-// first solid block layer it would enter.
-float GoCubeWorld::sweep_axis(int axis, const float mn[3], const float mx[3], float motion) const {
-	constexpr float EPS = 1e-3f;
-	if (motion == 0.0f) {
-		return 0.0f;
+int GoCubeWorld::block_id_at(int x, int y, int z) const {
+	const int cy = floor_div(y, CHUNK);
+	if (cy > CHUNK_Y_MAX || cy < CHUNK_Y_MIN) {
+		return AIR;
 	}
-	const int u = (axis + 1) % 3, v = (axis + 2) % 3;
-	const int u0 = int(std::floor(mn[u] + EPS)), u1 = int(std::floor(mx[u] - EPS));
-	const int v0 = int(std::floor(mn[v] + EPS)), v1 = int(std::floor(mx[v] - EPS));
-	int c[3];
-	if (motion > 0) {
-		const int first = int(std::floor(mx[axis] - EPS)) + 1;
-		const int last = int(std::floor(mx[axis] + motion));
-		for (int layer = first; layer <= last; layer++) {
-			c[axis] = layer;
-			for (c[u] = u0; c[u] <= u1; c[u]++) {
-				for (c[v] = v0; c[v] <= v1; c[v]++) {
-					if (solid_at(c[0], c[1], c[2])) {
-						return std::max(0.0f, layer - mx[axis] - EPS);
-					}
-				}
-			}
-		}
+	Vector3i local;
+	const ChunkData *d = chunk_data_at(Vector3i(x, y, z), local);
+	return d ? d->get(local.x, local.y, local.z) : -1;
+}
+
+bool GoCubeWorld::fence_connects(int x, int y, int z) const {
+	const int id = block_id_at(x, y, z);
+	return id > 0 && id < int(_blocks.size()) && (_blocks[id].shape == SHAPE_FENCE || _blocks[id].opaque);
+}
+
+void GoCubeWorld::block_boxes(int x, int y, int z, int id, bool collision, std::vector<Box> &out) const {
+	const size_t first = out.size();
+	if (id < 0) {
+		out.push_back({ { 0, 0, 0 }, { 1, 1, 1 } }); // unloaded: solid
+	} else if (id == AIR || id >= int(_blocks.size())) {
+		return;
 	} else {
-		const int first = int(std::floor(mn[axis] + EPS)) - 1;
-		const int last = int(std::floor(mn[axis] + motion));
-		for (int layer = first; layer >= last; layer--) {
-			c[axis] = layer;
-			for (c[u] = u0; c[u] <= u1; c[u]++) {
-				for (c[v] = v0; c[v] <= v1; c[v]++) {
-					if (solid_at(c[0], c[1], c[2])) {
-						return std::min(0.0f, (layer + 1) - mn[axis] + EPS);
+		const BlockInfo &b = _blocks[id];
+		if (b.shape == SHAPE_FENCE) {
+			fence_boxes(fence_connects(x, y, z - 1), fence_connects(x + 1, y, z), fence_connects(x, y, z + 1),
+					fence_connects(x - 1, y, z), collision, out);
+		} else if (collision) {
+			out.insert(out.end(), b.collision.begin(), b.collision.end());
+		} else if (b.fluid) {
+			return;
+		} else if (b.shape == SHAPE_BOXES && !b.model.empty()) {
+			out.insert(out.end(), b.model.begin(), b.model.end());
+		} else if (b.shape == SHAPE_CROSS) {
+			out.push_back({ { 0.15f, 0.0f, 0.15f }, { 0.85f, 0.8f, 0.85f } });
+		} else {
+			out.push_back({ { 0, 0, 0 }, { 1, 1, 1 } });
+		}
+	}
+	for (size_t i = first; i < out.size(); i++) {
+		for (int k = 0; k < 3; k++) {
+			const float o = float(k == 0 ? x : (k == 1 ? y : z));
+			out[i].mn[k] += o;
+			out[i].mx[k] += o;
+		}
+	}
+}
+
+// Collision boxes of every block that could touch [mn, mx] (one cell lower
+// too: fences reach 1.5 blocks up).
+void GoCubeWorld::collect_collision(const float mn[3], const float mx[3], std::vector<Box> &out) const {
+	constexpr float EPS = 1e-3f;
+	const int x0 = int(std::floor(mn[0] + EPS)), x1 = int(std::floor(mx[0] - EPS));
+	const int y0 = int(std::floor(mn[1] + EPS)) - 1, y1 = int(std::floor(mx[1] - EPS));
+	const int z0 = int(std::floor(mn[2] + EPS)), z1 = int(std::floor(mx[2] - EPS));
+	for (int y = y0; y <= y1; y++) {
+		for (int z = z0; z <= z1; z++) {
+			for (int x = x0; x <= x1; x++) {
+				const size_t first = out.size();
+				block_boxes(x, y, z, block_id_at(x, y, z), true, out);
+				// Keep only boxes that reach into the region.
+				for (size_t i = out.size(); i-- > first;) {
+					const Box &b = out[i];
+					bool touches = true;
+					for (int k = 0; k < 3; k++) {
+						touches = touches && b.mx[k] > mn[k] + EPS && b.mn[k] < mx[k] - EPS;
+					}
+					if (!touches) {
+						out.erase(out.begin() + i);
 					}
 				}
 			}
 		}
 	}
-	return motion;
 }
 
 Dictionary GoCubeWorld::move_box(const Vector3 &position, const Vector3 &size, const Vector3 &motion, float step_height) const {
-	// Moves y, then x, then z. Returns the final feet position and contacts.
+	// Moves y, then x, then z, each clipped against the blocks' collision
+	// boxes. Returns the final feet position and contacts.
+	constexpr float EPS = 1e-3f;
+	std::vector<Box> boxes;
 	auto simulate = [&](Vector3 p, const Vector3 &m, bool &on_floor, bool &ceiling, bool &wall) {
+		// Everything within reach of this whole move.
+		float rmn[3] = { p.x - size.x * 0.5f, p.y, p.z - size.z * 0.5f };
+		float rmx[3] = { p.x + size.x * 0.5f, p.y + size.y, p.z + size.z * 0.5f };
+		for (int k = 0; k < 3; k++) {
+			rmn[k] += std::min(0.0f, m[k]) - 1.0f;
+			rmx[k] += std::max(0.0f, m[k]) + 1.0f;
+		}
+		boxes.clear();
+		collect_collision(rmn, rmx, boxes);
 		const int order[3] = { 1, 0, 2 };
 		for (int a : order) {
-			float mn[3] = { p.x - size.x * 0.5f, p.y, p.z - size.z * 0.5f };
-			float mx[3] = { p.x + size.x * 0.5f, p.y + size.y, p.z + size.z * 0.5f };
-			const float allowed = sweep_axis(a, mn, mx, m[a]);
+			const float mn[3] = { p.x - size.x * 0.5f, p.y, p.z - size.z * 0.5f };
+			const float mx[3] = { p.x + size.x * 0.5f, p.y + size.y, p.z + size.z * 0.5f };
+			const int u = (a + 1) % 3, v = (a + 2) % 3;
+			float allowed = m[a];
+			for (const Box &b : boxes) {
+				if (b.mx[u] <= mn[u] + EPS || b.mn[u] >= mx[u] - EPS || b.mx[v] <= mn[v] + EPS || b.mn[v] >= mx[v] - EPS) {
+					continue; // not in the way on the other two axes
+				}
+				if (allowed > 0.0f && b.mn[a] >= mx[a] - EPS) {
+					allowed = std::min(allowed, std::max(0.0f, b.mn[a] - mx[a] - EPS));
+				} else if (allowed < 0.0f && b.mx[a] <= mn[a] + EPS) {
+					allowed = std::max(allowed, std::min(0.0f, b.mx[a] - mn[a] + EPS));
+				}
+			}
 			if (allowed != m[a]) {
 				if (a == 1) {
 					(m[a] < 0 ? on_floor : ceiling) = true;
@@ -560,20 +720,11 @@ Dictionary GoCubeWorld::move_box(const Vector3 &position, const Vector3 &size, c
 }
 
 bool GoCubeWorld::is_box_free(const Vector3 &position, const Vector3 &size) const {
-	constexpr float EPS = 1e-3f;
-	const int x0 = int(std::floor(position.x - size.x * 0.5f + EPS)), x1 = int(std::floor(position.x + size.x * 0.5f - EPS));
-	const int y0 = int(std::floor(position.y + EPS)), y1 = int(std::floor(position.y + size.y - EPS));
-	const int z0 = int(std::floor(position.z - size.z * 0.5f + EPS)), z1 = int(std::floor(position.z + size.z * 0.5f - EPS));
-	for (int y = y0; y <= y1; y++) {
-		for (int z = z0; z <= z1; z++) {
-			for (int x = x0; x <= x1; x++) {
-				if (solid_at(x, y, z)) {
-					return false;
-				}
-			}
-		}
-	}
-	return true;
+	const float mn[3] = { position.x - size.x * 0.5f, position.y, position.z - size.z * 0.5f };
+	const float mx[3] = { position.x + size.x * 0.5f, position.y + size.y, position.z + size.z * 0.5f };
+	std::vector<Box> boxes;
+	collect_collision(mn, mx, boxes); // only boxes overlapping the region are kept
+	return boxes.empty();
 }
 
 
@@ -978,6 +1129,8 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_atlas_layout", "cols", "rows", "cell", "face_offset"), &GoCubeWorld::set_atlas_layout);
 	ClassDB::bind_method(D_METHOD("set_materials", "terrain", "fluid"), &GoCubeWorld::set_materials);
 	ClassDB::bind_method(D_METHOD("configure_generator", "seed", "ids", "ores", "trees"), &GoCubeWorld::configure_generator);
+	ClassDB::bind_method(D_METHOD("configure_biomes", "biomes"), &GoCubeWorld::configure_biomes);
+	ClassDB::bind_method(D_METHOD("biome_at", "x", "z"), &GoCubeWorld::biome_at);
 	ClassDB::bind_method(D_METHOD("start"), &GoCubeWorld::start);
 	ClassDB::bind_method(D_METHOD("get_block", "position"), &GoCubeWorld::get_block);
 	ClassDB::bind_method(D_METHOD("set_block", "position", "id"), &GoCubeWorld::set_block);

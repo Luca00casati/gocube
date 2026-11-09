@@ -24,6 +24,9 @@ var _timer := 0.0
 var _level_of := {}        # block index -> level (fluids only)
 var _fluid_of := {}        # block index -> fluid name
 var _block_for := {}       # fluid name -> {level: block index}
+var _step := {}            # fluid name -> levels lost per block ("flow_step": lava 2)
+var _stone := 0
+var _cobblestone := 0
 var _air := 0
 
 
@@ -38,6 +41,9 @@ func _ready() -> void:
 			if not _block_for.has(def.fluid):
 				_block_for[def.fluid] = {}
 			_block_for[def.fluid][level] = i
+			_step[def.fluid] = maxi(1, int(def.get("flow_step", 1)))
+	_stone = maxi(0, Registry.block_index("core:stone"))
+	_cobblestone = maxi(0, Registry.block_index("core:cobblestone"))
 	world.block_changed.connect(_on_block_changed)
 
 
@@ -72,6 +78,14 @@ func _update(pos: Vector3i) -> void:
 		return
 	var fluid: String = _fluid_of[block]
 	var level: int = _level_of[block]
+	var step: int = _step.get(fluid, 1)
+	# Lava touching water hardens: a lava source into stone, flowing lava into
+	# cobblestone.
+	if fluid == "lava":
+		for d in AROUND:
+			if d != Vector3i.DOWN and _fluid_of.get(world.get_block(pos + d)) == "water":
+				world.set_block(pos, _stone if level == 8 else _cobblestone)
+				return
 	if level < 8:
 		# Flowing: is something still feeding it?
 		var fed := 0
@@ -80,7 +94,7 @@ func _update(pos: Vector3i) -> void:
 		for d in SIDES:
 			var n := world.get_block(pos + d)
 			if _fluid_of.get(n) == fluid:
-				fed = maxi(fed, _level_of[n] - 1)
+				fed = maxi(fed, _level_of[n] - step)
 		if fed <= 0:
 			world.set_block(pos, _air)  # drains away
 			return
@@ -90,7 +104,7 @@ func _update(pos: Vector3i) -> void:
 	# Fall first.
 	var below := pos + Vector3i.DOWN
 	var under := world.get_block(below)
-	if under == _air:
+	if under == _air or (_fluid_of.has(under) and _fluid_of[under] != fluid):
 		_set_fluid(below, fluid, 7)
 		return
 	if _fluid_of.get(under) == fluid:
@@ -99,17 +113,22 @@ func _update(pos: Vector3i) -> void:
 		if level < 8:
 			return  # falling water lands on water: no sideways spread
 	# Then sideways, one level lower.
-	var next := level - 1
+	var next := level - step
 	if next < 1:
 		return
 	for d in SIDES:
 		var p: Vector3i = pos + d
 		var n := world.get_block(p)
-		if n == _air or (_fluid_of.get(n) == fluid and _level_of[n] < next):
+		if n == _air or (_fluid_of.get(n) == fluid and _level_of[n] < next) \
+				or (_fluid_of.has(n) and _fluid_of[n] != fluid):
 			_set_fluid(p, fluid, next)
 
 
 func _set_fluid(pos: Vector3i, fluid: String, level: int) -> void:
+	if world.is_fluid(world.get_block(pos)) and _fluid_of.get(world.get_block(pos)) != fluid:
+		# Lava flowing into water (or water onto lava) makes cobblestone.
+		world.set_block(pos, _cobblestone if _cobblestone else 0)
+		return
 	var id: int = _block_for[fluid].get(level, -1)
 	if id >= 0:
 		world.set_block(pos, id)

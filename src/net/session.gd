@@ -26,6 +26,8 @@ signal drops_received(at: Vector3, items: Array)
 ## Client: a container's contents / what we hold after clicking it.
 signal container_updated(position: Vector3i, data: Dictionary)
 signal container_held(position: Vector3i, held: Dictionary)
+## Client: a creature hit us (damage, knockback).
+signal struck(damage: int, push: Vector3)
 
 const Avatar := preload("res://src/player/avatar.gd")
 const Player := preload("res://src/player/player.gd")
@@ -206,6 +208,7 @@ func _hello(protocol: int, mods: Array, requested_name: String) -> void:
 		"view_distance": world.view_distance,
 		"spawn": [spawn.x, spawn.y, spawn.z],
 		"seed": int(world.meta.seed),
+		"generator": int(world.meta.get("generator", 1)),
 		"mode": world.meta.get("mode", "survival"),
 		"chunks": world.edited_chunks(),  # {Vector3i: PackedByteArray}
 		"time": day_cycle.time if day_cycle else DayCycle.START_TIME,
@@ -300,25 +303,42 @@ func peer_positions() -> Array:
 	return _peers.values().map(func(p): return p.position)
 
 
+## Host: joined players ninjas may chase (the world's mode decides for all).
+func peer_targets() -> Array:
+	return _peers.keys().map(func(id): return {"position": _peers[id].position, "peer": id})
+
+
+## Host: a creature hit a joined player.
+func strike_player(peer: int, damage: int, push: Vector3) -> void:
+	if _peers.has(peer):
+		_struck.rpc_id(peer, damage, push)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _struck(damage: int, push: Vector3) -> void:
+	struck.emit(damage, push)
+
+
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _mobs_state(states: Dictionary) -> void:
 	if mobs:
 		mobs.apply_states(states)
 
 
-func hit_mob(id: int) -> void:
-	_hit_mob.rpc_id(1, id)
+## `item`: what the attacker holds (the host looks up its damage).
+func hit_mob(id: int, item: String) -> void:
+	_hit_mob.rpc_id(1, id, item)
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func _hit_mob(id: int) -> void:
+func _hit_mob(id: int, item: String) -> void:
 	var peer := multiplayer.get_remote_sender_id()
 	if not is_host() or mobs == null or not _peers.has(peer):
 		return
 	var from: Vector3 = _peers[peer].position
 	for mob in mobs.mobs():
 		if mob.id == id and mob.global_position.distance_to(from) <= MOB_REACH:
-			mobs.hit(id, from, peer)
+			mobs.hit(id, from, peer, load("res://src/player/player.gd").attack_damage(item))
 			return
 
 

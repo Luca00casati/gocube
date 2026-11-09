@@ -11,6 +11,8 @@ const WORLDS_DIR := "user://worlds"
 ## 2 = native engine (chunks/). 1 = voxel-module worlds (blocks.sqlite), whose
 ## edits can't be carried over: their terrain generator was different.
 const FORMAT_VERSION := 2
+## Newest world generator (see _make_engine).
+const GENERATOR_VERSION := 2
 const DEFAULT_VIEW_DISTANCE := 128  # 256 halves FPS on an Intel HD 4600
 const CHUNK_SIZE := 32
 ## Highest block y in the world (the engine's vertical range is y -96..127);
@@ -37,6 +39,8 @@ var fluid_ids := {}
 var fluids: FluidSim
 ## Chests and furnaces (single player and host; clients go through the host).
 var block_entities: BlockEntities
+## Crop growth and blocks that need support (single player and host).
+var plants: PlantSim
 ## Multiplayer peer whose edit is being applied (0 = the local player).
 var editor := 0
 
@@ -54,7 +58,7 @@ func build(world_name: String, distance: int = DEFAULT_VIEW_DISTANCE, new_seed: 
 		meta.erase("player")  # the old position may now be inside terrain
 	if meta.is_empty():
 		meta = {"seed": new_seed if new_seed >= 0 else randi(), "mode": new_mode,
-				"created": Time.get_datetime_string_from_system()}
+				"created": Time.get_datetime_string_from_system(), "generator": GENERATOR_VERSION}
 	elif not meta.has("mode"):
 		meta.mode = "creative"  # worlds from before game modes played like creative
 	elif int(meta.get("format", 0)) > FORMAT_VERSION:
@@ -67,7 +71,7 @@ func build(world_name: String, distance: int = DEFAULT_VIEW_DISTANCE, new_seed: 
 	meta.block_ids = Array(Registry.block_ids)
 	if persistent:
 		_write_meta()
-	_make_engine(distance, int(meta.seed))
+	_make_engine(distance, int(meta.seed), int(meta.get("generator", 1)))
 	if persistent:
 		engine.set_save_directory(ProjectSettings.globalize_path(dir.path_join("chunks")))
 	add_child(engine)
@@ -81,23 +85,31 @@ func build(world_name: String, distance: int = DEFAULT_VIEW_DISTANCE, new_seed: 
 	block_entities.world = self
 	block_entities.deserialize(meta.get("block_entities", {}))
 	add_child(block_entities)
+	plants = PlantSim.new()
+	plants.name = "Plants"
+	plants.world = self
+	plants.deserialize(meta.get("plants", []))
+	add_child(plants)
 
 
 ## Client side of a multiplayer game: same seed and block table as the host,
 ## plus the host's edited chunks; terrain is generated locally.
 func build_remote(block_ids: PackedStringArray, distance: int, world_seed: int, chunks: Dictionary,
-		mode: String = "survival") -> void:
+		mode: String = "survival", generator: int = 1) -> void:
 	remote = true
 	Registry.assign_block_ids(block_ids)
-	meta = {"block_ids": Array(block_ids), "seed": world_seed, "format": FORMAT_VERSION, "mode": mode}
-	_make_engine(distance, world_seed)
+	meta = {"block_ids": Array(block_ids), "seed": world_seed, "format": FORMAT_VERSION, "mode": mode,
+			"generator": generator}
+	_make_engine(distance, world_seed, generator)
 	for pos in chunks:
 		engine.set_chunk_override(pos, chunks[pos])
 	add_child(engine)
 	engine.start()
 
 
-func _make_engine(distance: int, world_seed: int) -> void:
+## generator: 1 = the original world (worlds made before biomes keep it, so
+## their unexplored land matches what's saved), 2 = biomes, lakes, caverns, lava.
+func _make_engine(distance: int, world_seed: int, generator: int = GENERATOR_VERSION) -> void:
 	view_distance = distance
 	atlas = BlockAtlas.new()
 	terrain_material = ShaderMaterial.new()
@@ -105,6 +117,8 @@ func _make_engine(distance: int, world_seed: int) -> void:
 	terrain_material.set_shader_parameter("albedo_texture", ImageTexture.create_from_image(atlas.atlas))
 	fluid_material = ShaderMaterial.new()
 	fluid_material.shader = preload("res://src/engine/chunk_fluid.gdshader")
+	fluid_material.set_shader_parameter("albedo_texture", terrain_material.get_shader_parameter("albedo_texture"))
+	fluid_material.set_shader_parameter("use_atlas", true)
 	for i in Registry.block_ids.size():
 		if atlas.block_table[i].fluid:
 			fluid_ids[i] = true
@@ -115,8 +129,10 @@ func _make_engine(distance: int, world_seed: int) -> void:
 	engine.set_atlas_layout(atlas.cols, atlas.rows, BlockAtlas.CELL, BlockAtlas.FACE_OFFSET)
 	engine.set_materials(terrain_material, fluid_material)
 	var ids := {}
-	for key in ["stone", "dirt", "grass", "sand", "water"]:
+	for key in ["stone", "dirt", "grass", "sand", "water", "lava", "ice"]:
 		ids[key] = maxi(0, Registry.block_index("core:" + key))
+	if generator >= 2:
+		engine.configure_biomes(_biome_table())
 	engine.configure_generator(world_seed, ids, _ore_table(), _tree_table())
 	engine.view_distance = distance
 
@@ -146,19 +162,69 @@ static func _ore_table() -> Array[Dictionary]:
 
 static func _tree_table() -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
-	var ids := Registry.trees.keys()
-	ids.sort()
-	for id in ids:
+	for id in _tree_order():
 		var def: Dictionary = Registry.trees[id]
 		var log_id := Registry.block_index(str(def.get("log", "")))
 		var leaves := Registry.block_index(str(def.get("leaves", "")))
-		if log_id <= 0 or leaves <= 0:
-			push_warning("Tree '%s': unknown block; not generated" % id)
-			continue
 		var trunk: Array = def.get("trunk", [4, 6])
-		out.append({"log": log_id, "leaves": leaves, "min_trunk": int(trunk[0]),
-				"max_trunk": int(trunk[-1]), "chance": int(def.get("chance", 30))})
+		out.append({"log": log_id, "leaves": maxi(0, leaves), "min_trunk": int(trunk[0]),
+				"max_trunk": int(trunk[-1]), "chance": int(def.get("chance", 30)),
+				"style": TREE_STYLES.find(str(def.get("style", "oak")))})
 	return out
+
+
+const TREE_STYLES := ["oak", "big_oak", "birch", "spruce", "cactus"]
+
+
+## The tree ids in the order _tree_table() sends them (biomes refer to trees
+## by index).
+static func _tree_order() -> Array:
+	var ids := Registry.trees.keys().filter(func(id):
+		var def: Dictionary = Registry.trees[id]
+		return Registry.block_index(str(def.get("log", ""))) > 0 \
+				and (Registry.block_index(str(def.get("leaves", ""))) > 0 or def.get("style") == "cactus"))
+	ids.sort()
+	return ids
+
+
+## Registered biomes -> engine table (sorted by id).
+static func _biome_table() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	var tree_ids := _tree_order()
+	var ids := Registry.biomes.keys()
+	ids.sort()
+	for id in ids:
+		var def: Dictionary = Registry.biomes[id]
+		var b := {}
+		for key in ["temperature", "humidity", "height", "base", "filler_depth", "under_depth", "frozen", "lakes"]:
+			if def.has(key):
+				b[key] = def[key]
+		for key in ["surface", "filler", "under"]:
+			if def.has(key):
+				b[key] = maxi(0, Registry.block_index(str(def[key])))
+		var trees := []
+		for tree in def.get("trees", {}):
+			var i := tree_ids.find(tree)
+			if i >= 0:
+				trees.append([i, int(def.trees[tree])])
+		b.trees = trees
+		var plants := []
+		for block in def.get("plants", {}):
+			var i := Registry.block_index(block)
+			if i > 0:
+				plants.append([i, int(def.plants[block])])
+		b.plants = plants
+		out.append(b)
+	return out
+
+
+## Which biome a column is in (its id), or "" for worlds without biomes.
+func biome_name(x: int, z: int) -> String:
+	if int(meta.get("generator", 1)) < 2 or Registry.biomes.is_empty():
+		return ""
+	var ids := Registry.biomes.keys()
+	ids.sort()
+	return str(ids[engine.biome_at(x, z)])
 
 
 # --- Blocks ------------------------------------------------------------------------
@@ -281,6 +347,8 @@ func save(player: Dictionary = {}) -> void:
 		meta.player = player
 	if block_entities:
 		meta.block_entities = block_entities.serialize()
+	if plants:
+		meta.plants = plants.serialize()
 	meta.saved = Time.get_datetime_string_from_system()
 	_write_meta()
 	engine.save_modified()

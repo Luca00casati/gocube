@@ -3,6 +3,10 @@ shader_type spatial;
 render_mode unshaded, blend_mix, cull_disabled, depth_draw_opaque;
 
 uniform vec4 fluid_color : source_color = vec4(0.25, 0.46, 0.84, 0.7);
+// The terrain atlas: each fluid's tile gives its colour and transparency
+// (water: see-through blue, lava: opaque and glowing).
+uniform sampler2D albedo_texture : source_color, filter_nearest;
+uniform bool use_atlas = false;
 uniform float daylight : hint_range(0.0, 1.0) = 1.0;
 uniform vec3 block_light_color : source_color = vec3(1.0, 0.85, 0.62);
 uniform float min_light = 0.035;
@@ -29,12 +33,13 @@ float light_curve(float level01) {
 void fragment() {
 	vec3 light = max(vec3(light_curve(COLOR.r) * daylight), block_light_color * light_curve(COLOR.g));
 	float r = ripples(v_world.xz);
-	vec3 color = fluid_color.rgb * (0.92 + 0.16 * r);
-	float alpha = fluid_color.a;
-	if (!FRONT_FACING) {
+	vec4 base = use_atlas ? texture(albedo_texture, UV) : fluid_color;
+	vec3 color = base.rgb * (0.92 + 0.16 * r);
+	float alpha = base.a;
+	if (!FRONT_FACING && alpha < 0.99) {
 		// Seen from underneath (you're in the water): a bright, nearly opaque
 		// ceiling, so the surface is clearly visible from below.
-		color = mix(fluid_color.rgb, underside_color, 0.45 + 0.3 * r);
+		color = mix(base.rgb, underside_color, 0.45 + 0.3 * r);
 		alpha = underside_alpha;
 	}
 	ALBEDO = color * max(light, vec3(min_light));

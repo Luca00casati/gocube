@@ -48,6 +48,8 @@ public:
 	// trees: [{log, leaves, min_trunk, max_trunk, chance}]
 	void configure_generator(int seed, const godot::Dictionary &ids, const godot::TypedArray<godot::Dictionary> &ores,
 			const godot::TypedArray<godot::Dictionary> &trees);
+	void configure_biomes(const godot::TypedArray<godot::Dictionary> &biomes);
+	int biome_at(int x, int z) const;
 	void start();
 
 	void set_view_distance(int blocks);
@@ -178,7 +180,15 @@ private:
 	void update_column_tops(int cx, int cz);
 	void relight_around(const godot::Vector3i &block, int y_low, int y_high);
 	bool save_chunk(const godot::Vector3i &pos, Chunk &c);
-	float sweep_axis(int axis, const float mn[3], const float mx[3], float motion) const;
+	std::vector<BiomeKind> _biome_kinds;
+	// Block id at a world position: -1 if its chunk isn't loaded, 0 (air)
+	// above or below the world's vertical range.
+	int block_id_at(int x, int y, int z) const;
+	bool fence_connects(int x, int y, int z) const;
+	// A block's boxes in world space: its collision boxes, or (collision ==
+	// false) what a ray can hit. Unloaded chunks are one solid cube.
+	void block_boxes(int x, int y, int z, int id, bool collision, std::vector<Box> &out) const;
+	void collect_collision(const float mn[3], const float mx[3], std::vector<Box> &out) const;
 	int radius_chunks() const;
 
 	void worker_loop();

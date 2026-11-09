@@ -44,9 +44,11 @@ Launch options (after `--`): `--world=NAME` skip the menu and load or create tha
 
 Controls: WASD walk, Space jump (and swim up in water), Ctrl sprint, Shift sneak, F toggle flying (Space/Shift
 up/down; fly down onto the ground to land), mouse look, hold LMB mine / LMB break (creative),
-RMB place / open a chest or furnace (Shift+RMB places against one), LMB on a creature
-attacks it (6-block reach), 1-9 / mouse wheel pick a hotbar slot, E inventory and crafting,
-Esc pause. Launch option `--mode=creative|survival` for new worlds. All keyboard keys can be
+RMB place / open a chest or furnace / open or close a door / eat food / till with a hoe /
+plant seeds (Shift+RMB places against a chest or door), LMB on a creature attacks it
+(6-block reach), 1-9 / mouse wheel pick a hotbar slot, E inventory and crafting (creative:
+a palette of every block and item), F3 debug screen (position, chunk, facing, biome, the
+block you look at, chunk timings), Esc pause. Launch option `--mode=creative|survival` for new worlds. All keyboard keys can be
 rebound in **Settings…** (title screen or pause menu), along with view distance, mouse
 sensitivity, frame rate limit, vsync, **master / effects / ambience volume** (each with
 its own audio bus) and **smooth lighting** (light blended at block corners
@@ -78,6 +80,27 @@ blocks included, has a form built from its textures, which drops that block when
 (the lamp one glows). Forms also spawn directly (ore, lamp, chest and furnace ones rarely); a
 block's `"eater_weight"` sets how often its Block Eater turns up (1 = an ordinary block, 0 = never).
 In multiplayer the host simulates them and sends positions (`src/mobs/`).
+
+**Ninjas** come out at night in survival worlds (up to 6 around the players): they run at
+the nearest player within 24 blocks, jump over obstacles and strike for 3 (armour takes
+some off) with a shove. Daylight under open sky makes them vanish in a puff of smoke; in
+caves they keep hunting. Four hits with an iron sword defeat one.
+
+**Tools and armour**: wood, stone and iron pickaxes, axes, hoes and swords. Tiers
+(`"tier"`: wood 1, stone 2, iron 3) and blocks' `"min_tier"`: iron ore needs stone, gold
+and crystal need iron. Tools hit harder than a bare hand (`"damage"`), and nothing wears
+out. Iron armour (helmet, chestplate, leggings, boots: 15 points) goes in the armour
+slots in the inventory and takes 4% per point off creature damage (up to 60%).
+
+**Farming**: a hoe turns grass or dirt into farmland; seeds (from tall grass, sometimes)
+planted on it grow through 8 stages over a few minutes (`"grows_into"`, `"grow_seconds"`;
+`src/world/plant_sim.gd`, saved with the world); ripe wheat gives wheat and seeds; 3 wheat
+make bread, and eating food (`"food"`) heals when you're hurt.
+
+**Building**: torches (coal + stick; light 13, on floors and walls), slabs and stairs
+(stone, cobblestone, planks), wooden doors (right click opens both halves), fences,
+ladders (climb with Space or by walking into them; no fall damage), glass (smelt sand).
+Torches, ladders, doors and plants pop off when what holds them goes.
 
 **Creative**: every block in the inventory, instant breaking, nothing is used up. Worlds from before game modes are creative.
 
@@ -138,9 +161,20 @@ creatures) and the engine's phase tests: [PROTOTYPES.md](PROTOTYPES.md),
 - `src/audio/sounds.gd` — plays sound sets; `src/world/fluid_sim.gd` — flowing water.
 
 ## World generation and time
-The terrain shape (hills, beaches, sea, caves) comes from the C++ generator
-(`engine/src/generator.cpp`), deterministic per seed. **Ores and trees are defined by
-mods** in content files; the core mod's own are in `mods/core/content/base.json`:
+The terrain comes from the C++ generator (`engine/src/generator.cpp`), deterministic per
+seed. New worlds have **biomes**: plains (tall grass, flowers, scattered oaks, lakes),
+forest (oaks, big branching oaks, birches), desert (sand over sandstone, cacti, dead
+bushes) and snow (snowy ground, tall spruces, ice on water). Each column's biome is the
+nearest one in climate space (two slow noise fields: temperature and humidity); hill
+height is blended between biomes so borders have no cliffs. Also: lakes in flat places,
+worm caves plus big caverns deep down, **lava** filling the lowest caves (it burns, glows,
+flows 4 blocks, and turns to stone or cobblestone where it meets water), falling sand and
+gravel, and leaves that decay once their tree is gone (placed leaves don't). Worlds made
+before biomes keep the original generator (`"generator"` in world.json) so their
+unexplored land still matches what's saved.
+
+**Ores, trees and biomes are defined by mods** in content files; the core mod's own are in
+`mods/core/content/base.json`:
 
 ```json
 "ores": {
@@ -148,14 +182,23 @@ mods** in content files; the core mod's own are in `mods/core/content/base.json`
            "veins_per_chunk": 3, "size": [2, 5], "replaces": "core:stone"}
 },
 "trees": {
-  "birch": {"log": "mymod:birch_log", "leaves": "mymod:birch_leaves",
-            "trunk": [5, 7], "chance": 10}
+  "palm": {"log": "mymod:palm_log", "leaves": "mymod:palm_leaves",
+           "trunk": [5, 7], "style": "birch"}
+},
+"biomes": {
+  "jungle": {"temperature": 0.8, "humidity": 0.8, "height": 26, "base": 3,
+             "surface": "core:grass", "filler": "core:dirt",
+             "trees": {"mymod:palm": 40}, "plants": {"core:tall_grass": 120}, "lakes": 20}
 }
 ```
+Tree styles: `oak`, `big_oak`, `birch`, `spruce`, `cactus` (no leaves). A biome's `trees` are
+percents of 8×8 tree spots, `plants` per mille of surface columns; also `filler_depth`,
+`under` / `under_depth` (a layer below the filler, like sandstone), `frozen` (ice on
+water) and `lakes` (percent).
 Ores are random-walk veins through the `replaces` block (default stone), keyed to the ore's
 id so installing more mods doesn't move existing veins. Trees share the same spots: each
 spot gets one tree kind by `chance` (percent), or none. Core: coal (y ≤ 40), iron (y ≤ 8),
-gold (y ≤ −28), crystal (y ≤ −56), oak trees (30%).
+gold (y ≤ −28), crystal (y ≤ −56).
 
 Time runs at real speed (a day lasts 24 hours; `DayCycle`, `src/world/day_cycle.gd`). A new
 world starts at your computer's local time; after that the time is saved with the world and
@@ -199,6 +242,15 @@ neighbours or block light), `"fluid": "water"`, `"light": 0..15` (glows, e.g. `c
 `"random_rotation": true` turns the top and bottom texture by 0/90/180/270° per block
 position, so large flat areas (grass, sand, stone) don't show a repeating grid.
 
+Shapes (`"shape"`, `src/core/block_shapes.gd`): `slab`, `stairs`, `torch`, `ladder`, `door`,
+`fence`, `cross` (plants), or `boxes` with your own `"boxes": [[x0, y0, z0, x1, y1, z1], ...]`
+in 1/16 units (the cactus). Shapes that face a way get variant blocks (`<id>_e`,
+`<id>_wall_n`, `<id>_n_upper_open`, …) chosen when placing; they drop the base item. The
+engine draws and collides with the actual boxes. More keys: `"plant_on": [blocks]`,
+`"needs_support"`, `"climbable"`, `"replaceable"` (tall grass), `"falls"`, `"leaves"`,
+`"extra_drops": [[item, count, chance]]`, `"min_tier"`, `"hidden"`; fluids: `"flow_step"`,
+`"damage"`.
+
 ## Writing a mod
 Create `user://mods/<id>/mod.json` (see the header of `mod_loader.gd`), add JSON
 content files and/or an `entry` script with `init_mod(registry)`. Set `"api_version": 1`;
@@ -213,7 +265,8 @@ Mods are **not sandboxed**: only install mods you trust.
 
 ## Next steps
 - Dropped items are only visible to the player they belong to; share them in multiplayer.
-- More creatures (night creatures, more animals).
+- Saplings that grow into trees; a bed (sleep, respawn point); hunger.
+- More creatures and Block Eater behaviour (breeding).
 - Windows/macOS builds of the engine library.
 - Consider a double-precision build if worlds get large.
 - Evaluate [Godot Mod Loader](https://github.com/GodotModding/godot-mod-loader) if you

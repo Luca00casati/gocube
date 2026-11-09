@@ -124,3 +124,35 @@ func test_eating_changes_form() -> void:
 	client.apply_states(m.states())
 	var forms := client.mobs().map(func(x): return x.variant)
 	check("core:sand" in forms and "core:gold_ore" in forms, "form changes reach clients")
+
+
+func test_ninja_chases_and_strikes() -> void:
+	var w := await make_world()
+	var m := _manager(w)
+	var y := 70
+	for x in range(-6, 7):
+		for z in range(-2, 3):
+			w.set_block(Vector3i(x, y, z), Registry.block_index("core:stone"))
+	var n := m.spawn_ninja(Vector3(-4.5, y + 1, 0.5))
+	var target := [{"position": Vector3(4.5, y + 1, 0.5), "peer": 9}]
+	var strike := {}
+	for i in 240:  # 4 s
+		strike = n.simulate(1.0 / 60.0, target)
+		if not strike.is_empty():
+			break
+	check(not strike.is_empty(), "the ninja reached the player and struck")
+	check_eq(strike.get("peer"), 9, "it hits the right player")
+	check(n.global_position.x > 2.5, "it ran over")
+
+
+func test_ninja_vanishes_in_the_sun() -> void:
+	var w := await make_world()
+	var m := _manager(w)
+	var n := m.spawn_ninja(Vector3(0.5, 80, 0.5))
+	check(n.in_sunlight(1.0), "open sky by day: sunlight")
+	check(not n.in_sunlight(0.0), "night: safe")
+	w.set_block(Vector3i(0, 84, 0), Registry.block_index("core:stone"))
+	check(not n.in_sunlight(1.0), "under a roof: safe")
+	var client := _manager(w)
+	client.apply_states(m.states())
+	check(client.mobs()[0] is Ninja, "clients see a ninja")

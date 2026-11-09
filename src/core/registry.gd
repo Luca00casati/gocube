@@ -13,6 +13,8 @@ var recipes: Dictionary = {}
 ## World generation (see README "World generation from mods").
 var ores: Dictionary = {}
 var trees: Dictionary = {}
+## Biomes for new worlds (see README "World generation").
+var biomes: Dictionary = {}
 ## Sounds (see README "Sounds"): {"step": [paths], "break": [...], "place": [...], ...}
 var sound_sets: Dictionary = {}
 
@@ -56,6 +58,10 @@ func register_tree(id: String, def: Dictionary) -> String:
 	return _register(trees, &"tree", id, def)
 
 
+func register_biome(id: String, def: Dictionary) -> String:
+	return _register(biomes, &"biome", id, def)
+
+
 func block_index(id: String) -> int:
 	return _block_index.get(id, -1)
 
@@ -76,6 +82,7 @@ func _end_mod() -> void:
 
 ## Locks the registry and assigns default numeric block ids.
 func _freeze() -> void:
+	BlockShapes.expand(blocks)  # facing / state variants of shaped blocks
 	_frozen = true
 	assign_block_ids()
 

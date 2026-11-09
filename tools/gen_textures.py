@@ -401,6 +401,28 @@ def tool(head_palette, kind):
                 for w in (-1, 0, 1):
                     shade = 0.85 if w < 0 else (0.25 if w > 0 else 0.55)
                     _px(img, int(round(x + w * 0.7)), int(round(y - w * 0.7)), pick(head_palette, shade))
+        elif kind == "hoe":
+            # a flat head sticking out to one side at the top of the handle
+            for x in range(13, 25):
+                for y in (5, 6, 7):
+                    shade = 0.85 if y == 5 else (0.3 if y == 7 else 0.55)
+                    _px(img, x, y, pick(head_palette, shade))
+            for y in range(8, 11):
+                _px(img, 13, y, pick(head_palette, 0.4))
+                _px(img, 14, y, pick(head_palette, 0.6))
+        elif kind == "sword":
+            img = blank()  # its own handle: short grip, guard, long blade
+            for i in range(4, 10):
+                _px(img, i, S - 1 - i, WOOD[2])
+                _px(img, i + 1, S - 1 - i, WOOD[1])
+            for k in range(-4, 5):  # guard across the grip
+                _px(img, 10 + k, S - 1 - 10 + k, pick(head_palette, 0.3))
+                _px(img, 11 + k, S - 1 - 10 + k, pick(head_palette, 0.5))
+            for i in range(11, 28):  # blade
+                for w in (-1, 0, 1):
+                    shade = 0.95 if w < 0 else (0.35 if w > 0 else 0.65)
+                    _px(img, i + w, S - 1 - i, pick(head_palette, shade))
+                _px(img, i, S - 1 - i - 1, pick(head_palette, 0.8))
         else:
             # an axe blade on one side of the handle's top
             for y in range(3, 15):
@@ -448,6 +470,360 @@ def chest_top():
     return img
 
 
+# --- building blocks: torch, ladder, door, glass ------------------------------------
+
+def torch():
+    """Drawn for a 2/16-wide box at the tile's centre (columns 14..17): a stick
+    from row 18 down, a flame in rows 12..17 (the box's top face samples the
+    middle of the flame)."""
+    img = blank()
+    for y in range(18, 32):
+        for x in range(14, 18):
+            _px(img, x, y, WOOD[3] if x == 14 else (WOOD[1] if x == 17 else WOOD[2]))
+    flame = [(255, 246, 190), (255, 214, 92), (246, 150, 40), (200, 90, 24)]
+    for y in range(12, 18):
+        for x in range(14, 18):
+            t = (y - 12) / 6 + (0.25 if x in (14, 17) else 0.0)
+            _px(img, x, y, flame[min(3, int(t * 3.2))])
+    return img
+
+
+def ladder():
+    img = blank()
+    for y in range(S):
+        for x in (3, 4, 5, 26, 27, 28):  # rails
+            _px(img, x, y, WOOD[3] if x in (3, 26) else (WOOD[1] if x in (5, 28) else WOOD[2]))
+    for r in range(2, S, 8):  # rungs
+        for x in range(6, 26):
+            for y in (r, r + 1, r + 2):
+                _px(img, x, y, WOOD[3] if y == r else (WOOD[1] if y == r + 2 else WOOD[2]))
+    return img
+
+
+def _door(upper):
+    def make():
+        base = planks().convert("RGBA")
+        img = base.copy()
+        for y in range(S):
+            for x in range(S):
+                frame = x < 3 or x > 28 or (y < 3 and upper) or (y > 28 and not upper)
+                if frame:
+                    c = WOOD[0]
+                    img.putpixel((x, y), c + (255,))
+        if upper:
+            for y in range(7, 21):  # a small window (see-through) with a cross bar
+                for x in range(8, 24):
+                    if x in (15, 16) or y in (13, 14):
+                        img.putpixel((x, y), WOOD[1] + (255,))
+                    else:
+                        img.putpixel((x, y), (0, 0, 0, 0))
+        else:
+            for y in range(12, 15):  # handle
+                img.putpixel((25, y), (60, 58, 56, 255))
+                img.putpixel((26, y), (130, 124, 116, 255))
+        return img
+    return make
+
+
+def glass():
+    img = blank()
+    edge = (205, 225, 235)
+    for i in range(S):
+        for e in (0, S - 1):
+            _px(img, i, e, edge)
+            _px(img, e, i, edge)
+    for k in range(5):  # a couple of glints
+        _px(img, 6 + k, 10 - k, (235, 245, 250))
+        _px(img, 9 + k, 11 - k, (225, 238, 245))
+        _px(img, 20 + k, 26 - k, (225, 238, 245))
+    return img
+
+
+# --- armour, farming, plants -----------------------------------------------------
+
+def _shape_icon(rows, palette):
+    """Icon from an ASCII mask: '#' body, '+' highlight, '-' shadow."""
+    def make():
+        img = blank()
+        oy = (S - len(rows)) // 2
+        for y, row in enumerate(rows):
+            ox = (S - len(row)) // 2
+            for x, ch in enumerate(row):
+                if ch in "#+-":
+                    t = {"#": 0.55, "+": 0.9, "-": 0.2}[ch]
+                    _px(img, ox + x, oy + y, pick(palette, t + 0.06 * ((x * 7 + y * 3) % 3 - 1)))
+        return img
+    return make
+
+
+HELMET = [
+    "    ++++++++++++    ",
+    "  ++############++  ",
+    " +################- ",
+    " +################- ",
+    " +######----######- ",
+    " +####-      -####- ",
+    " +###-        -###- ",
+    " +###          ###- ",
+    "  ##-          -##  ",
+]
+CHESTPLATE = [
+    " +++++      +++++ ",
+    "+######----######-",
+    "+################-",
+    "+################-",
+    " -##############- ",
+    "   +##########-   ",
+    "   +##########-   ",
+    "   +##########-   ",
+    "   +##########-   ",
+    "   +##########-   ",
+    "   +##########-   ",
+    "   +##########-   ",
+    "    ----------    ",
+]
+LEGGINGS = [
+    "++++++++++++++",
+    "+############-",
+    "+############-",
+    "+#####--#####-",
+    "+####-  +####-",
+    "+####-  +####-",
+    "+####-  +####-",
+    "+####-  +####-",
+    "+####-  +####-",
+    "+####-  +####-",
+    "+####-  +####-",
+    " ----    ---- ",
+]
+BOOTS = [
+    "+###-    +###-  ",
+    "+###-    +###-  ",
+    "+###-    +###-  ",
+    "+###-    +###-  ",
+    "+#####-  +#####-",
+    "+#####-  +#####-",
+    " -----    ----- ",
+]
+SEEDS = None
+WHEAT = ramp("#6e5a1c", "#a0842c", "#c8a83c", "#e6cc6a")
+GREEN = ramp("#2c4e1c", "#3c6a26", "#4f8a30", "#68a63e")
+
+
+def seeds():
+    img = blank()
+    rnd = random.Random(50)
+    for _ in range(9):
+        x, y = rnd.randrange(9, 23), rnd.randrange(9, 23)
+        for dx, dy in ((0, 0), (1, 0), (0, 1)):
+            _px(img, x + dx, y + dy, WHEAT[1] if dy else WHEAT[2])
+    return img
+
+
+def wheat_item():
+    img = blank()
+    for k, x0 in enumerate((11, 15, 19)):
+        for y in range(10, 29):  # stalks
+            _px(img, x0 + (y - 10) // 9 - 1, y, GREEN[2] if y > 18 else WHEAT[1])
+        for y in range(4, 14):  # ears
+            _px(img, x0 - 1, y, WHEAT[2 + (y % 2)])
+            _px(img, x0, y, WHEAT[3 - (y % 2)])
+    return img
+
+
+def bread():
+    img = blank()
+    cx, cy = 16, 17
+    for y in range(S):
+        for x in range(S):
+            d = ((x - cx) / 12) ** 2 + ((y - cy) / 7) ** 2
+            if d < 1:
+                top = y < cy - 2
+                c = (196, 136, 64) if top else (168, 108, 46)
+                if top and (x - 6) % 6 in (0, 1) and y < cy - 3:
+                    c = (226, 186, 120)  # scored top
+                _px(img, x, y, c)
+    return img
+
+
+def farmland_top():
+    base = dirt(seed=60)
+    img = base.copy()
+    for y in range(S):
+        for x in range(S):
+            r, g, b = img.getpixel((x, y))[:3]
+            k = 0.62 if y % 8 in (0, 1) else 0.85  # furrows
+            img.putpixel((x, y), (int(r * k), int(g * k), int(b * k)))
+    return img
+
+
+def crop(stage):
+    """Wheat at stage 0..7: taller and yellower as it grows (drawn for a cross)."""
+    def make():
+        img = blank()
+        rnd = random.Random(70 + stage)
+        height = 6 + stage * 3.4
+        ripe = stage / 7
+        for x0 in range(2, 31, 4):
+            h = int(height * rnd.uniform(0.8, 1.0))
+            for y in range(S - h, S):
+                t = (S - y) / max(1, h)
+                if stage == 7 or (stage == 6 and y < S - h / 2):
+                    col = WHEAT[1 + int(t * 2)]  # ripening from the top
+                else:
+                    col = GREEN[1 + int(t * 2)] if ripe < 0.6 or y > S - h + 6 else WHEAT[1 + int(t * 2)]
+                _px(img, x0 + (1 if y < S - h / 2 and x0 % 8 == 2 else 0), y, col)
+            if stage >= 5:  # ears at the top
+                for y in range(S - h, S - h + 5):
+                    _px(img, x0 + 1, y, WHEAT[2 if stage == 7 else 1])
+        return img
+    return make
+
+
+def tall_grass():
+    img = blank()
+    rnd = random.Random(80)
+    for _ in range(14):
+        x = rnd.randrange(3, 29)
+        h = rnd.randrange(12, 28)
+        lean = rnd.choice((-1, 0, 1))
+        for k in range(h):
+            y = S - 1 - k
+            xx = x + (lean * k) // 9
+            _px(img, xx, y, GREEN[1 + min(2, (k * 3) // h)] if k < h - 2 else GREEN[3])
+    return img
+
+
+def flower(petal, centre):
+    def make():
+        img = blank()
+        for y in range(16, 32):  # stem and a leaf
+            _px(img, 16, y, GREEN[2])
+        for x in range(17, 21):
+            _px(img, x, 24 - (x - 17) // 2, GREEN[1])
+        for dx, dy in ((0, -3), (3, 0), (0, 3), (-3, 0), (2, -2), (2, 2), (-2, 2), (-2, -2)):
+            for ex in (0, 1):
+                for ey in (0, 1):
+                    _px(img, 15 + dx + ex, 11 + dy + ey, petal)
+        for ex in (0, 1):
+            for ey in (0, 1):
+                _px(img, 15 + ex, 11 + ey, centre)
+        return img
+    return make
+
+
+# --- biomes: desert, snow, birch, spruce, lava ----------------------------------------
+
+def remap(img, palette):
+    """Recolours an image onto another ramp by brightness (keeps its pattern)."""
+    img = img.convert("RGBA")
+    lum = [[sum(img.getpixel((x, y))[:3]) for x in range(S)] for y in range(S)]
+    lo = min(min(r) for r in lum)
+    hi = max(max(r) for r in lum)
+    out = img.copy()
+    for y in range(S):
+        for x in range(S):
+            a = img.getpixel((x, y))[3]
+            if a:
+                out.putpixel((x, y), pick(palette, (lum[y][x] - lo) / max(1, hi - lo)) + (a,))
+    return out
+
+
+SANDSTONE = ramp("#a88f58", "#bba368", "#cdb57a", "#dcc68c")
+SNOW = ramp("#d8e2ec", "#e6eef5", "#f2f7fb", "#ffffff")
+ICE = ramp("#7fa8d8", "#93b9e2", "#a9caeb", "#c3dcf3")
+BIRCH_BARK = ramp("#cfcac0", "#ddd8cf", "#e9e5dd", "#f4f1ea")
+BIRCH_LEAF = ramp("#3a6a24", "#4a7e2c", "#5a9236", "#6ea442", "#82b450")
+SPRUCE_BARK = ramp("#2a1d13", "#36261a", "#432f20", "#513a28")
+SPRUCE_LEAF = ramp("#16301f", "#1d3c27", "#25492f", "#2e5737", "#386540")
+CACTUS = ramp("#2c5a1e", "#367026", "#43832e", "#529638")
+LAVA = ramp("#8a1c06", "#c8380c", "#ec6418", "#fb9a2a", "#ffd25a")
+
+
+def sandstone():
+    def px(x, y):
+        band = (y // 6) % 2
+        n = fbm(90, x, y * 3, ((4, 0.6), (8, 0.4)))
+        return pick(SANDSTONE, 0.25 + n * 0.5 + band * 0.18 - (0.25 if y % 6 == 0 else 0))
+    return image(px)
+
+
+def snow_top():
+    return image(lambda x, y: pick(SNOW, 0.3 + fbm(91, x, y, ((4, 0.5), (16, 0.5))) * 0.7))
+
+
+def snow_side():
+    d = dirt(seed=92)
+    img = d.convert("RGB").copy()
+    rnd = random.Random(93)
+    depth = [max(3, round(4 + rnd.uniform(-1.5, 2.5))) for _ in range(S)]
+    for x in range(S):
+        for y in range(depth[x]):
+            img.putpixel((x, y), pick(SNOW, 0.4 + fbm(94, x, y) * 0.6))
+    return img
+
+
+def ice():
+    def px(x, y):
+        n = fbm(95, x, y, ((4, 0.7), (8, 0.3)))
+        crack = abs(((x * 0.9 + y * 0.4 + fbm(96, x, y, ((4, 1.0),)) * 9) % 13) - 6.5) < 0.5
+        return pick(ICE, 0.95 if crack else 0.2 + n * 0.6)
+    return image(px)
+
+
+def birch_side():
+    rnd = random.Random(97)
+    marks = [(rnd.randrange(S), rnd.randrange(S), rnd.randrange(2, 6)) for _ in range(9)]
+
+    def px(x, y):
+        for mx, my, w in marks:
+            if 0 <= (x - mx) % S < w and y == my:
+                return (40, 36, 32)
+        return pick(BIRCH_BARK, 0.3 + fbm(98, x * 2, y, ((4, 1.0),)) * 0.6)
+    return image(px)
+
+
+def lava():
+    def px(x, y):
+        n = fbm(99, x, y, ((4, 0.55), (8, 0.3), (16, 0.15)))
+        return pick(LAVA, n * 1.15)
+    return image(px)
+
+
+def cactus_side():
+    def px(x, y):
+        rib = x % 6 in (0, 1)
+        spine = (x % 6 == 3) and (y % 7 == 2)
+        if spine:
+            return (230, 222, 180)
+        return pick(CACTUS, (0.15 if rib else 0.55) + fbm(100, x, y) * 0.3)
+    return image(px)
+
+
+def cactus_top():
+    def px(x, y):
+        d = math.hypot(x - S / 2 + 0.5, y - S / 2 + 0.5)
+        return pick(CACTUS, 0.85 - d / S + fbm(101, x, y) * 0.2)
+    return image(px)
+
+
+def dead_bush():
+    img = blank()
+    twig = (110, 80, 44)
+    rnd = random.Random(102)
+    def branch(x, y, angle, length, depth):
+        for i in range(length):
+            xx = int(round(x + math.cos(angle) * i))
+            yy = int(round(y - math.sin(angle) * i))
+            _px(img, xx, yy, twig)
+        ex, ey = x + math.cos(angle) * length, y - math.sin(angle) * length
+        if depth > 0:
+            for da in (-0.5, 0.45):
+                branch(ex, ey, angle + da + rnd.uniform(-0.2, 0.2), int(length * 0.7), depth - 1)
+    branch(16, 31, math.pi / 2, 9, 3)
+    return img
+
+
 TEXTURES = {
     "stone": stone,
     "cobblestone": cobblestone,
@@ -477,6 +853,45 @@ TEXTURES = {
     "furnace_top": furnace_top,
     "chest_side": chest_side,
     "chest_top": chest_top,
+    "torch": torch,
+    "ladder": ladder,
+    "door_lower": _door(False),
+    "door_upper": _door(True),
+    "glass": glass,
+    "iron_pickaxe": tool(IRON, "pickaxe"),
+    "iron_axe": tool(IRON, "axe"),
+    "wood_hoe": tool(WOOD, "hoe"),
+    "stone_hoe": tool(STONE, "hoe"),
+    "iron_hoe": tool(IRON, "hoe"),
+    "wood_sword": tool(WOOD, "sword"),
+    "stone_sword": tool(STONE, "sword"),
+    "iron_sword": tool(IRON, "sword"),
+    "iron_helmet": _shape_icon(HELMET, IRON),
+    "iron_chestplate": _shape_icon(CHESTPLATE, IRON),
+    "iron_leggings": _shape_icon(LEGGINGS, IRON),
+    "iron_boots": _shape_icon(BOOTS, IRON),
+    "seeds": seeds,
+    "wheat": wheat_item,
+    "bread": bread,
+    "farmland_top": farmland_top,
+    "tall_grass": tall_grass,
+    "bluebell": flower((96, 128, 226), (240, 230, 140)),
+    "sunpetal": flower((246, 206, 60), (150, 90, 30)),
+    **{"wheat_%d" % i: crop(i) for i in range(8)},
+    "sandstone": sandstone,
+    "snow_grass_top": snow_top,
+    "snow_grass_side": snow_side,
+    "ice": ice,
+    "birch_log_side": birch_side,
+    "birch_log_top": lambda: remap(log_top(), ramp("#a68a62", "#b99c72", "#cbb085", "#dcc49a")),
+    "birch_leaves": lambda: remap(leaves(), BIRCH_LEAF),
+    "spruce_log_side": lambda: remap(log_side(), SPRUCE_BARK),
+    "spruce_log_top": lambda: remap(log_top(), ramp("#5a3e24", "#6b4b2c", "#7c5834", "#8d663e")),
+    "spruce_leaves": lambda: remap(leaves(), SPRUCE_LEAF),
+    "cactus_side": cactus_side,
+    "cactus_top": cactus_top,
+    "dead_bush": dead_bush,
+    "lava": lava,
 }
 
 if __name__ == "__main__":

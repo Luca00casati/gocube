@@ -30,7 +30,7 @@ var _drawn_state := []
 func _process(_delta: float) -> void:
 	if player:
 		var state := [player.health, ceili(player.breath), player.selected, player.creative,
-				player.inventory.slots.hash(), size]
+				player.inventory.slots.hash(), player.inventory.armor_points(), size]
 		if state != _drawn_state:
 			_drawn_state = state
 			queue_redraw()
@@ -65,7 +65,9 @@ func _draw() -> void:
 	if item != "":
 		var name := item.get_slice(":", 1).capitalize()
 		var w := font.get_string_size(name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16).x
-		var name_y := origin.y - (28.0 if not player.creative else 10.0)  # above the bars in survival
+		var name_y := origin.y - 10.0
+		if not player.creative:  # above the bars in survival
+			name_y -= 46.0 if player.inventory.armor_points() > 0 else 18.0
 		draw_string_outline(font, Vector2((size.x - w) / 2, name_y), name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, 4, Color.BLACK)
 		draw_string(font, Vector2((size.x - w) / 2, name_y), name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
 
@@ -79,6 +81,9 @@ func _draw_status(origin: Vector2, total: float) -> void:
 	if player.breath < player.MAX_BREATH:
 		_bar(Rect2(origin.x + total - width, y, width, 14), player.breath / player.MAX_BREATH,
 				Color(0.35, 0.65, 0.95), "Air")
+	var armor: int = player.inventory.armor_points()
+	if armor > 0:  # full iron armour is 15 points
+		_bar(Rect2(origin.x, y - 18, width, 12), armor / 15.0, Color(0.62, 0.64, 0.7), "Armour %d" % armor)
 
 
 func _bar(r: Rect2, fraction: float, color: Color, text: String) -> void:

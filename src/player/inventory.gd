@@ -104,11 +104,42 @@ func put(slot: int, held: Dictionary) -> Dictionary:
 	return here
 
 
+## Worn armour: slot ("head", "chest", "legs", "feet") -> {"id": item} or {}.
+const ARMOR_SLOTS := ["head", "chest", "legs", "feet"]
+var armor := {"head": {}, "chest": {}, "legs": {}, "feet": {}}
+
+
+func armor_points() -> int:
+	var total := 0
+	for slot in ARMOR_SLOTS:
+		if not armor[slot].is_empty():
+			total += int(Registry.items.get(armor[slot].id, {}).get("armor", {}).get("points", 0))
+	return total
+
+
+## Click on an armour slot holding `held`: wear it if it fits there, else give
+## the held item back. Returns what is held afterwards.
+func put_armor(slot: String, held: Dictionary) -> Dictionary:
+	if not held.is_empty() and Registry.items.get(held.id, {}).get("armor", {}).get("slot", "") != slot:
+		return held
+	var was: Dictionary = armor[slot]
+	armor[slot] = {"id": held.id, "count": 1} if not held.is_empty() else {}
+	changed.emit()
+	return was
+
+
 func serialize() -> Array:
-	return slots.map(func(s): return [s.id, s.count] if not s.is_empty() else null)
+	var out: Array = slots.map(func(s): return [s.id, s.count] if not s.is_empty() else null)
+	out.append({"armor": ARMOR_SLOTS.map(func(k): return armor[k].get("id", ""))})
+	return out
 
 
 func deserialize(data: Array) -> void:
+	if not data.is_empty() and data[-1] is Dictionary:
+		var worn: Array = data[-1].get("armor", [])
+		for i in mini(worn.size(), ARMOR_SLOTS.size()):
+			armor[ARMOR_SLOTS[i]] = {"id": str(worn[i]), "count": 1} if Registry.items.has(str(worn[i])) else {}
+		data = data.slice(0, data.size() - 1)
 	for i in mini(data.size(), SIZE):
 		var s = data[i]
 		# Items whose mod is gone are dropped; everything else comes back.

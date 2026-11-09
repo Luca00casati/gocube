@@ -14,6 +14,7 @@ var atlas: BlockAtlas
 var _held: Dictionary = {}
 var _slot_buttons: Array[Button] = []
 var _recipe_rows: Array = []  # [recipe, Button]
+var _armor_buttons := {}
 var _held_icon: TextureRect
 
 
@@ -50,10 +51,29 @@ func _ready() -> void:
 	for i in range(Inventory.HOTBAR, Inventory.SIZE):
 		grid.add_child(_make_slot(i))
 	left.add_child(spacer)
+	if not player.creative:
+		left.add_child(_label("Armour"))
+		var armor_row := HBoxContainer.new()
+		left.add_child(armor_row)
+		for slot in Inventory.ARMOR_SLOTS:
+			var b := Button.new()
+			b.custom_minimum_size = Vector2(SLOT, SLOT)
+			b.expand_icon = true
+			b.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			ContainerScreen.style_slot(b)
+			b.pressed.connect(_on_armor_slot.bind(slot))
+			b.tooltip_text = slot.capitalize()
+			_armor_buttons[slot] = b
+			armor_row.add_child(b)
 	left.add_child(_label("Hotbar"))
 	left.add_child(hotbar)
 	for i in Inventory.HOTBAR:
 		hotbar.add_child(_make_slot(i))
+
+	if player.creative:
+		columns.add_child(_make_palette())
+		_finish_ready()
+		return
 
 	# Crafting.
 	var right := VBoxContainer.new()
@@ -70,7 +90,10 @@ func _ready() -> void:
 	for recipe in Crafting.hand_recipes():
 		list.add_child(_make_recipe_row(recipe))
 	right.add_child(_label("E or Esc to close"))
+	_finish_ready()
 
+
+func _finish_ready() -> void:
 	_held_icon = TextureRect.new()
 	_held_icon.custom_minimum_size = Vector2(36, 36)
 	_held_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
@@ -143,6 +166,40 @@ func _make_recipe_row(recipe: Dictionary) -> Control:
 	return row
 
 
+## Creative: every placeable block and every item, to pick from.
+func _make_palette() -> Control:
+	var box := VBoxContainer.new()
+	box.add_child(_label("All blocks and items"))
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(9 * (SLOT + 4) + 16, 360)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	box.add_child(scroll)
+	var grid := GridContainer.new()
+	grid.columns = 9
+	scroll.add_child(grid)
+	var ids := Array(Registry.block_ids).filter(func(id): return player.is_placeable(id))
+	var items := Registry.items.keys()
+	items.sort()
+	for id in ids + items:
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(SLOT, SLOT)
+		b.expand_icon = true
+		b.icon = atlas.icon(id)
+		b.tooltip_text = str(id).get_slice(":", 1).capitalize()
+		ContainerScreen.style_slot(b)
+		b.pressed.connect(func():
+			_held = {"id": id, "count": 1}
+			_refresh())
+		grid.add_child(b)
+	box.add_child(_label("Click one, then a slot · E or Esc to close"))
+	return box
+
+
+func _on_armor_slot(slot: String) -> void:
+	_held = player.inventory.put_armor(slot, _held)
+	_refresh()
+
+
 func _on_slot(i: int) -> void:
 	if player.creative and _held.is_empty() and not player.inventory.slots[i].is_empty():
 		# Creative: rearrange freely, items never run out.
@@ -169,6 +226,9 @@ func _refresh() -> void:
 		b.text = str(s.count) if not s.is_empty() and s.count > 1 and not player.creative else ""
 		b.tooltip_text = _name(s.id) if not s.is_empty() else ""
 		b.modulate = Color(1, 1, 0.6) if i == player.selected else Color.WHITE
+	for slot in _armor_buttons:
+		var worn: Dictionary = player.inventory.armor[slot]
+		_armor_buttons[slot].icon = atlas.icon(worn.id) if not worn.is_empty() else null
 	for row in _recipe_rows:
 		row[1].disabled = not player.creative and not Crafting.can_craft(row[0], player.inventory)
 	_held_icon.texture = atlas.icon(_held.id) if not _held.is_empty() else null
