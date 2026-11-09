@@ -22,6 +22,7 @@ const ACTIONS := {
 	"sprint": ["Sprint", KEY_CTRL],
 	"toggle_fly": ["Toggle flying", KEY_F],
 	"inventory": ["Inventory", KEY_E],
+	"change_view": ["Change view (first person, behind, in front)", KEY_F5],
 }
 
 var config := ConfigFile.new()

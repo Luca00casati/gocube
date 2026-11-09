@@ -21,6 +21,9 @@ const TOP_Y := 127
 
 ## A block changed through set_block() (the host forwards these to clients).
 signal block_changed(position: Vector3i, block: int)
+## Goes up with every block change here, local or from the host (what's
+## drawn from blocks, like the target outline, can tell it is out of date).
+var revision := 0
 
 var engine: GoCubeWorld
 ## Contents of world.json. "player" is whatever the game passed to save().
@@ -292,6 +295,7 @@ func get_block(pos: Vector3i) -> int:
 func set_block(pos: Vector3i, block: int) -> bool:
 	if not engine.set_block(pos, block):
 		return false
+	revision += 1
 	block_changed.emit(pos, block)
 	return true
 
@@ -300,6 +304,7 @@ func set_block(pos: Vector3i, block: int) -> bool:
 ## Returns false if the chunk isn't loaded here: then ask the host for the
 ## whole chunk (chunk_bytes / set_chunk) so the edit isn't lost.
 func apply_remote_block(pos: Vector3i, block: int) -> bool:
+	revision += 1
 	return engine.set_block(pos, block)
 
 
@@ -313,6 +318,13 @@ func chunk_bytes(chunk_pos: Vector3i) -> PackedByteArray:
 
 func set_chunk(chunk_pos: Vector3i, bytes: PackedByteArray) -> void:
 	engine.set_chunk_override(chunk_pos, bytes)
+	revision += 1
+
+
+## The boxes a ray can hit in the block at `pos` (its shape: a slab's half,
+## a torch's stick...), as AABBs relative to the block's corner.
+func pick_boxes(pos: Vector3i) -> Array:
+	return engine.pick_boxes(pos)
 
 
 ## {hit, position, previous, normal, block, distance}

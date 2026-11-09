@@ -149,3 +149,26 @@ func test_vanilla_peaks_have_snow() -> void:
 				snow += 1
 				check(Registry.block_ids[w.get_block(hit.position + Vector3i.DOWN)] != "core:air", "snow lies on something")
 	check(snow > 20, "a peak is covered in snow (%d columns)" % snow)
+
+
+## The outline around what you point at follows the block's shape.
+func test_outline_follows_the_shape() -> void:
+	var w := await make_world()
+	_floor(w, -2, 2, -2, 2)
+	_put(w, Vector3i(0, Y + 1, 0), "core:stone_slab")
+	_put(w, Vector3i(1, Y + 1, 0), "core:snow")
+	_put(w, Vector3i(-1, Y + 1, 0), "core:torch")
+	check_eq(w.pick_boxes(Vector3i(0, Y, 0)), [AABB(Vector3.ZERO, Vector3.ONE)], "a cube: the whole block")
+	check_eq(w.pick_boxes(Vector3i(0, Y + 1, 0)), [AABB(Vector3.ZERO, Vector3(1, 0.5, 1))], "a slab: its half")
+	check_eq(w.pick_boxes(Vector3i(1, Y + 1, 0)), [AABB(Vector3.ZERO, Vector3(1, 1.0 / 16.0, 1))], "snow: 1/16")
+	var torch: Array = w.pick_boxes(Vector3i(-1, Y + 1, 0))
+	check(torch.size() == 1 and torch[0].size.x < 0.3 and torch[0].size.y < 1.0, "a torch: its stick (%s)" % [torch])
+	check(w.pick_boxes(Vector3i(0, Y + 2, 0)).is_empty(), "air: nothing")
+	var Player := load("res://src/player/player.gd")
+	var mesh: ArrayMesh = Player.outline_mesh(w.pick_boxes(Vector3i(0, Y + 1, 0)))
+	var verts: PackedVector3Array = mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	check_eq(verts.size(), 24, "12 edges per box")
+	var top := -INF
+	for v in verts:
+		top = maxf(top, v.y)
+	check_near(top, 0.502, 0.001, "drawn just above the slab's top")

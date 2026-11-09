@@ -112,6 +112,16 @@ var _burn_timer := 0.5
 ## Survival: what a break we asked for will drop, by position, until confirmed.
 var pending_drops := {}
 var _outline: MeshInstance3D
+## What the screen shows (F5 cycles): through our eyes, from behind, or from
+## in front looking back at us. Aiming always goes from the eyes.
+enum View { FIRST, BACK, FRONT }
+var view := View.FIRST
+const VIEW_DISTANCE := 4.0       # third-person camera distance from the eyes
+const VIEW_WALL_GAP := 0.25      # kept between that camera and a block in the way
+## The third-person camera (a child of `camera`, current only then) and our body.
+var view_camera: Camera3D
+var _body: Node3D
+var _outline_for = null  # [position, block, world revision] the outline was built for
 var _mining_target := Vector3i(1 << 30, 0, 0)
 
 
@@ -125,6 +135,16 @@ func _ready() -> void:
 	_outline.visible = false
 	add_child(_outline)
 	_outline.top_level = true
+
+	view_camera = Camera3D.new()
+	view_camera.far = camera.far
+	camera.add_child(view_camera)
+	_body = preload("res://src/player/avatar.gd").new()
+	_body.setup("", multiplayer.get_unique_id())
+	_body.follow = false
+	_body.position.y = EYE_HEIGHT
+	_body.visible = false
+	add_child(_body)
 
 	if autopilot:
 		flying = true
@@ -195,6 +215,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		rotation.y -= event.relative.x * Settings.mouse_sensitivity
 		camera.rotation.x = clampf(camera.rotation.x - event.relative.y * Settings.mouse_sensitivity, -1.55, 1.55)
+	elif event.is_action_pressed(&"change_view"):
+		set_view((view + 1) % 3)
 	elif event.is_action_pressed(&"toggle_fly"):
 		flying = not flying
 		velocity.y = 0.0
@@ -427,14 +449,46 @@ func _unstuck() -> void:
 func _process(delta: float) -> void:
 	if autopilot or world == null:
 		return
+	_update_view()
 	_attack_cooldown = maxf(0.0, _attack_cooldown - delta)
 	var hit := _target()
 	if not _mob_in_front(hit).is_empty():
 		hit = {"hit": false}  # a creature is in the way: no outline, no mining
 	_outline.visible = hit.hit
 	if hit.hit:
-		_outline.global_position = Vector3(hit.position) + Vector3.ONE * 0.5
+		if _outline_for != [hit.position, hit.block, world.revision]:  # (a fence's rails change with its neighbours)
+			_outline_for = [hit.position, hit.block, world.revision]
+			_outline.mesh = outline_mesh(world.pick_boxes(hit.position))
+		_outline.global_position = Vector3(hit.position)
 	_update_mining(hit, delta)
+
+
+func set_view(v: View) -> void:
+	view = v
+	if v == View.FIRST:
+		camera.make_current()
+	else:
+		view_camera.make_current()
+	_update_view()
+
+
+## Places the third-person camera behind or in front of the eyes (closer when
+## a block is in the way) and shows our body there.
+func _update_view() -> void:
+	var third := view != View.FIRST
+	_body.visible = third and not dead and not sleeping
+	if not third:
+		return
+	var side := 1.0 if view == View.BACK else -1.0  # +z of the eyes is behind them
+	var dir: Vector3 = camera.global_basis.z * side
+	var distance := VIEW_DISTANCE
+	var hit := world.raycast(camera.global_position, dir, VIEW_DISTANCE + VIEW_WALL_GAP)
+	if hit.hit:
+		distance = maxf(0.2, float(hit.distance) - VIEW_WALL_GAP)
+	view_camera.position = Vector3(0, 0, side * distance)
+	view_camera.rotation = Vector3(0, 0.0 if view == View.BACK else PI, 0)
+	_body.pitch = camera.rotation.x
+	_body.light = int(Registry.blocks.get(selected_item(), {}).get("light", 0))
 
 
 ## Survival mining: hold left click on the same block until it breaks.
@@ -666,28 +720,34 @@ static func overlaps_block(feet: Vector3, cell: Vector3i) -> bool:
 	return body.intersects(AABB(Vector3(cell), Vector3.ONE))
 
 
+## The outline around what the player points at: the edges of the block's
+## boxes (just outside them, so the lines don't z-fight with the faces).
 static func _make_outline() -> MeshInstance3D:
-	var s := 0.502  # just outside the block faces, so lines don't z-fight
-	var corners: Array[Vector3] = []
-	for i in 8:
-		corners.append(Vector3(s if i & 1 else -s, s if i & 2 else -s, s if i & 4 else -s))
-	var verts := PackedVector3Array()
-	for i in 8:
-		for bit in [1, 2, 4]:
-			if not (i & bit):
-				verts.append(corners[i])
-				verts.append(corners[i | bit])
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_LINES, arrays)
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.albedo_color = Color(0, 0, 0, 0.8)
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	var mi := MeshInstance3D.new()
-	mi.mesh = mesh
 	mi.material_override = mat
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	return mi
+
+
+## Line edges of each box (AABBs relative to the block's corner).
+static func outline_mesh(boxes: Array) -> ArrayMesh:
+	var verts := PackedVector3Array()
+	for b: AABB in boxes:
+		var g := b.grow(0.002)
+		for i in 8:
+			for bit in [1, 2, 4]:
+				if not (i & bit):
+					verts.append(g.get_endpoint(i))
+					verts.append(g.get_endpoint(i | bit))
+	var mesh := ArrayMesh.new()
+	if verts.is_empty():
+		return mesh
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_LINES, arrays)
+	return mesh

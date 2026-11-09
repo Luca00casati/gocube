@@ -529,6 +529,21 @@ void GoCubeWorld::request_remesh(const Vector3i &chunk_pos) {
 	_urgent.insert(it->first);
 }
 
+Array GoCubeWorld::pick_boxes(const Vector3i &position) const {
+	Array out;
+	const int id = block_id_at(position.x, position.y, position.z);
+	if (id < 0 || id == AIR) {
+		return out;
+	}
+	std::vector<Box> boxes;
+	block_boxes(position.x, position.y, position.z, id, false, boxes);
+	for (const Box &b : boxes) {
+		const Vector3 mn(b.mn[0] - position.x, b.mn[1] - position.y, b.mn[2] - position.z);
+		out.append(AABB(mn, Vector3(b.mx[0] - b.mn[0], b.mx[1] - b.mn[1], b.mx[2] - b.mn[2])));
+	}
+	return out;
+}
+
 Dictionary GoCubeWorld::raycast(const Vector3 &origin, const Vector3 &direction, float max_distance) const {
 	Dictionary result;
 	result["hit"] = false;
@@ -1215,6 +1230,7 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_block", "position"), &GoCubeWorld::get_block);
 	ClassDB::bind_method(D_METHOD("set_block", "position", "id"), &GoCubeWorld::set_block);
 	ClassDB::bind_method(D_METHOD("raycast", "origin", "direction", "max_distance"), &GoCubeWorld::raycast);
+	ClassDB::bind_method(D_METHOD("pick_boxes", "position"), &GoCubeWorld::pick_boxes);
 	ClassDB::bind_method(D_METHOD("move_box", "position", "size", "motion", "step_height"), &GoCubeWorld::move_box);
 	ClassDB::bind_method(D_METHOD("is_box_free", "position", "size"), &GoCubeWorld::is_box_free);
 	ClassDB::bind_method(D_METHOD("set_save_directory", "dir"), &GoCubeWorld::set_save_directory);

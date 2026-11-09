@@ -74,7 +74,7 @@ func swing() -> void:
 func _process(delta: float) -> void:
 	if player == null:
 		return
-	visible = not player.dead and not player.autopilot and not player.sleeping
+	visible = not player.dead and not player.autopilot and not player.sleeping and player.view == player.View.FIRST
 	var item: String = player.selected_item()
 	if item != _shown_item:
 		_shown_item = item

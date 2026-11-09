@@ -27,6 +27,7 @@ var use_cmdline := false
 var _args := {}
 var _fps_label: Label
 var _debug_label: Label   # F3
+var _crosshair: Control
 var _debug_timer := 0.0
 var _loading: Control
 var _loading_since := 0
@@ -801,6 +802,8 @@ func _process(_delta: float) -> void:
 		if _player:
 			_player.set_meta("daylight", _day.daylight())
 	_update_hand_light()
+	if _player:  # from in front of us, the crosshair would point nowhere useful
+		_crosshair.visible = _player.view != Player.View.FRONT
 	var status := "%d FPS · %s" % [Engine.get_frames_per_second(), _day.clock_text(Settings.clock_24h)]
 	if _player and not _player.autopilot:
 		status += " · %s · %s · E inventory" % ["creative" if _player.creative else "survival",
@@ -871,6 +874,7 @@ func _add_hud() -> void:
 	_fps_label.position = Vector2(8, 8)
 	hud.add_child(_fps_label)
 	var crosshair := Control.new()
+	_crosshair = crosshair
 	crosshair.set_anchors_preset(Control.PRESET_CENTER)
 	crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	for r in [Rect2(-8, -1, 16, 2), Rect2(-1, -8, 2, 16)]:

@@ -196,6 +196,19 @@ func test_two_players() -> void:
 	await _until(func(): return not _block(client, Vector3i(0, 0, -2)).ends_with("_open"), "the host closing the door")
 	check(not _block(client, Vector3i(0, 1, -2)).ends_with("_open"), "closed for the client")
 
+	# The outline around what the client points at follows the block's shape
+	# and changes when the host changes the block.
+	host._world.set_block(o + Vector3i(-2, 0, 1), Registry.block_index("core:stone_slab"))
+	await _until(func(): return _block(client, Vector3i(-2, 0, 1)) == "core:stone_slab", "a slab from the host")
+	_aim(Vector3(-1.5, 0.25, 1.5))
+	await frames(2)
+	var aabb: AABB = p._outline.mesh.get_aabb()
+	check_near(aabb.size.y, 0.504, 0.01, "the outline is half a block high")
+	host._world.set_block(o + Vector3i(-2, 0, 1), Registry.block_index("core:stone"))
+	await _until(func(): return _block(client, Vector3i(-2, 0, 1)) == "core:stone", "a full block from the host")
+	await frames(2)
+	check_near(p._outline.mesh.get_aabb().size.y, 1.004, 0.01, "then a whole block high")
+
 	# Throwing an item: the host owns it, both see it, walking over picks it up.
 	client.spawn_drop("core:stick", 1, Vector3(o) + Vector3(-5.5, 0.5, 2.5))
 	check(await wait_until(func(): return host._drops_node.count() == 1 and client._drops_node.count() == 1, 5),

@@ -1,11 +1,16 @@
 extends Node3D
-## Another player as seen by us: a simple coloured figure with a name tag.
+## A player's figure: another player as seen by us (with a name tag), or our
+## own body in the third-person views (no tag; it follows our player).
 ## The node's origin is the player's eye (camera) position.
 
 var target_position := Vector3.ZERO
 var target_yaw := 0.0
 var light := 0            # level of the light they hold (a torch), 0 for none
+var pitch := 0.0          # looking up (+) or down (-): tilts the head
+## False for our own body: its parent (the player) moves and turns it.
+var follow := true
 var _torch: Node3D
+var _head: Node3D
 
 
 func setup(player_name: String, peer_id: int) -> void:
@@ -26,6 +31,7 @@ func setup(player_name: String, peer_id: int) -> void:
 	head.mesh = head_mesh
 	head.material_override = mat
 	add_child(head)
+	_head = head
 
 	var eyes := MeshInstance3D.new()  # shows which way they face (-Z)
 	var eyes_mesh := BoxMesh.new()
@@ -35,7 +41,7 @@ func setup(player_name: String, peer_id: int) -> void:
 	eye_mat.albedo_color = Color(0.1, 0.1, 0.12)
 	eyes.material_override = eye_mat
 	eyes.position = Vector3(0, 0.05, -0.23)
-	add_child(eyes)
+	head.add_child(eyes)
 
 	_torch = Node3D.new()  # shown while they hold a torch
 	_torch.position = Vector3(0.38, -0.75, -0.2)
@@ -56,6 +62,8 @@ func setup(player_name: String, peer_id: int) -> void:
 		mi.material_override = part[2]
 		_torch.add_child(mi)
 
+	if player_name == "":
+		return
 	var tag := Label3D.new()
 	tag.text = player_name
 	tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -67,8 +75,11 @@ func setup(player_name: String, peer_id: int) -> void:
 
 
 func _process(delta: float) -> void:
+	_torch.visible = light > 0
+	_head.rotation.x = pitch
+	if not follow:
+		return
 	# Smooth between the 20 Hz network updates.
 	var t := 1.0 - exp(-15.0 * delta)
 	position = position.lerp(target_position, t)
 	rotation.y = lerp_angle(rotation.y, target_yaw, t)
-	_torch.visible = light > 0

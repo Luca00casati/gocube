@@ -95,6 +95,9 @@ public:
 	// First targetable (non-air, non-fluid) block along a ray:
 	// {hit, position, previous, normal, block, distance}; {hit: false} if none.
 	godot::Dictionary raycast(const godot::Vector3 &origin, const godot::Vector3 &direction, float max_distance) const;
+	// The boxes a ray can hit in the block at `position` (what the player
+	// points at), relative to the block's corner; empty for air and fluids.
+	godot::Array pick_boxes(const godot::Vector3i &position) const;
 	// Moves a box (feet at `position`, size = width x height x depth) by `motion`
 	// against solid blocks, one axis at a time. With step_height > 0 it climbs
 	// steps that high when walking into them on the ground.
