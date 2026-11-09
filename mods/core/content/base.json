@@ -39,6 +39,13 @@
     "grass": {
       "hardness": 0.6,
       "drops": "core:dirt",
+      "extra_drops": [
+        [
+          "core:seeds",
+          1,
+          0.1
+        ]
+      ],
       "color": "#5fa83a",
       "textures": {
         "top": "textures/grass_top.png",
@@ -1678,7 +1685,6 @@
         "core:big_oak": 1
       },
       "plants": {
-        "core:tall_grass": 170,
         "core:bluebell": 7,
         "core:sunpetal": 7
       },

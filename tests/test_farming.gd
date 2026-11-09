@@ -79,6 +79,13 @@ func test_tall_grass_drops() -> void:
 	for i in 400:
 		seeds += Player.drops_of("core:tall_grass").count("core:seeds")
 	check(seeds > 30 and seeds < 100, "tall grass sometimes gives seeds (%d / 400)" % seeds)
+	# The world grows no tall grass: digging grass is the other way to find seeds.
+	seeds = 0
+	for i in 400:
+		var got := Player.drops_of("core:grass")
+		check(got.has("core:dirt"), "grass always gives dirt")
+		seeds += got.count("core:seeds")
+	check(seeds > 15 and seeds < 70, "grass sometimes gives seeds (%d / 400)" % seeds)
 	var ripe := Player.drops_of("core:wheat_7")
 	check(ripe.has("core:wheat") and ripe.count("core:seeds") >= 1, "ripe wheat gives wheat and seeds")
 

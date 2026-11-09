@@ -40,7 +40,7 @@ signal corrected(eye: Vector3)
 const Avatar := preload("res://src/player/avatar.gd")
 const Player := preload("res://src/player/player.gd")
 
-const PROTOCOL := 5
+const PROTOCOL := 6
 const DEFAULT_PORT := 24680
 const MAX_PLAYERS := 8
 const STATE_INTERVAL := 0.05       # seconds between position updates (20 Hz)
@@ -57,6 +57,9 @@ var local_player: Node3D
 var drops: ItemDrops               # dropped items (set by main)
 var _drop_timer := 0.0
 var held_light := 0         # light level of what the local player holds (a torch: 13); set by main
+## How the local player looks to others (set by main every frame): head pitch,
+## held item, Avatar.FLAG_* (sneaking, asleep, flying), swing counter.
+var local_pose := {"pitch": 0.0, "item": "", "flags": 0, "swings": 0}
 var player_name := "Player"
 ## Time of day; the host's is authoritative.
 var day_cycle: DayCycle
@@ -359,9 +362,9 @@ func _on_peer_disconnected(id: int) -> void:
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
-func _client_state(pos: Vector3, yaw: float, light: int) -> void:
+func _client_state(pos: Vector3, yaw: float, pitch: float, item: String, flags: int, swings: int) -> void:
 	var id := multiplayer.get_remote_sender_id()
-	if not is_host() or not _peers.has(id) or not pos.is_finite() or not is_finite(yaw):
+	if not is_host() or not _peers.has(id) or not pos.is_finite() or not is_finite(yaw) or not is_finite(pitch):
 		return
 	var p: Dictionary = _peers[id]
 	if not _move_allowed(p, pos):
@@ -371,7 +374,12 @@ func _client_state(pos: Vector3, yaw: float, light: int) -> void:
 		return
 	p.position = pos
 	p.yaw = wrapf(yaw, -PI, PI)
-	p.light = clampi(light, 0, 15)
+	p.pitch = clampf(pitch, -PI / 2, PI / 2)
+	# Only a real item; its light comes from its definition, not from the client.
+	p.item = item if valid_stack({"id": item, "count": 1}) else ""
+	p.light = clampi(int(Registry.blocks.get(p.item, {}).get("light", 0)), 0, 15)
+	p.flags = flags & 7
+	p.swings = swings
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -740,9 +748,12 @@ func _chunk(chunk_pos: Vector3i, bytes: PackedByteArray) -> void:
 func _host_states() -> Dictionary:
 	var states := {}
 	if local_player:
-		states[1] = [local_player.global_position, local_player.global_rotation.y, player_name, held_light]
+		states[1] = [local_player.global_position, local_player.global_rotation.y, player_name, held_light,
+				float(local_pose.pitch), str(local_pose.item), int(local_pose.flags), int(local_pose.swings)]
 	for id in _peers:
-		states[id] = [_peers[id].position, _peers[id].yaw, _peers[id].name, _peers[id].get("light", 0)]
+		var p: Dictionary = _peers[id]
+		states[id] = [p.position, p.yaw, p.name, p.get("light", 0), p.get("pitch", 0.0), p.get("item", ""),
+				p.get("flags", 0), p.get("swings", 0)]
 	return states
 
 
@@ -787,7 +798,8 @@ func _process(delta: float) -> void:
 		if not _peers.is_empty():
 			_players_state.rpc(states)
 	elif is_client() and _welcomed:
-		_client_state.rpc_id(1, local_player.global_position, local_player.global_rotation.y, held_light)
+		_client_state.rpc_id(1, local_player.global_position, local_player.global_rotation.y,
+				float(local_pose.pitch), str(local_pose.item), int(local_pose.flags), int(local_pose.swings))
 
 
 ## Other players carrying light: [Vector4(x, y, z, level)] for the terrain shader.
@@ -808,13 +820,19 @@ func _update_avatars(states: Dictionary) -> void:
 		var avatar = _avatars.get(id)
 		if avatar == null:
 			avatar = Avatar.new()
-			avatar.setup(states[id][2], id)
+			avatar.setup(states[id][2], id, world.atlas)
 			avatar.position = states[id][0]
 			world.add_child(avatar)
 			_avatars[id] = avatar
-		avatar.target_position = states[id][0]
-		avatar.target_yaw = states[id][1]
-		avatar.light = states[id][3] if states[id].size() > 3 else 0
+		var st: Array = states[id]
+		avatar.target_position = st[0]
+		avatar.target_yaw = st[1]
+		avatar.light = st[3]
+		if st.size() >= 8:
+			avatar.pitch = st[4]
+			avatar.item = st[5]
+			avatar.flags = st[6]
+			avatar.swings = st[7]
 	for id in _avatars.keys():
 		if not states.has(id):
 			_avatars[id].queue_free()

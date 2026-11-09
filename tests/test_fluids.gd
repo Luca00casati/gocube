@@ -45,3 +45,37 @@ func test_spreads_falls_and_drains() -> void:
 		if w.is_fluid(w.get_block(Vector3i(x, y, 0))):
 			left += 1
 	check_eq(left, 0, "all flowing water drained after the source was removed")
+
+
+## Flowing water is one connected surface: wherever cells meet, their top
+## corners are at the same height (no steps, no gaps), sloping down away
+## from the source.
+func test_surface_is_connected() -> void:
+	var w := await make_world(4242, "", 64, Vector3(4.5, 70, 4.5))
+	var id := _ids()
+	var y := 70
+	for x in range(-5, 15):  # a walled pad, so the water settles
+		for z in range(-5, 14):
+			var wall := x == -5 or x == 14 or z == -5 or z == 13
+			w.engine.set_block(Vector3i(x, y - 1, z), id.stone)
+			w.engine.set_block(Vector3i(x, y, z), id.stone if wall else 0)
+	w.set_block(Vector3i(4, y, 4), id.source)
+	await _settle(w, 15)
+	var chunk := World.chunk_of(Vector3i(4, y, 4))
+	var tops := {}  # (x, z) of a top corner -> heights seen there
+	var ok := await wait_until(func():
+		tops.clear()
+		# Two chunks: the water crosses the border at x = 0, which must match too.
+		for v in w.engine.fluid_vertices(chunk) + w.engine.fluid_vertices(chunk + Vector3i(-1, 0, 0)):
+			if v.y > y + 0.05 and v.y < y + 1.0:
+				var key := Vector2i(roundi(v.x * 2.0), roundi(v.z * 2.0))
+				if not tops.has(key):
+					tops[key] = {}
+				tops[key][snappedf(v.y, 0.001)] = true
+		return tops.size() > 20, 5)
+	check(ok, "the water was drawn")
+	var split := tops.keys().filter(func(k): return tops[k].size() > 1)
+	check(split.is_empty(), "every corner has one height (%d corners with steps, e.g. %s)" % [split.size(), split.slice(0, 3)])
+	var near: float = tops.get(Vector2i(8, 8), {0.0: true}).keys()[0]   # a corner of the source cell
+	var far: float = tops.get(Vector2i(20, 8), {0.0: true}).keys()[0]   # 6 blocks away
+	check(near > far + 0.3, "the surface slopes down from the source (%.2f -> %.2f)" % [near, far])

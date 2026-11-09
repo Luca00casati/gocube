@@ -529,6 +529,21 @@ void GoCubeWorld::request_remesh(const Vector3i &chunk_pos) {
 	_urgent.insert(it->first);
 }
 
+PackedVector3Array GoCubeWorld::fluid_vertices(const Vector3i &chunk_pos) const {
+	PackedVector3Array out;
+	auto it = _chunks.find(key(chunk_pos));
+	if (it == _chunks.end() || !it->second.mesh.is_valid() || it->second.fluid_surface < 0) {
+		return out;
+	}
+	const Array arrays = RenderingServer::get_singleton()->mesh_surface_get_arrays(it->second.mesh, it->second.fluid_surface);
+	out = arrays[RenderingServer::ARRAY_VERTEX];
+	const Vector3 origin = Vector3(chunk_pos) * float(CHUNK);
+	for (int64_t i = 0; i < out.size(); i++) {
+		out.set(i, out[i] + origin);
+	}
+	return out;
+}
+
 Array GoCubeWorld::pick_boxes(const Vector3i &position) const {
 	Array out;
 	const int id = block_id_at(position.x, position.y, position.z);
@@ -1200,7 +1215,9 @@ void GoCubeWorld::upload(Result &r) {
 		}
 		surface++;
 	}
+	c.fluid_surface = -1;
 	if (!r.fluid.empty()) {
+		c.fluid_surface = surface;
 		rs->mesh_add_surface_from_arrays(c.mesh, RenderingServer::PRIMITIVE_TRIANGLES, surface_arrays(r.fluid));
 		if (_fluid_material.is_valid()) {
 			rs->mesh_surface_set_material(c.mesh, surface, _fluid_material->get_rid());
@@ -1231,6 +1248,7 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_block", "position", "id"), &GoCubeWorld::set_block);
 	ClassDB::bind_method(D_METHOD("raycast", "origin", "direction", "max_distance"), &GoCubeWorld::raycast);
 	ClassDB::bind_method(D_METHOD("pick_boxes", "position"), &GoCubeWorld::pick_boxes);
+	ClassDB::bind_method(D_METHOD("fluid_vertices", "chunk_pos"), &GoCubeWorld::fluid_vertices);
 	ClassDB::bind_method(D_METHOD("move_box", "position", "size", "motion", "step_height"), &GoCubeWorld::move_box);
 	ClassDB::bind_method(D_METHOD("is_box_free", "position", "size"), &GoCubeWorld::is_box_free);
 	ClassDB::bind_method(D_METHOD("set_save_directory", "dir"), &GoCubeWorld::set_save_directory);

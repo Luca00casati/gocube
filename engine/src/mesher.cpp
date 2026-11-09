@@ -126,11 +126,12 @@ struct CornerLight {
 	float sky[4], block[4], ao[4];
 };
 
-// top_height: where the face's upper corners sit (1 = full block; lower for
-// flowing fluids).
+// top_height: where the face's upper corners sit (1 = full block).
 // rotation: quarter turns of the texture within the face (0..3).
+// corner_tops (fluids): the height of each upper corner instead, by its
+// position in the cell: [x + 2 * z] for x, z in {0, 1}.
 void emit_face(Surface &s, const FaceDef &d, float bx, float by, float bz, const AtlasLayout &atlas, int tile,
-		const CornerLight &cl, float top_height = 1.0f, int rotation = 0) {
+		const CornerLight &cl, float top_height = 1.0f, int rotation = 0, const float *corner_tops = nullptr) {
 	const int base = static_cast<int>(s.positions.size() / 3);
 	const float tw = 1.0f / (atlas.cols * atlas.cell);
 	const float th = 1.0f / (atlas.rows * atlas.cell);
@@ -140,7 +141,11 @@ void emit_face(Surface &s, const FaceDef &d, float bx, float by, float bz, const
 	const float v0 = (row * atlas.cell + atlas.face_y) * th;
 	for (int c = 0; c < 4; c++) {
 		s.positions.push_back(bx + d.corners[c][0]);
-		s.positions.push_back(by + (d.corners[c][1] > 0.5f ? top_height : d.corners[c][1]));
+		float top = top_height;
+		if (corner_tops) {
+			top = corner_tops[int(d.corners[c][0] + 0.5f) + 2 * int(d.corners[c][2] + 0.5f)];
+		}
+		s.positions.push_back(by + (d.corners[c][1] > 0.5f ? top : d.corners[c][1]));
 		s.positions.push_back(bz + d.corners[c][2]);
 		s.normals.push_back(static_cast<float>(d.dx));
 		s.normals.push_back(static_cast<float>(d.dy));
@@ -305,6 +310,53 @@ void emit_shape(Surface &s, const FaceTable &table, const BlockInfo &info, Block
 	}
 }
 
+// A block next to this chunk, or AIR if it is diagonally across a chunk
+// corner (the mesher only has the six face neighbours).
+BlockId sample_near(const ChunkData &c, const ChunkData *const nb[FACE_COUNT], const std::vector<BlockInfo> &blocks,
+		int x, int y, int z, BlockId solid_fallback) {
+	const int out = int(x < 0 || x >= CHUNK) + int(y < 0 || y >= CHUNK) + int(z < 0 || z >= CHUNK);
+	return out > 1 ? AIR : sample(c, nb, blocks, x, y, z, solid_fallback);
+}
+
+// Surface height of a fluid cell: full under more fluid, else by its level
+// (a source sits a little below the block top).
+float fluid_height(const ChunkData &c, const ChunkData *const nb[FACE_COUNT], const std::vector<BlockInfo> &blocks,
+		int x, int y, int z, BlockId solid_fallback, bool &covered) {
+	const BlockId id = sample_near(c, nb, blocks, x, y, z, solid_fallback);
+	const BlockId above = sample_near(c, nb, blocks, x, y + 1, z, solid_fallback);
+	covered = above < blocks.size() && blocks[above].fluid;
+	return covered ? 1.0f : std::max(0.125f, blocks[id].fluid_level / 8.0f * 0.875f);
+}
+
+// The height of each top corner of the fluid cell (x, y, z), [cx + 2 * cz]:
+// the average surface of the fluid cells sharing that corner, or a full block
+// if fluid pours into any of them from above. Neighbouring cells compute the
+// same corner the same way, so their surfaces meet without steps or gaps.
+void fluid_tops(const ChunkData &c, const ChunkData *const nb[FACE_COUNT], const std::vector<BlockInfo> &blocks,
+		int x, int y, int z, BlockId solid_fallback, float tops[4]) {
+	for (int cz = 0; cz < 2; cz++) {
+		for (int cx = 0; cx < 2; cx++) {
+			float sum = 0.0f;
+			int n = 0;
+			bool full = false;
+			for (int dz = cz - 1; dz <= cz && !full; dz++) {
+				for (int dx = cx - 1; dx <= cx && !full; dx++) {
+					const BlockId id = sample_near(c, nb, blocks, x + dx, y, z + dz, solid_fallback);
+					if (id >= blocks.size() || !blocks[id].fluid) {
+						continue;
+					}
+					bool covered;
+					const float h = fluid_height(c, nb, blocks, x + dx, y, z + dz, solid_fallback, covered);
+					full = covered;
+					sum += h;
+					n++;
+				}
+			}
+			tops[cx + 2 * cz] = full ? 1.0f : sum / float(std::max(1, n));
+		}
+	}
+}
+
 } // namespace
 
 void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_COUNT],
@@ -337,6 +389,8 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 							[&](int nx, int ny, int nz) { return sample(chunk, neighbours, blocks, nx, ny, nz, solid_fallback); });
 					continue;
 				}
+				float tops[4];
+				bool tops_done = false;
 				for (int f = 0; f < FACE_COUNT; f++) {
 					const FaceDef &d = table.f[f];
 					const BlockId nid = sample(chunk, neighbours, blocks, x + d.dx, y + d.dy, z + d.dz, solid_fallback);
@@ -359,21 +413,17 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 						}
 					}
 					if (info.fluid) {
-						// Surface height: full under more fluid, else by level (a
-						// source is a little below the block top).
-						const BlockId above = sample(chunk, neighbours, blocks, x, y + 1, z, solid_fallback);
-						const bool covered = above < count && blocks[above].fluid;
-						const float height = covered ? 1.0f : std::max(0.125f, info.fluid_level / 8.0f * 0.875f);
-						// Faces towards air, and sides towards lower fluid (so steps
-						// between water levels have no gaps).
-						const bool lower_fluid = n && n->fluid && d.dy == 0 && n->fluid_level < info.fluid_level && !covered;
-						if (nid != AIR && !lower_fluid) {
+						// One connected surface: faces only towards what isn't fluid
+						// (and can be seen through), with each top corner at the
+						// height shared by the fluid cells around it (see fluid_tops).
+						if (nid != AIR && (!n || n->fluid || n->opaque)) {
 							continue;
 						}
-						if (d.dy > 0 && covered) {
-							continue;
+						if (!tops_done) {
+							fluid_tops(chunk, neighbours, blocks, x, y, z, solid_fallback, tops);
+							tops_done = true;
 						}
-						emit_face(fluid, d, x, y, z, atlas, info.tiles[f], cl, height);
+						emit_face(fluid, d, x, y, z, atlas, info.tiles[f], cl, 1.0f, 0, tops);
 					} else {
 						// Opaque faces are hidden by opaque neighbours; see-through
 						// blocks (e.g. glass) also hide faces against the same block.

@@ -117,3 +117,17 @@ func test_lakes_are_closed_in() -> void:
 		await frames(2)
 	check(cells > 50, "found lakes to check (%d water cells)" % cells)
 	check(open.is_empty(), "%d lake water cells next to air, e.g. %s" % [open.size(), open.slice(0, 4)])
+
+
+func test_no_tall_grass_in_new_worlds() -> void:
+	var w := await make_world()
+	var flowers := 0
+	for x in range(-16, 16):
+		for z in range(-16, 16):
+			var hit := w.raycast(Vector3(x + 0.5, 100, z + 0.5), Vector3.DOWN, 200)
+			if hit.hit:
+				var id: String = Registry.block_ids[hit.block]
+				check(id != "core:tall_grass", "no tall grass at %d %d" % [x, z])
+				if id in ["core:bluebell", "core:sunpetal"]:
+					flowers += 1
+	check(flowers > 0, "flowers still grow (%d)" % flowers)

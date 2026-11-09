@@ -31,10 +31,16 @@ var target_yaw := 0.0
 var _heading := 0.0
 var _cooldown := 0.0
 var _wander_time := 0.0
-var _hurt_time := 0.0
 var _rng := RandomNumberGenerator.new()
-var _parts := {}             # name -> Node3D (for animation)
-var _walk_phase := 0.0
+## Goes up with every hit it takes (clients flash it when it changes).
+var hurts := 0
+var _figure: Figure
+var _tails: Node3D           # the headband's tails
+var _last := Vector3.INF
+var _speed := 0.0
+var _vspeed := 0.0
+var _was_attacking := false
+var _time := 0.0
 var _on_floor := false
 
 
@@ -46,51 +52,34 @@ func _ready() -> void:
 
 # --- Model ---------------------------------------------------------------------------
 
+## A jointed figure in dark cloth with a hood, a red sash and a headband whose
+## tails flutter behind it. It runs leaning forward with its arms swept back,
+## and strikes with a fast overhead chop.
 func _build_model() -> void:
-	var cloth := BlockEater._mat("ninja_cloth", Color(0.11, 0.12, 0.16))
-	var cloth_dark := BlockEater._mat("ninja_dark", Color(0.07, 0.07, 0.10))
+	var cloth := Color(0.11, 0.12, 0.16)
+	_figure = Figure.new()
+	_figure.style = "ninja"
+	_figure.build({"skin": cloth, "shirt": cloth, "hands": Color(0.07, 0.07, 0.1),
+			"trousers": cloth, "shoes": Color(0.06, 0.06, 0.08)})
+	add_child(_figure)
 	var skin := BlockEater._mat("ninja_skin", Color(0.80, 0.62, 0.48))
 	var eyes := BlockEater._mat("ninja_eyes", Color(0.05, 0.05, 0.06))
 	var sash := BlockEater._mat("ninja_sash", Color(0.66, 0.10, 0.12))
-	var body := Node3D.new()
-	add_child(body)
-	_parts.body = body
-	_box(body, Vector3(0.5, 0.62, 0.28), Vector3(0, 1.08, 0), cloth)             # torso
-	_box(body, Vector3(0.52, 0.1, 0.3), Vector3(0, 0.82, 0), sash)               # sash
-	_box(body, Vector3(0.12, 0.3, 0.04), Vector3(0.14, 0.66, 0.16), sash)         # sash ends
-	var head := Node3D.new()
-	head.position = Vector3(0, 1.62, 0)
-	body.add_child(head)
-	_parts.head = head
-	_box(head, Vector3(0.42, 0.42, 0.42), Vector3.ZERO, cloth)                    # hood
-	_box(head, Vector3(0.36, 0.1, 0.02), Vector3(0, 0.03, -0.215), skin)          # eye slit
-	_box(head, Vector3(0.06, 0.05, 0.02), Vector3(-0.08, 0.03, -0.225), eyes)
-	_box(head, Vector3(0.06, 0.05, 0.02), Vector3(0.08, 0.03, -0.225), eyes)
-	_box(head, Vector3(0.44, 0.06, 0.44), Vector3(0, 0.12, 0), sash)             # headband
-	_box(head, Vector3(0.06, 0.06, 0.26), Vector3(0.1, 0.12, 0.33), sash)         # its tails
+	var steel := BlockEater._mat("ninja_steel", Color(0.62, 0.65, 0.7))
+	var head: Node3D = _figure.joints.head
+	_figure.add_box(head, Vector3(0.36, 0.1, 0.02), Vector3(0, 0.25, -0.222), skin)       # eye slit
 	for side in [-1, 1]:
-		var arm := Node3D.new()
-		arm.position = Vector3(0.33 * side, 1.36, 0)
-		body.add_child(arm)
-		_box(arm, Vector3(0.16, 0.6, 0.16), Vector3(0, -0.28, 0), cloth)
-		_box(arm, Vector3(0.14, 0.1, 0.14), Vector3(0, -0.6, 0), cloth_dark)     # glove
-		_parts["arm%d" % side] = arm
-		var leg := Node3D.new()
-		leg.position = Vector3(0.13 * side, 0.78, 0)
-		body.add_child(leg)
-		_box(leg, Vector3(0.2, 0.78, 0.2), Vector3(0, -0.39, 0), cloth)
-		_box(leg, Vector3(0.21, 0.12, 0.26), Vector3(0, -0.74, -0.03), cloth_dark) # tabi
-		_parts["leg%d" % side] = leg
-
-
-func _box(parent: Node3D, size: Vector3, at: Vector3, mat: Material) -> void:
-	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = size
-	mi.mesh = bm
-	mi.material_override = mat
-	mi.position = at
-	parent.add_child(mi)
+		_figure.add_box(head, Vector3(0.06, 0.05, 0.02), Vector3(0.08 * side, 0.25, -0.232), eyes)
+	_figure.add_box(head, Vector3(0.46, 0.06, 0.46), Vector3(0, 0.35, 0), sash)          # headband
+	_tails = Node3D.new()                                                              # its tails
+	_tails.position = Vector3(0.08, 0.35, 0.23)
+	head.add_child(_tails)
+	_figure.add_box(_tails, Vector3(0.05, 0.05, 0.3), Vector3(0.03, 0, 0.15), sash)
+	_figure.add_box(_tails, Vector3(0.05, 0.05, 0.24), Vector3(-0.04, -0.03, 0.12), sash, Vector3(0, -0.25, 0))
+	var torso: Node3D = _figure.joints.torso
+	_figure.add_box(torso, Vector3(0.52, 0.1, 0.29), Vector3(0, 0.06, 0), sash)          # sash
+	_figure.add_box(torso, Vector3(0.1, 0.26, 0.04), Vector3(0.15, -0.08, -0.15), sash)   # sash ends
+	_figure.add_box(torso, Vector3(0.06, 0.62, 0.06), Vector3(-0.12, 0.34, 0.17), steel, Vector3(0, 0, 0.7))  # sword on the back
 
 
 func _process(delta: float) -> void:
@@ -98,18 +87,21 @@ func _process(delta: float) -> void:
 		var t := 1.0 - exp(-12.0 * delta)
 		position = position.lerp(target_position, t)
 		rotation.y = lerp_angle(rotation.y, target_yaw, t)
-	_walk_phase += delta * (11.0 if walking else 0.0)
-	var swing := sin(_walk_phase) * (0.8 if walking else 0.0)
-	_parts["leg-1"].rotation.x = swing
-	_parts["leg1"].rotation.x = -swing
-	_parts["arm-1"].rotation.x = -swing * 0.8
-	_parts["arm1"].rotation.x = swing * 0.8
+	# Speed from how far it actually moved (the same on the host and on clients).
+	if _last != Vector3.INF and delta > 0.0:
+		_speed = lerpf(_speed, Vector2(position.x - _last.x, position.z - _last.z).length() / delta, 1.0 - exp(-10.0 * delta))
+		_vspeed = lerpf(_vspeed, (position.y - _last.y) / delta, 1.0 - exp(-10.0 * delta))
+	_last = position
+	_figure.move_speed = _speed
+	_figure.on_floor = absf(_vspeed) < 1.5
 	attacking = maxf(0.0, attacking - delta)
-	if attacking > 0.0:  # a quick overhead strike with the right hand
-		_parts["arm1"].rotation.x = -2.6 * sin(attacking / 0.35 * PI)
-	_parts.body.rotation.x = 0.18 if walking else 0.0  # leans into the run
-	_hurt_time = maxf(0.0, _hurt_time - delta)
-	_parts.body.position.x = sin(_hurt_time * 60.0) * 0.04 if _hurt_time > 0.0 else 0.0
+	if attacking > 0.0 and not _was_attacking:
+		_figure.swing()
+	_was_attacking = attacking > 0.0
+	_time += delta
+	var run := minf(_speed / RUN_SPEED, 1.0)  # the tails hang still when it stands
+	_tails.rotation = Vector3(0.5 * run + sin(_time * (6.0 + 3.0 * _speed)) * 0.25 * run,
+			sin(_time * 4.3) * 0.2 * run, 0)
 
 
 # --- Behaviour (where the world is owned) ----------------------------------------------
@@ -161,6 +153,13 @@ func simulate(delta: float, targets: Array = []) -> Dictionary:
 	return strike
 
 
+## Client: the host says it has been hit `count` times in all.
+func set_hurts(count: int) -> void:
+	if count != hurts:
+		hurts = count
+		_figure.flash()
+
+
 ## In daylight under open sky (nothing above its head).
 func in_sunlight(day_amount: float) -> bool:
 	if day_amount < 0.35:
@@ -171,7 +170,8 @@ func in_sunlight(day_amount: float) -> bool:
 
 func hurt(amount: int, from: Vector3) -> bool:
 	health -= amount
-	_hurt_time = 0.25
+	hurts += 1
+	_figure.flash()
 	var push := global_position - from
 	push.y = 0.0
 	velocity = push.normalized() * 5.0 + Vector3(0, 4.5, 0)

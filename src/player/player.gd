@@ -30,6 +30,8 @@ signal ate(item: String)
 signal splashed(at: Vector3)
 signal hurt(amount: int)
 signal died
+## The arm swung at nothing (a click with no block or creature in reach).
+signal swung
 ##
 ## The node origin is at the feet; `camera` sits at eye height.
 
@@ -52,6 +54,9 @@ const BENCH_SPEED := 20.0
 const SWIM_SPEED_FACTOR := 0.6
 const CLIMB_SPEED := 3.0
 const SWIM_UP_SPEED := 3.5
+## Swimming into a wall with jump held climbs out over its edge (onto a bank
+## level with the water, or a block higher).
+const WATER_CLIMB_SPEED := 8.0
 const SINK_SPEED := 2.0
 const MINE_SECONDS_PER_HARDNESS := 0.75
 const MIN_MINE_SECONDS := 0.1
@@ -102,6 +107,7 @@ var flying := false
 var sleeping := false    # lying in a bed: can't move until moving wakes us
 var bed = null           # Vector3i of the bed we respawn at, or null
 var in_water := false
+var _against_wall := false   # the last move pushed into a block sideways
 var on_floor := false
 ## Movement stays off until the ground around the player has loaded.
 ## See set_ready_to_move().
@@ -121,6 +127,11 @@ const VIEW_WALL_GAP := 0.25      # kept between that camera and a block in the w
 ## The third-person camera (a child of `camera`, current only then) and our body.
 var view_camera: Camera3D
 var _body: Node3D
+## For how others (and the third-person views) see us: sneaking, and a counter
+## that goes up with every swing of the arm (hit, place, break, eat, mining).
+var sneaking := false
+var swings := 0
+var _mine_swing := 0.0
 var _outline_for = null  # [position, block, world revision] the outline was built for
 var _mining_target := Vector3i(1 << 30, 0, 0)
 
@@ -140,11 +151,14 @@ func _ready() -> void:
 	view_camera.far = camera.far
 	camera.add_child(view_camera)
 	_body = preload("res://src/player/avatar.gd").new()
-	_body.setup("", multiplayer.get_unique_id())
+	_body.setup("", multiplayer.get_unique_id(), world.atlas if world else null)
 	_body.follow = false
 	_body.position.y = EYE_HEIGHT
 	_body.visible = false
 	add_child(_body)
+	for sig in [attack, block_placed, block_broken, ate]:
+		sig.connect(func(_a = null, _b = null): swings += 1)
+	hurt.connect(func(_amount): _body.flash())
 
 	if autopilot:
 		flying = true
@@ -226,10 +240,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseButton and event.pressed and not sleeping:
 		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-		elif event.button_index == MOUSE_BUTTON_LEFT and _try_attack():
-			pass
-		elif event.button_index == MOUSE_BUTTON_LEFT and creative:
-			_break_target()  # survival mines over time in _process
+		elif event.button_index == MOUSE_BUTTON_LEFT:
+			left_click()
 		elif event.button_index == MOUSE_BUTTON_RIGHT:
 			_place()
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
@@ -263,6 +275,7 @@ func _physics_process(delta: float) -> void:
 	var wish := basis * Vector3(input.x, 0, input.y)  # yaw only: looking down doesn't slow you
 	var sprint := Input.is_action_pressed(&"sprint") and not ui_open
 	var sneak := Input.is_action_pressed(&"sneak") and not ui_open
+	sneaking = sneak and not flying
 	var jump := Input.is_action_pressed(&"jump") and not ui_open
 	in_water = world.is_fluid(world.get_block(Vector3i((global_position + Vector3(0, 0.9, 0)).floor())))
 	on_ladder = is_climbable(global_position) or is_climbable(global_position + Vector3(0, 1.0, 0))
@@ -296,6 +309,10 @@ func _physics_process(delta: float) -> void:
 			velocity.y = maxf(velocity.y - GRAVITY * 0.3 * delta, -SINK_SPEED)
 			if jump:
 				velocity.y = minf(velocity.y + 20.0 * delta, SWIM_UP_SPEED)
+				# At the surface (head out of the water): climb out over the edge.
+				var head_out := not world.is_fluid(world.get_block(Vector3i((global_position + Vector3(0, 1.8, 0)).floor())))
+				if _against_wall and head_out:
+					velocity.y = WATER_CLIMB_SPEED
 		else:
 			velocity.y = maxf(velocity.y - GRAVITY * delta, -MAX_FALL_SPEED)
 			if on_floor and jump:
@@ -306,6 +323,7 @@ func _physics_process(delta: float) -> void:
 	var moved: Vector3 = r.position - global_position
 	global_position = r.position
 	on_floor = r.on_floor
+	_against_wall = r.hit_wall and Vector2(wish.x, wish.z).length() > 0.1
 	_after_move(moved, fell_from, sneak, delta)
 	# Lose the velocity that ran into something.
 	if r.on_floor or r.hit_ceiling:
@@ -449,6 +467,13 @@ func _unstuck() -> void:
 func _process(delta: float) -> void:
 	if autopilot or world == null:
 		return
+	if mining_progress > 0.0:  # the arm keeps swinging while mining
+		_mine_swing -= delta
+		if _mine_swing <= 0.0:
+			_mine_swing = 0.3
+			swings += 1
+	else:
+		_mine_swing = 0.0
 	_update_view()
 	_attack_cooldown = maxf(0.0, _attack_cooldown - delta)
 	var hit := _target()
@@ -461,6 +486,28 @@ func _process(delta: float) -> void:
 			_outline.mesh = outline_mesh(world.pick_boxes(hit.position))
 		_outline.global_position = Vector3(hit.position)
 	_update_mining(hit, delta)
+
+
+## A left click: hit a creature, break a block (creative; survival mines by
+## holding the button, see _update_mining) or swing at nothing.
+func left_click() -> void:
+	if _try_attack():
+		return
+	if not _target().hit:
+		swing_arm()
+	elif creative:
+		_break_target()
+
+
+## Swings the arm at nothing (others see it too).
+func swing_arm() -> void:
+	swings += 1
+	swung.emit()
+
+
+## Avatar.FLAG_*: what others see us doing.
+func pose_flags() -> int:
+	return (1 if sneaking else 0) | (2 if sleeping else 0) | (4 if flying else 0)
 
 
 func set_view(v: View) -> void:
@@ -476,9 +523,15 @@ func set_view(v: View) -> void:
 ## a block is in the way) and shows our body there.
 func _update_view() -> void:
 	var third := view != View.FIRST
-	_body.visible = third and not dead and not sleeping
+	_body.visible = third and not dead
 	if not third:
 		return
+	_body.position.y = camera.position.y  # the eyes (lower when lying in bed)
+	_body.velocity = velocity
+	_body.on_floor = on_floor
+	_body.item = selected_item()
+	_body.flags = pose_flags()
+	_body.swings = swings
 	var side := 1.0 if view == View.BACK else -1.0  # +z of the eyes is behind them
 	var dir: Vector3 = camera.global_basis.z * side
 	var distance := VIEW_DISTANCE

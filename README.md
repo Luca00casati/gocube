@@ -47,8 +47,13 @@ terrain themselves from the seed; only edits travel over the network.
   answered, so the player doesn't wait for it, and an edit request never answered is forgotten
   after 5 s. Names are cleaned (printable characters, at most 16), positions and facing must be
   finite numbers, and a player can only say hello once.
+- Players see each other as jointed figures (skin, hair and clothes picked from the player's
+  id) that hold what that player holds, walk and run at the speed they move, and show
+  sneaking, jumping, swinging and sleeping; each player sends its head pitch, held item,
+  sneak/sleep/fly flags and a swing counter (the host takes a held item's light from its own
+  item data). Ninjas use the same figure (`src/player/figure.gd`).
 - Code: `src/net/session.gd` (handshake, positions, edits), `src/player/avatar.gd`,
-  `World.build_remote()`.
+  `src/player/figure.gd`, `World.build_remote()`.
 
 Launch options (after `--`): `--world=NAME` skip the menu and load or create that world,
 `--host` (with `--world`) host it, `--join=ADDR` join a game, `--port=N`, `--name=NAME`,

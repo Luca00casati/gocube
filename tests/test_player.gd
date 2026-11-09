@@ -87,3 +87,121 @@ func test_third_person_views() -> void:
 	p.set_view(Player.View.FIRST)
 	await frames(2)
 	check(p.camera.current and not p._body.visible and hand.visible, "back to first person")
+
+
+## The figure (players and ninjas) animates from how it moves.
+func test_figure_animates() -> void:
+	var f := Figure.new()
+	f.build({"skin": Color.BISQUE, "shirt": Color.BLUE})
+	add(f)
+	await frames(10)
+	check(absf(f.joints.leg_l.rotation.x) < 0.05, "standing: legs straight")
+	f.move_speed = 4.3
+	var widest := 0.0
+	var knee := 0.0
+	for i in 60:
+		await tree.process_frame
+		widest = maxf(widest, absf(f.joints.leg_l.rotation.x - f.joints.leg_r.rotation.x))
+		knee = maxf(knee, absf(f.joints.knee_l.rotation.x))
+	check(widest > 0.6, "walking: the legs stride (%.2f)" % widest)
+	check(knee > 0.2, "and the knees bend (%.2f)" % knee)
+	f.move_speed = 0.0
+	await frames(60)
+	f.swing()
+	var raised := 0.0
+	for i in 20:
+		await tree.process_frame
+		raised = maxf(raised, f.joints.arm_r.rotation.x)
+	check(raised > 1.5, "a swing raises the right arm (%.2f)" % raised)
+	f.sneaking = true
+	await frames(40)
+	check(f.joints.torso.rotation.x < -0.3 and f.joints.hips.position.y < Figure.HIP_Y - 0.1, "sneaking: bent forward and lower")
+	f.sneaking = false
+	f.lying = true
+	await frames(90)
+	check(f.lie_amount() > 0.95 and absf(f.rotation.x - PI / 2) < 0.1, "asleep: lying down")
+	f.flash()
+	await frames(1)
+	var mi: MeshInstance3D = f.joints.torso.get_child(0)
+	check(float(mi.get_instance_shader_parameter("flash")) > 0.5, "hurt: a red flash")
+
+
+## A left click with nothing in reach still swings the arm.
+func test_swing_at_nothing() -> void:
+	var w := await make_world(4242, "", 64, Vector3(0.5, 70, 0.5))
+	var p = Player.new()
+	p.world = w
+	p.position = Vector3(0.5, 70, 0.5)  # in the air, looking at the sky
+	add(p)
+	await frames(2)
+	p.set_look(1.2, 0.0)
+	var swung := [0]
+	p.swung.connect(func(): swung[0] += 1)
+	var before: int = p.swings
+	p.left_click()
+	check_eq(swung[0], 1, "the arm swings")
+	check_eq(p.swings, before + 1, "and others see it")
+
+
+## Swimming to the shore and holding forward + jump climbs out onto the bank
+## (level with the water, as around lakes).
+func test_climb_out_of_water() -> void:
+	var w := await make_world(4242, "", 64, Vector3(0.5, 70, 0.5))
+	var stone := Registry.block_index("core:stone")
+	var water := Registry.block_index("core:water")
+	var y := 68
+	for x in range(-4, 5):
+		for z in range(-8, 5):
+			w.engine.set_block(Vector3i(x, y - 1, z), stone)
+			var pool := absi(x) <= 2 and z >= -2 and z <= 2
+			for dy in 2:
+				w.engine.set_block(Vector3i(x, y + dy, z), water if pool else stone)
+			for dy in range(2, 5):
+				w.engine.set_block(Vector3i(x, y + dy, z), 0)
+	w.set_block(Vector3i(0, y + 1, 0), water)  # wake the water up
+	await frames(5)
+	var p = Player.new()
+	p.world = w
+	p.position = Vector3(0.5, y + 0.2, 0.5)
+	add(p)
+	p.set_ready_to_move()
+	await frames(20)
+	check(p.in_water, "swimming in the pool")
+	_key(KEY_W, true)  # facing -z: the bank at z = -3 is level with the water
+	_key(KEY_SPACE, true)
+	var out: bool = await wait_until(func(): return p.on_floor and not p.in_water and p.global_position.z < -2.7, 4)
+	_key(KEY_W, false)
+	_key(KEY_SPACE, false)
+	check(out, "climbed out onto the bank (at %s)" % p.global_position)
+	check(p.global_position.y >= y + 2 - 0.01, "standing on top of it")
+
+
+
+## Deep under water, a wall doesn't launch you up: only at the surface.
+func test_no_wall_boost_under_water() -> void:
+	var w := await make_world(4242, "", 64, Vector3(0.5, 70, 0.5))
+	var stone := Registry.block_index("core:stone")
+	var water := Registry.block_index("core:water")
+	var y := 62
+	for x in range(-3, 4):
+		for z in range(-3, 4):
+			w.engine.set_block(Vector3i(x, y - 1, z), stone)
+			for dy in 8:
+				w.engine.set_block(Vector3i(x, y + dy, z), water if absi(x) <= 1 and absi(z) <= 1 else stone)
+	w.set_block(Vector3i(0, y + 7, 0), water)
+	var p = Player.new()
+	p.world = w
+	p.position = Vector3(0.5, y, 0.5)
+	add(p)
+	p.set_ready_to_move()
+	await frames(5)
+	_key(KEY_W, true)
+	_key(KEY_SPACE, true)
+	var fastest := 0.0
+	for i in 30:
+		await tree.physics_frame
+		if p.global_position.y < y + 5:
+			fastest = maxf(fastest, p.velocity.y)
+	_key(KEY_W, false)
+	_key(KEY_SPACE, false)
+	check(fastest <= Player.SWIM_UP_SPEED + 0.01, "swims up at swimming speed (%.1f)" % fastest)

@@ -98,6 +98,9 @@ public:
 	// The boxes a ray can hit in the block at `position` (what the player
 	// points at), relative to the block's corner; empty for air and fluids.
 	godot::Array pick_boxes(const godot::Vector3i &position) const;
+	// The fluid surface's vertices in the chunk at chunk_pos, in world
+	// coordinates (for tests).
+	godot::PackedVector3Array fluid_vertices(const godot::Vector3i &chunk_pos) const;
 	// Moves a box (feet at `position`, size = width x height x depth) by `motion`
 	// against solid blocks, one axis at a time. With step_height > 0 it climbs
 	// steps that high when walking into them on the ground.
@@ -125,6 +128,7 @@ private:
 		uint32_t serial = 0;       // this load of the chunk: results for an earlier load are dropped
 		std::array<int8_t, CHUNK_AREA> local_tops{}; // topmost opaque local y per column, or -1
 		godot::RID mesh;
+		int fluid_surface = -1; // the mesh surface holding fluids (-1: none)
 		godot::RID instance;
 	};
 

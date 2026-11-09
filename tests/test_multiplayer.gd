@@ -93,6 +93,12 @@ func _block(game: Node, rel: Vector3i) -> String:
 	return Registry.block_ids[game._world.get_block(o + rel)]
 
 
+## The host's figure of the client player.
+func _wait_avatar() -> Node:
+	await wait_until(func(): return not host._session._avatars.is_empty(), 5)
+	return host._session._avatars.values()[0] if not host._session._avatars.is_empty() else null
+
+
 func _aim(rel: Vector3) -> void:
 	Play.aim(client._player, Vector3(o) + rel)
 
@@ -208,6 +214,19 @@ func test_two_players() -> void:
 	await _until(func(): return _block(client, Vector3i(-2, 0, 1)) == "core:stone", "a full block from the host")
 	await frames(2)
 	check_near(p._outline.mesh.get_aabb().size.y, 1.004, 0.01, "then a whole block high")
+
+	# How the host sees the client: what it holds, sneaking, its swings.
+	_give("core:torch", 1)
+	p.sneaking = true
+	var avatar = await _wait_avatar()
+	check(await wait_until(func(): return avatar.item == "core:torch" and avatar.flags & 1 != 0, 5),
+			"the host sees the torch and the sneaking")
+	check(avatar.light > 0, "and its light (from the host's own item data)")
+	var swings_before: int = avatar.swings
+	p.swings += 1
+	check(await wait_until(func(): return avatar.swings == swings_before + 1, 5), "and the swing")
+	p.sneaking = false
+	p.inventory.slots[0] = {}
 
 	# Throwing an item: the host owns it, both see it, walking over picks it up.
 	client.spawn_drop("core:stick", 1, Vector3(o) + Vector3(-5.5, 0.5, 2.5))

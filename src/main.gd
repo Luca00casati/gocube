@@ -302,6 +302,7 @@ func _spawn_player(feet: Vector3) -> void:
 	player.block_placed.connect(func(_b, _at): hand.swing())
 	player.block_broken.connect(func(_b, _at): hand.swing())
 	player.ate.connect(func(_i): hand.swing())
+	player.swung.connect(hand.swing)
 	_update_ninjas()
 	player.attack.connect(func(id):
 		if _world.remote:
@@ -802,6 +803,9 @@ func _process(_delta: float) -> void:
 		if _player:
 			_player.set_meta("daylight", _day.daylight())
 	_update_hand_light()
+	if _player and _session:  # how others see us
+		_session.local_pose = {"pitch": _player.look_pitch(), "item": _player.selected_item(),
+				"flags": _player.pose_flags(), "swings": _player.swings}
 	if _player:  # from in front of us, the crosshair would point nowhere useful
 		_crosshair.visible = _player.view != Player.View.FRONT
 	var status := "%d FPS · %s" % [Engine.get_frames_per_second(), _day.clock_text(Settings.clock_24h)]

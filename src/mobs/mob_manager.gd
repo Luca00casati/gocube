@@ -84,7 +84,7 @@ func mobs() -> Array:
 
 
 func _process(_delta: float) -> void:
-	if day_amount.is_valid() and not _mobs.is_empty():
+	if day_amount.is_valid():  # (players' figures use the same materials)
 		BlockEater.set_daylight(day_amount.call())
 
 
@@ -210,7 +210,7 @@ func _remove(id: int) -> void:
 		_mobs.erase(id)
 
 
-## Every creature's state for clients: {id: [position, yaw, walking, variant, kind, attacking]}.
+## Every creature's state for clients: {id: [position, yaw, walking, variant, kind, attacking, hurts]}.
 
 
 ## An attack from a player standing at `from` (attacker: peer id, 0 = local).
@@ -242,7 +242,7 @@ func states() -> Dictionary:
 	var out := {}
 	for mob in _mobs.values():
 		out[mob.id] = [mob.global_position, mob.rotation.y, mob.walking, mob.variant, mob.KIND,
-				mob.attacking > 0.0 if mob is Ninja else false]
+				mob.attacking > 0.0 if mob is Ninja else false, mob.hurts if mob is Ninja else 0]
 	return out
 
 
@@ -266,8 +266,11 @@ func apply_states(states: Dictionary) -> void:
 			_mobs[id] = mob
 		if mob is BlockEater:
 			mob.set_variant(str(s[3]) if Registry.blocks.has(str(s[3])) else "")  # it may have eaten something
-		elif s.size() > 5 and s[5] and mob.attacking <= 0.0:
-			mob.attacking = 0.35
+		else:
+			if s.size() > 5 and s[5] and mob.attacking <= 0.0:
+				mob.attacking = 0.35
+			if s.size() > 6:
+				mob.set_hurts(int(s[6]))
 		mob.target_position = s[0]
 		mob.target_yaw = s[1]
 		mob.walking = s[2]
