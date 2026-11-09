@@ -46,6 +46,9 @@ var _slept := 0.0                # seconds everyone has been in bed
 const SLEEP_SECONDS := 2.5       # in bed this long (everyone) skips the night
 const MORNING := 0.26            # time of day sleeping wakes you at
 const NINJA_NEAR := 10.0         # can't sleep with a ninja this close
+## A new world's first night is safe: no ninjas until a morning has followed
+## a night (or everyone slept through it). meta.first_night: "ahead" -> "now"
+## -> "over"; worlds from before this have none, so they count as over.
 var _day: DayCycle
 var _hud: CanvasLayer
 var _hotbar: Hotbar
@@ -101,6 +104,12 @@ func _ready() -> void:
 	_session.remote_edit.connect(_on_remote_edit)
 	_session.own_edit_confirmed.connect(func(pos): _player.confirm_break(pos))
 	_session.own_edit_refused.connect(func(pos): _player.pending_drops.erase(pos))
+	_session.placement_refused.connect(func(item: String):
+		if _player == null:
+			return
+		if _player.inventory.add(item, 1) > 0:  # full meanwhile: on the ground
+			spawn_drop(item, 1, _player.global_position + Vector3(0, 0.5, 0))
+		show_notice("Couldn't place that there"))
 	_drops_node = ItemDrops.new()
 	_drops_node.name = "Drops"
 	_drops_node.world = _world
@@ -227,6 +236,7 @@ func _on_welcomed(info: Dictionary) -> void:
 	var s: Array = info.spawn  # an eye position next to the host
 	_spawn_player(Vector3(s[0], s[1] - Player.EYE_HEIGHT, s[2]))
 	_player.edit_handler = _session.request_edit
+	_player.place_handler = _session.request_place
 	_set_loading_text("Loading world…")
 	_loading_since = Time.get_ticks_msec()
 	print("Joined %s:%d" % [join_address, port])
@@ -291,7 +301,7 @@ func _spawn_player(feet: Vector3) -> void:
 	player.block_placed.connect(func(_b, _at): hand.swing())
 	player.block_broken.connect(func(_b, _at): hand.swing())
 	player.ate.connect(func(_i): hand.swing())
-	_mobs.ninjas_enabled = not player.creative
+	_update_ninjas()
 	player.attack.connect(func(id):
 		if _world.remote:
 			_session.hit_mob(id, player.selected_item())
@@ -536,7 +546,15 @@ func _respawn() -> void:
 		else:
 			_player.bed = null
 			show_notice("Your bed was missing, so you're back at the world spawn")
-	_player.respawn(at)
+	# Far from where we died the ground may not be loaded yet: wait for it
+	# behind the loading screen (as when opening a world).
+	var wait := not _world.is_area_meshed(AABB(at - Vector3(8, 8, 8), Vector3(16, 16, 16)))
+	_player.respawn(at, wait)
+	if wait and _loading == null:
+		_loading = _make_loading_screen()
+		_loading_since = Time.get_ticks_msec()
+		_hud.add_child(_loading)
+		_set_loading_text("Respawning…")
 	_death_screen.queue_free()
 	_death_screen = null
 	_player.ui_open = false
@@ -637,12 +655,18 @@ func _player_state() -> Dictionary:
 
 
 ## Puts the player on dry ground: the nearest column (searching outward up to
-## SPAWN_SEARCH blocks) whose top solid block isn't under water.
+## SPAWN_SEARCH blocks) whose top block is a biome's surface (grass, sand,
+## snow), not under water: so not on the bare stone of a pit or cave mouth.
+## If there's none, the nearest dry column will do.
 const SPAWN_SEARCH := 64
 
 
 func _place_on_ground(player: Node3D) -> void:
+	var surfaces := {}
+	for b in Registry.biomes.values():
+		surfaces[Registry.block_index(str(b.get("surface", "")))] = true
 	var origin := Vector3i(player.global_position.floor())
+	var fallback = null
 	for radius in range(0, SPAWN_SEARCH + 1, 2):
 		for dz in range(-radius, radius + 1, 2):
 			for dx in range(-radius, radius + 1, 2):
@@ -651,9 +675,16 @@ func _place_on_ground(player: Node3D) -> void:
 				var x := origin.x + dx
 				var z := origin.z + dz
 				var hit := _world.raycast(Vector3(x + 0.5, World.TOP_Y, z + 0.5), Vector3.DOWN, 400)
-				if hit.hit and not _world.is_fluid(_world.get_block(hit.previous)):
-					player.global_position = Vector3(x + 0.5, hit.position.y + 1, z + 0.5)
+				if not hit.hit or _world.is_fluid(_world.get_block(hit.previous)):
+					continue
+				var feet := Vector3(x + 0.5, hit.position.y + 1, z + 0.5)
+				if surfaces.has(hit.block):
+					player.global_position = feet
 					return
+				if fallback == null:
+					fallback = feet
+	if fallback != null:
+		player.global_position = fallback
 
 
 func _restore_player(state: Dictionary) -> void:
@@ -714,15 +745,40 @@ func _update_sleep(delta: float) -> void:
 	_day.time = MORNING
 	_session.night_skipped()
 	_player.wake()
+	if _world.meta.get("first_night", "over") != "over":
+		_world.meta.first_night = "over"  # slept through it
+		_update_ninjas()
+
+
+## Whether ninjas may come out: survival, after the world's first night.
+func _update_ninjas() -> void:
+	_mobs.ninjas_enabled = _player != null and not _player.creative \
+			and _world.meta.get("first_night", "over") == "over"
+
+
+## Single player / host: notes when the first night starts and ends.
+func _update_first_night() -> void:
+	var stage: String = _world.meta.get("first_night", "over")
+	if stage == "over" or _world.remote:
+		return
+	var day := _day.day_amount()
+	if stage == "ahead" and day < MobManager.NINJA_NIGHT:
+		_world.meta.first_night = "now"
+	elif stage == "now" and day > 0.3:
+		_world.meta.first_night = "over"  # morning: from now on nights have ninjas
+		_update_ninjas()
 
 
 func _process(_delta: float) -> void:
 	_update_sleep(_delta)
+	if _world.engine and _player:
+		_update_first_night()
 	if _loading and _cam and _spawn_area_meshed():
 		_loading.queue_free()
 		_loading = null
 		if not _restored_player and not _world.remote:
 			_place_on_ground(_player)  # new world: start on the ground, not mid-air
+			_restored_player = true  # (not again after respawning)
 		_player.set_ready_to_move()
 		if not _world.meta.has("spawn") and not _world.remote:
 			var s := _player.global_position

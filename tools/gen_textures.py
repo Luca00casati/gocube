@@ -371,6 +371,20 @@ def coal_lump():
     return img
 
 
+def snowball():
+    """A round ball of snow, lit from the top left."""
+    img = blank()
+    rnd = random.Random(42)
+    cx, cy, r = S / 2, S / 2 + 1, 9.5
+    for y in range(S):
+        for x in range(S):
+            d = math.hypot(x - cx, y - cy) / r + 0.06 * fbm(43, x, y, ((6, 1.0),))
+            if d < 1.0:
+                lit = (cx - x + cy - y) / 26.0
+                _px(img, x, y, pick(SNOW, 0.55 + lit - d * 0.45 + rnd.uniform(-0.06, 0.06)))
+    return img
+
+
 def ingot(palette):
     def make():
         img = blank()
@@ -938,6 +952,7 @@ TEXTURES = {
     "lamp": lamp,
     "stick": stick,
     "coal": coal_lump,
+    "snowball": snowball,
     "iron_ingot": ingot(IRON),
     "gold_ingot": ingot(GOLD),
     "wood_pickaxe": tool(WOOD, "pickaxe"),

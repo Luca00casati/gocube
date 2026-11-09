@@ -62,6 +62,20 @@ int Generator::terrain_height(int x, int z) const {
 	return column(x, z, biome_index);
 }
 
+// Where mountain ranges rise: a slow noise picks the ranges, a ridged one
+// shapes their crests and valleys. 0 outside ranges, up to 1 on a crest.
+float Generator::mountain_shape(int x, int z) const {
+	const float m = fbm2(x * 0.0022f, z * 0.0022f, _seed + 601u, 3);
+	const float t = std::clamp((m - 0.02f) / 0.28f, 0.0f, 1.0f);
+	const float range = t * t * (3.0f - 2.0f * t);
+	if (range <= 0.0f) {
+		return 0.0f;
+	}
+	const float ridge = 1.0f - std::abs(fbm2(x * 0.0095f, z * 0.0095f, _seed + 603u, 4)) * 1.6f;
+	const float r = std::clamp(ridge, 0.0f, 1.0f);
+	return range * (0.3f + 0.7f * r * r);
+}
+
 // Terrain height and biome of a column, from one climate lookup.
 int Generator::column(int x, int z, int &biome_index) const {
 	const float n = fbm2(x * HEIGHT_FREQUENCY, z * HEIGHT_FREQUENCY, _seed, 4);
@@ -73,7 +87,7 @@ int Generator::column(int x, int z, int &biome_index) const {
 	// the closest one.
 	float t, h;
 	climate(x, z, t, h);
-	float wsum = 0.0f, amp = 0.0f, base = 0.0f, best = INFINITY;
+	float wsum = 0.0f, amp = 0.0f, base = 0.0f, mountains = 0.0f, best = INFINITY;
 	for (size_t i = 0; i < _biomes.size(); i++) {
 		const BiomeKind &b = _biomes[i];
 		const float dt = t - b.temperature, dh = h - b.humidity;
@@ -87,8 +101,13 @@ int Generator::column(int x, int z, int &biome_index) const {
 		wsum += w;
 		amp += w * b.height;
 		base += w * b.base;
+		mountains += w * b.mountains;
 	}
-	return static_cast<int>(std::floor(n * amp / wsum + base / wsum));
+	float hgt = n * amp / wsum + base / wsum;
+	if (mountains > 0.0f) {
+		hgt += mountain_shape(x, z) * mountains / wsum;
+	}
+	return std::min(static_cast<int>(std::floor(hgt)), MAX_TERRAIN_Y);
 }
 
 int Generator::height_at(int x, int z) const {
@@ -203,6 +222,12 @@ void Generator::trees_near(int x0, int z0, int x1, int z1, std::vector<Tree> &ou
 			if (ground <= SEA_LEVEL + 1 || is_cave(tx, ground, tz)) {
 				continue; // beach, sea or a cave mouth
 			}
+			if (!_biomes.empty()) {
+				const BiomeKind &tb = biome(biome_at(tx, tz));
+				if (tb.rock && ground >= tb.rock_above) {
+					continue; // bare rock up on a mountain
+				}
+			}
 			const int span = std::max(1, tk.max_trunk - tk.min_trunk + 1);
 			out.push_back(Tree{ tx, tz, ground, tk.min_trunk + static_cast<int>((r >> 16) % uint32_t(span)), kind });
 		}
@@ -272,8 +297,17 @@ void Generator::generate(ChunkData &chunk, int ox, int oy, int oz) const {
 					}
 				} else if (d == 0) {
 					b = beach || lake != INT32_MIN ? (bm.filler == _ids.dirt || !bm.filler ? _ids.sand : bm.filler) : bm.surface;
+					if (b == bm.surface) {
+						// High up: bare rock, snow on the peaks (a ragged line, not a level one).
+						const int jitter = int(hash_point(wx, 7, wz, _seed + 77u) % 4u);
+						if (bm.cap && h >= bm.cap_above + jitter) {
+							b = bm.cap;
+						} else if (bm.rock && h >= bm.rock_above + jitter) {
+							b = bm.rock;
+						}
+					}
 				} else if (d > -bm.filler_depth) {
-					b = beach ? _ids.sand : bm.filler;
+					b = beach ? _ids.sand : (bm.rock && h >= bm.rock_above ? bm.rock : bm.filler);
 				} else if (bm.under && d > -(bm.filler_depth + bm.under_depth)) {
 					b = bm.under;
 				} else {
@@ -286,6 +320,13 @@ void Generator::generate(ChunkData &chunk, int ox, int oy, int oz) const {
 				if (b != AIR) {
 					chunk.set(x, y, z, b);
 				}
+			}
+			// A thin cover (snow) on the high ground. Decided from the column
+			// alone, so it's the same whichever chunk holds the block above.
+			if (v2 && bm.cover && lake == INT32_MIN && !beach && h + 1 >= oy && h + 1 < oy + CHUNK &&
+					h >= bm.cover_above + int(hash_point(wx, 9, wz, _seed + 79u) % 3u) && !is_cave(wx, h, wz)) {
+				chunk.set(x, h + 1 - oy, z, bm.cover);
+				continue;
 			}
 			// Ground plants: tall grass, flowers, dead bushes.
 			if (v2 && lake == INT32_MIN && !beach && h + 1 >= oy && h + 1 < oy + CHUNK && h >= oy &&

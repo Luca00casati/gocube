@@ -23,6 +23,8 @@ signal remote_edit(position: Vector3i, old_block: int, new_block: int)
 signal own_edit_confirmed(position: Vector3i)
 ## Client: the host refused a block change we asked for (nothing was broken).
 signal own_edit_refused(position: Vector3i)
+## Client: the host refused a placement: give back the item it used up.
+signal placement_refused(item: String)
 ## Client: the host gave us a dropped item we asked for (put it in the inventory).
 signal items_picked(item: String, count: int)
 ## Client: a container's contents / what we hold after clicking it.
@@ -38,7 +40,7 @@ signal corrected(eye: Vector3)
 const Avatar := preload("res://src/player/avatar.gd")
 const Player := preload("res://src/player/player.gd")
 
-const PROTOCOL := 4
+const PROTOCOL := 5
 const DEFAULT_PORT := 24680
 const MAX_PLAYERS := 8
 const STATE_INTERVAL := 0.05       # seconds between position updates (20 Hz)
@@ -77,6 +79,9 @@ var _welcomed := false
 var _ended := false
 var _own_edits := {}  # client: position we asked the host to change -> when (no echo sound)
 const EDIT_PENDING_SECONDS := 5.0  # a request the host never answered is forgotten after this
+var _placements := {}  # client: placement number -> {item, cells, time}, until the host answers
+var _next_placement := 1
+const MAX_PLACEMENT_CELLS := 4
 var _viewers := {}    # host: container position -> [peer ids looking at it]
 const CONTAINER_REACH := 8.0
 ## Host-side movement check (clients report their own positions): the fastest
@@ -405,6 +410,62 @@ func _edit_allowed(id: int, pos: Vector3i, block: int) -> bool:
 	return true
 
 
+## Client: ask the host to place blocks that go together ([[pos, block], ...]),
+## all or none. `item` was used up for them and comes back if it refuses.
+func request_place(cells: Array, item: String) -> void:
+	var n := _next_placement
+	_next_placement += 1
+	_placements[n] = {"item": item, "cells": cells, "time": _now()}
+	for c in cells:
+		_own_edits[c[0]] = _now()
+	_request_place.rpc_id(1, n, cells)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_place(n: int, cells: Array) -> void:
+	var id := multiplayer.get_remote_sender_id()
+	if not is_host() or not _peers.has(id):
+		return
+	var ok := cells.size() >= 1 and cells.size() <= MAX_PLACEMENT_CELLS
+	var seen := {}
+	for c in cells:
+		ok = ok and c is Array and c.size() == 2 and c[0] is Vector3i and c[1] is int and not seen.has(c[0]) \
+				and c[1] != Registry.block_index("core:air") and _edit_allowed(id, c[0], c[1])
+		if ok:
+			seen[c[0]] = true
+	var done := []  # [pos, old block] of what was set, to undo if one fails
+	if ok:
+		world.editor = id
+		for c in cells:
+			var old := world.get_block(c[0])
+			if not world.set_block(c[0], c[1]):  # its chunk isn't loaded here
+				ok = false
+				break
+			done.append([c[0], old])
+		if not ok:
+			for d in done:
+				world.set_block(d[0], d[1])
+		world.editor = 0
+	if ok:
+		for d in done:
+			remote_edit.emit(d[0], d[1], world.get_block(d[0]))
+	_placed.rpc_id(id, n, ok)
+
+
+## Client: the host's answer to request_place.
+@rpc("authority", "call_remote", "reliable")
+func _placed(n: int, ok: bool) -> void:
+	var p = _placements.get(n)
+	if p == null:
+		return
+	_placements.erase(n)
+	if not ok:
+		for c in p.cells:
+			_own_edits.erase(c[0])
+		if p.item != "":
+			placement_refused.emit(p.item)
+
+
 ## Client: the host didn't make a change we asked for.
 @rpc("authority", "call_remote", "reliable")
 func _edit_refused(pos: Vector3i) -> void:
@@ -694,6 +755,9 @@ func _process(delta: float) -> void:
 			if now - float(_own_edits[pos]) > EDIT_PENDING_SECONDS:
 				_own_edits.erase(pos)  # never answered (lost with a reconnect, say)
 				own_edit_refused.emit(pos)
+		for n in _placements.keys():
+			if now - float(_placements[n].time) > EDIT_PENDING_SECONDS * 6.0:
+				_placements.erase(n)  # no answer at all: the connection is gone
 	if is_client() and not _welcomed and not _ended \
 			and Time.get_ticks_msec() - _connect_started > CONNECT_TIMEOUT_MS:
 		_end("Connection timed out.")

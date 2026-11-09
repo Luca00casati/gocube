@@ -113,6 +113,25 @@ func _ready() -> void:
 		game._session.request_edit(far, Registry.block_index("core:planks"))
 		results["refused edit answered"] = await _wait_for(func(): return refused[0] \
 				and not game._session._own_edits.has(far), 5)
+		# A refused placement gives the item back; a bed is placed whole or not at all.
+		var back := []
+		game._session.placement_refused.connect(func(item): back.append(item))
+		var had_beds: int = game._player.inventory.count_of("core:bed")
+		game._player._frozen = true
+		game._player.creative = false
+		game._session.request_place([[far, Registry.block_index("core:planks")]], "core:planks")
+		var foot := Vector3i(game._player.global_position.floor()) + Vector3i(2, 0, 2)
+		var head := foot + Vector3i(0, 0, -1)
+		var reach_far := head + Vector3i(0, 0, -30)  # the head half out of reach
+		game._session.request_place([[foot, Registry.block_index("core:bed")],
+				[reach_far, Registry.block_index("core:bed_n_head")]], "core:bed")
+		results["refused placements give items back"] = await _wait_for(func(): return back == ["core:planks", "core:bed"], 5) \
+				and game._player.inventory.count_of("core:bed") == had_beds + 1
+		results["half a bed is never placed"] = w.get_block(foot) != Registry.block_index("core:bed")
+		game._session.request_place([[foot, Registry.block_index("core:bed")],
+				[head, Registry.block_index("core:bed_n_head")]], "core:bed")
+		results["a whole bed is placed"] = await _wait_for(func(): return w.get_block(foot) == Registry.block_index("core:bed") \
+				and w.get_block(head) == Registry.block_index("core:bed_n_head"), 5)
 		# Flooding: the host applies only a burst of edits, refusing the rest.
 		var base := Vector3i(game._player.global_position.floor()) + Vector3i(-2, 3, -2)
 		var refusals := [0]

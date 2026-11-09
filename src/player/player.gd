@@ -68,6 +68,11 @@ const STRIDE := 1.7                # metres walked per footstep sound
 ## Multiplayer client: called with (position: Vector3i, block: int) instead of
 ## editing locally; the host applies the edit and sends it back.
 var edit_handler := Callable()
+## Multiplayer client: called with ([[position, block], ...], item) for a
+## placement (one or more blocks that go together, such as a bed's two
+## halves); `item` was used up for it ("" in creative) and comes back if the
+## host refuses.
+var place_handler := Callable()
 ## (origin, dir, max_distance) -> {"id", "distance"} or {}: the creature under the crosshair.
 var mob_picker := Callable()
 const ATTACK_REACH := 4.0
@@ -389,7 +394,10 @@ func wake() -> void:
 	woke.emit()
 
 
-func respawn(at: Vector3) -> void:
+## Back to life at `at`. wait_for_world: the ground there isn't loaded yet:
+## stay still until set_ready_to_move() (unloaded chunks count as solid, so
+## moving out of "blocks" now would put us on top of the world).
+func respawn(at: Vector3, wait_for_world := false) -> void:
 	if sleeping:
 		wake()
 	health = MAX_HEALTH
@@ -398,7 +406,10 @@ func respawn(at: Vector3) -> void:
 	velocity = Vector3.ZERO
 	global_position = at
 	_fall_peak = at.y
-	_unstuck()
+	if wait_for_world:
+		_frozen = true
+	else:
+		_unstuck()
 
 
 ## Moves up until the body fits (spawned inside a hill, or a block appeared
@@ -592,10 +603,10 @@ func _place() -> void:
 	# Seeds: plant on top of the right block.
 	if item_def.has("plants"):
 		if target in item_def.get("plant_on", []) and hit.normal == Vector3i.UP and world.get_block(hit.previous) == 0:
-			_apply_edit(hit.previous, Registry.block_index(item_def.plants))
-			block_placed.emit(item_def.plants, Vector3(hit.previous) + Vector3.ONE * 0.5)
 			if not creative:
 				inventory.take_one(selected)
+			_apply_placement([[hit.previous, Registry.block_index(item_def.plants)]], item)
+			block_placed.emit(item_def.plants, Vector3(hit.previous) + Vector3.ONE * 0.5)
 		return
 	if not is_placeable(item):
 		return
@@ -620,11 +631,10 @@ func _place() -> void:
 			return  # it would be inside you
 	if places.is_empty():
 		return
-	for p in places:
-		_apply_edit(p[0], Registry.block_index(p[1]))
-	block_placed.emit(item, Vector3(places[0][0]) + Vector3.ONE * 0.5)
 	if not creative:
 		inventory.take_one(selected)
+	_apply_placement(places.map(func(p): return [p[0], Registry.block_index(p[1])]), item)
+	block_placed.emit(item, Vector3(places[0][0]) + Vector3.ONE * 0.5)
 
 
 ## Changes a block here, or asks the host in multiplayer (which applies it and
@@ -634,6 +644,16 @@ func _apply_edit(pos: Vector3i, block: int) -> void:
 		edit_handler.call(pos, block)
 	else:
 		world.set_block(pos, block)
+
+
+## Places blocks that go together ([[position, block index], ...]) for `item`,
+## here or (multiplayer) through the host, all or none.
+func _apply_placement(cells: Array, item: String) -> void:
+	if place_handler.is_valid():
+		place_handler.call(cells, "" if creative else item)
+	else:
+		for c in cells:
+			world.set_block(c[0], c[1])
 
 
 ## Whether a player standing with feet at `feet` overlaps block `cell`.

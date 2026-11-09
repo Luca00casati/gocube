@@ -33,7 +33,9 @@ terrain themselves from the seed; only edits travel over the network.
   that each edit is sent as (position, block). A player who hasn't loaded that chunk
   asks the host for the whole chunk.
 - Block edits from joining players are requests: the host checks reach (16 blocks), the
-  block id and that nobody is inside the block, then applies them.
+  block id and that nobody is inside the block, then applies them. Placing is one request
+  for all the blocks that go together (a bed's or door's two halves): the host places all of
+  them or none, and when it refuses, the item comes back to the player's inventory.
 - Players report their own positions, but the host checks each move against the top
   speed for the game mode (sprinting plus knockback; sprint-flying in creative), with a
   short burst allowed for lag. Too fast and the player is put back where the host last
@@ -99,7 +101,9 @@ blocks included, has a form built from its textures, which drops that block when
 block's `"eater_weight"` sets how often its Block Eater turns up (1 = an ordinary block, 0 = never).
 In multiplayer the host simulates them and sends positions (`src/mobs/`).
 
-**Ninjas** come out at night in survival worlds (up to 6 around the players): they run at
+**Ninjas** come out at night in survival worlds (up to 6 around the players), except on a
+new world's first night, which is safe (it ends at the next morning, or when everyone sleeps
+through it; worlds from before this count as past it): they run at
 the nearest player within 24 blocks, jump over obstacles and strike for 3 (armour takes
 some off) with a shove. Daylight under open sky makes them vanish in a puff of smoke; in
 caves they keep hunting. Four hits with an iron sword defeat one.
@@ -136,7 +140,9 @@ Torches, ladders, doors and plants pop off when what holds them goes. Holding a 
 Survival also has **health** (20 points, shown as a bar above the hotbar): falls of more than 3 blocks hurt
 (1 point per extra block), running out of breath underwater (10 s, a blue bar while underwater) hurts,
 and health slowly comes back after 4 s without damage. At 0 you respawn at your bed (or the
-world's spawn point) and keep your inventory. New worlds start you on dry land.
+world's spawn point) and keep your inventory; if that's far away, the loading screen shows
+until the ground there has loaded. New worlds start you on dry land, on the surface (grass,
+sand or snow) rather than in a pit or cave mouth.
 
 **Water flows**: source blocks (level 8) spread up to 7 blocks sideways, getting lower, and
 pour down into air; flowing water without a source drains away (`src/world/fluid_sim.gd`,
@@ -195,9 +201,18 @@ creatures) and the engine's phase tests: [PROTOTYPES.md](PROTOTYPES.md),
 
 ## World generation and time
 The terrain comes from the C++ generator (`engine/src/generator.cpp`), deterministic per
-seed. New worlds have **biomes**: plains (tall grass, flowers, scattered round oaks, lakes),
-forest (round oaks, big branching oaks, birches), desert (sand over sandstone, cacti, dead
-bushes) and snow (snowy ground, tall spruces, ice on water). Each column's biome is the
+seed. The generator supports **biomes**; the core mod loads only one, **vanilla**: plains
+(tall grass, flowers, scattered round oaks, lakes) with **mountain ranges** rising out of
+them (grass on the lower slopes, bare stone from y 26, a thin layer of snow on the peaks
+from y 36; no trees on the rock). The **snow layer** (`core:snow`) is 1/16 of a block high: you
+walk on it, it needs ground under it, and placing a block on its spot replaces it. Breaking
+it gives a **snowball** (stacks of 16); 2 snowballs craft a snow layer again. Plains without mountains, forest (round oaks, big branching oaks, birches), desert
+(sand over sandstone, cacti, dead bushes) and snow (snowy ground, tall spruces, ice on water)
+are kept, unloaded, in `mods/core/content/biomes_unused.json`; add that file to `content` in
+`mods/core/mod.json` to bring them back (or a mod can register its own). A biome gets
+mountains with `"mountains"` (their extra height in blocks), `"rock"`/`"rock_above"` (bare
+top from that height), `"cap"`/`"cap_above"` (a different top block for the peaks) and
+`"cover"`/`"cover_above"` (a thin block laid on top, like the snow); ground stays below y 44. Each column's biome is the
 nearest one in climate space (two slow noise fields: temperature and humidity); hill
 height is blended between biomes so borders have no cliffs. Also: lakes in flat places,
 worm caves plus big caverns deep down, **lava** filling the lowest caves (it burns, glows,

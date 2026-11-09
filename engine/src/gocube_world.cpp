@@ -139,6 +139,13 @@ void GoCubeWorld::configure_biomes(const TypedArray<Dictionary> &biomes) {
 		b.under_depth = std::clamp(int(d.get("under_depth", 0)), 0, 16);
 		b.frozen = d.get("frozen", false);
 		b.lakes = std::clamp(int(d.get("lakes", 20)), 0, 100);
+		b.mountains = std::clamp(float(d.get("mountains", 0.0)), 0.0f, 60.0f);
+		b.rock = block(d.get("rock", 0));
+		b.rock_above = int(d.get("rock_above", 1 << 20));
+		b.cap = block(d.get("cap", 0));
+		b.cap_above = int(d.get("cap_above", 1 << 20));
+		b.cover = block(d.get("cover", 0));
+		b.cover_above = int(d.get("cover_above", 1 << 20));
 		const Array trees = d.get("trees", Array());
 		for (int64_t k = 0; k < trees.size(); k++) {
 			const Array e = trees[k];
@@ -167,6 +174,10 @@ Array GoCubeWorld::tree_blocks(int kind, const Vector3i &ground) const {
 		out.append(e);
 	}
 	return out;
+}
+
+int GoCubeWorld::generated_height(int x, int z) const {
+	return _generator.height_at(x, z);
 }
 
 int GoCubeWorld::biome_at(int x, int z) const {
@@ -1199,6 +1210,7 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("configure_generator", "seed", "ids", "ores", "trees"), &GoCubeWorld::configure_generator);
 	ClassDB::bind_method(D_METHOD("configure_biomes", "biomes"), &GoCubeWorld::configure_biomes);
 	ClassDB::bind_method(D_METHOD("biome_at", "x", "z"), &GoCubeWorld::biome_at);
+	ClassDB::bind_method(D_METHOD("generated_height", "x", "z"), &GoCubeWorld::generated_height);
 	ClassDB::bind_method(D_METHOD("start"), &GoCubeWorld::start);
 	ClassDB::bind_method(D_METHOD("get_block", "position"), &GoCubeWorld::get_block);
 	ClassDB::bind_method(D_METHOD("set_block", "position", "id"), &GoCubeWorld::set_block);

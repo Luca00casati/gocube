@@ -18,15 +18,23 @@ func _legacy_world() -> World:
 	return w
 
 
-func test_new_worlds_have_biomes() -> void:
+func test_new_worlds_are_vanilla_with_mountains() -> void:
 	var w := await make_world(777)
 	check_eq(int(w.meta.generator), World.GENERATOR_VERSION, "new worlds use the newest generator")
 	var seen := {}
-	for r in range(0, 3000, 64):
+	var highest := -999
+	for r in range(0, 3000, 50):
 		for a in range(0, 360, 30):
-			seen[w.biome_name(int(cos(deg_to_rad(a)) * r), int(sin(deg_to_rad(a)) * r))] = true
-	for b in ["core:plains", "core:forest", "core:desert", "core:snow"]:
-		check(seen.has(b), b + " exists")
+			var x := int(cos(deg_to_rad(a)) * r)
+			var z := int(sin(deg_to_rad(a)) * r)
+			seen[w.biome_name(x, z)] = true
+			highest = maxi(highest, w.engine.generated_height(x, z))
+	check_eq(seen.keys(), ["core:vanilla"], "only the vanilla biome")
+	check(highest >= 30, "there are mountains (highest ground sampled: %d)" % highest)
+	var unused = JSON.parse_string(FileAccess.get_file_as_string("res://mods/core/content/biomes_unused.json"))
+	check(unused is Dictionary and unused.biomes.has_all(["plains", "forest", "desert", "snow"]),
+			"plains, forest, desert and snow are kept in biomes_unused.json")
+	check(not "content/biomes_unused.json" in ModLoader.mods[0].get("content", []), "and not loaded")
 
 
 func test_legacy_worlds_keep_their_terrain() -> void:

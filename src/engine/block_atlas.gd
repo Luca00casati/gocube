@@ -136,6 +136,21 @@ func face_texture(block_index: int, face: int) -> Texture2D:
 
 const ICON_SIZE := 64
 
+## How tall a block's icon is (0..1): slabs, beds and one-box blocks (a snow
+## layer) as tall as they are, at least a sliver.
+static func _icon_height(id: String, shape: String) -> float:
+	match shape:
+		"slab":
+			return 0.5
+		"bed":
+			return 0.5625
+		"boxes":
+			var boxes: Array = Registry.blocks[id].get("boxes", [])
+			if boxes.size() == 1:
+				return clampf((float(boxes[0][4]) - float(boxes[0][1])) / 16.0, 0.2, 1.0)
+	return 1.0
+
+
 ## A whole bed seen from above in one tile: the head's top (north half) over
 ## the foot's, each squeezed to half its length.
 func _bed_top(id: String) -> Image:
@@ -212,7 +227,7 @@ func icon(id: String) -> Texture2D:
 		img = _tiles[_icon_tiles[id]]  # flat things show their texture
 	elif _icon_tiles.has(id):
 		var top: Image = _bed_top(id) if shape == "bed" else null
-		img = _cube_icon(Registry.block_index(id), 0.5 if shape == "slab" else (0.5625 if shape == "bed" else 1.0), top)
+		img = _cube_icon(Registry.block_index(id), _icon_height(id, shape), top)
 	else:
 		var def: Dictionary = Registry.items.get(id, {})
 		if def.has("texture"):

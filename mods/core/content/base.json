@@ -880,6 +880,28 @@
       },
       "bed": true,
       "flammable": true
+    },
+    "snow": {
+      "shape": "boxes",
+      "boxes": [
+        [
+          0,
+          0,
+          0,
+          16,
+          1,
+          16
+        ]
+      ],
+      "hardness": 0.1,
+      "sound": "core:grass",
+      "color": "#f2f7fb",
+      "textures": {
+        "all": "textures/snow_grass_top.png"
+      },
+      "replaceable": true,
+      "needs_support": true,
+      "drops": "core:snowball"
     }
   },
   "items": {
@@ -1036,6 +1058,10 @@
     "bread": {
       "texture": "textures/bread.png",
       "food": 5
+    },
+    "snowball": {
+      "max_stack": 16,
+      "texture": "textures/snowball.png"
     }
   },
   "recipes": {
@@ -1436,6 +1462,16 @@
         "item": "core:bed",
         "count": 1
       }
+    },
+    "snow": {
+      "type": "shapeless",
+      "ingredients": {
+        "core:snowball": 2
+      },
+      "output": {
+        "item": "core:snow",
+        "count": 1
+      }
     }
   },
   "ores": {
@@ -1630,7 +1666,7 @@
     }
   },
   "biomes": {
-    "plains": {
+    "vanilla": {
       "temperature": 0.0,
       "humidity": -0.1,
       "height": 14,
@@ -1646,59 +1682,12 @@
         "core:bluebell": 7,
         "core:sunpetal": 7
       },
-      "lakes": 30
-    },
-    "forest": {
-      "temperature": 0.05,
-      "humidity": 0.7,
-      "height": 22,
-      "base": 3,
-      "surface": "core:grass",
-      "filler": "core:dirt",
-      "trees": {
-        "core:oak": 36,
-        "core:big_oak": 12,
-        "core:birch": 30
-      },
-      "plants": {
-        "core:tall_grass": 60,
-        "core:bluebell": 4
-      },
-      "lakes": 20
-    },
-    "desert": {
-      "temperature": 0.8,
-      "humidity": -0.65,
-      "height": 10,
-      "base": 1,
-      "surface": "core:sand",
-      "filler": "core:sand",
-      "filler_depth": 4,
-      "under": "core:sandstone",
-      "under_depth": 5,
-      "trees": {
-        "core:cactus": 10
-      },
-      "plants": {
-        "core:dead_bush": 8
-      },
-      "lakes": 4
-    },
-    "snow": {
-      "temperature": -0.8,
-      "humidity": 0.1,
-      "height": 34,
-      "base": 7,
-      "surface": "core:snow_grass",
-      "filler": "core:dirt",
-      "trees": {
-        "core:spruce": 40
-      },
-      "plants": {
-        "core:tall_grass": 8
-      },
-      "frozen": true,
-      "lakes": 20
+      "lakes": 30,
+      "mountains": 34,
+      "rock": "core:stone",
+      "rock_above": 26,
+      "cover": "core:snow",
+      "cover_above": 36
     }
   }
 }

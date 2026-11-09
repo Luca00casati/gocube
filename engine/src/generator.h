@@ -59,6 +59,13 @@ struct BiomeKind {
 	std::vector<std::pair<BlockId, int>> plants; // block, per mille of surface columns
 	bool frozen = false;                       // ice on water
 	int lakes = 20;                            // percent of lake cells with a lake
+	float mountains = 0.0f;                    // height of mountain ranges on top of the hills (0: none)
+	BlockId rock = 0;                          // bare top (and filler) from rock_above up
+	int rock_above = 1 << 20;
+	BlockId cap = 0;                           // top of the highest peaks, from cap_above up
+	int cap_above = 1 << 20;
+	BlockId cover = 0;                         // a thin layer on top of the ground (snow), from cover_above up
+	int cover_above = 1 << 20;
 };
 
 struct Tree {
@@ -72,6 +79,7 @@ public:
 	static constexpr float HEIGHT_FREQUENCY = 0.008f;
 	static constexpr int DIRT_DEPTH = 3;
 	static constexpr int SEA_LEVEL = -4;
+	static constexpr int MAX_TERRAIN_Y = 44; // peaks stay low enough for trees and the top chunk (y 63)
 	static constexpr float CAVE_WIDTH = 0.11f;
 	static constexpr float CAVE_PERIOD = 48.0f;
 	static constexpr float CAVE_Y_SQUASH = 1.6f;
@@ -118,6 +126,7 @@ private:
 	void climate(int x, int z, float &temperature, float &humidity) const;
 	const BiomeKind &biome(int index) const;
 	int terrain_height(int x, int z) const; // before lakes
+	float mountain_shape(int x, int z) const; // 0 (no mountain) .. 1 (a ridge in a range)
 	int column(int x, int z, int &biome_index) const;
 	void place_tree(ChunkData &chunk, int ox, int oy, int oz, const Tree &t) const;
 	// Calls put(x, y, z, id, only_air) for every block of the tree.

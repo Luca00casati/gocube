@@ -69,6 +69,7 @@ func build(world_name: String, distance: int = DEFAULT_VIEW_DISTANCE, new_seed: 
 		migrate(meta, world_name)
 	if meta.is_empty():
 		meta = {"seed": new_seed if new_seed >= 0 else randi(), "mode": new_mode,
+				"first_night": "ahead",  # no ninjas until it's over (see main.gd)
 				"created": Time.get_datetime_string_from_system(), "generator": GENERATOR_VERSION}
 	elif not meta.has("mode"):
 		meta.mode = "creative"  # worlds from before game modes played like creative
@@ -215,10 +216,11 @@ static func _biome_table() -> Array[Dictionary]:
 	for id in ids:
 		var def: Dictionary = Registry.biomes[id]
 		var b := {}
-		for key in ["temperature", "humidity", "height", "base", "filler_depth", "under_depth", "frozen", "lakes"]:
+		for key in ["temperature", "humidity", "height", "base", "filler_depth", "under_depth", "frozen", "lakes",
+				"mountains", "rock_above", "cap_above", "cover_above"]:
 			if def.has(key):
 				b[key] = def[key]
-		for key in ["surface", "filler", "under"]:
+		for key in ["surface", "filler", "under", "rock", "cap", "cover"]:
 			if def.has(key):
 				b[key] = maxi(0, Registry.block_index(str(def[key])))
 		var trees := []

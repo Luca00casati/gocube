@@ -50,6 +50,9 @@ public:
 			const godot::TypedArray<godot::Dictionary> &trees);
 	void configure_biomes(const godot::TypedArray<godot::Dictionary> &biomes);
 	int biome_at(int x, int z) const;
+	// Height of the generated ground at a column (before any edits; lakes count
+	// as their bottom), without loading it.
+	int generated_height(int x, int z) const;
 	// Whether a chunk's blocks are in memory (generated or loaded).
 	bool is_chunk_loaded(const godot::Vector3i &chunk_pos) const;
 	// A tree of kind `kind` (index into the configured trees) growing on the

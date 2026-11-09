@@ -115,3 +115,33 @@ func test_bed_two_blocks() -> void:
 	check_eq(Registry.blocks["core:bed_s_head"].get("drops"), "core:bed", "the head drops a bed")
 	check(Registry.blocks["core:bed_w_head"].get("bed", false), "both halves are beds")
 	check_eq(Registry.blocks["core:bed_e_head"].texture_turns, 1, "the top turns with the bed")
+
+
+func test_snow_layer() -> void:
+	var w := await make_world()
+	_floor(w, -2, 2, -2, 2)
+	_put(w, Vector3i(0, Y + 1, 0), "core:snow")
+	# Standing on it: 1/16 above the stone.
+	var r: Dictionary = w.move_box(Vector3(0.5, Y + 2, 0.5), Vector3(0.6, 1.8, 0.6), Vector3(0, -1, 0))
+	check(r.on_floor, "you stand on snow")
+	check_near(r.position.y, Y + 1 + 1.0 / 16.0, 0.01, "a 1/16 layer")
+	check(PlantSim.supported(w, "core:snow", Vector3i(0, Y + 1, 0)), "lies on stone")
+	w.set_block(Vector3i(0, Y, 0), 0)
+	check(not PlantSim.supported(w, "core:snow", Vector3i(0, Y + 1, 0)), "falls off without ground")
+	check(Registry.blocks["core:snow"].get("replaceable", false), "placing a block replaces it")
+	var hit := {"previous": Vector3i(0, Y + 1, 1), "normal": Vector3i(0, 1, 0)}
+	check_eq(BlockShapes.placement("core:snow", hit, Vector3.FORWARD, Vector3())[0][1], "core:snow", "placeable")
+	check_eq(load("res://src/player/player.gd").drops_of("core:snow", ""), ["core:snowball"], "breaking it gives a snowball")
+	check(Registry.recipes.has("core:snow"), "two snowballs make a layer again")
+
+
+func test_vanilla_peaks_have_snow() -> void:
+	var w := await make_world(777, "", 64, Vector3(318.5, 45, -317.5))
+	var snow := 0
+	for x in range(310, 326):
+		for z in range(-326, -310):
+			var hit := w.raycast(Vector3(x + 0.5, 62, z + 0.5), Vector3.DOWN, 80)
+			if hit.hit and Registry.block_ids[hit.block] == "core:snow":
+				snow += 1
+				check(Registry.block_ids[w.get_block(hit.position + Vector3i.DOWN)] != "core:air", "snow lies on something")
+	check(snow > 20, "a peak is covered in snow (%d columns)" % snow)
