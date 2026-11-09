@@ -32,6 +32,12 @@ terrain themselves from the seed; only edits travel over the network.
   asks the host for the whole chunk.
 - Block edits from joining players are requests: the host checks reach (16 blocks), the
   block id and that nobody is inside the block, then applies them.
+- Players report their own positions, but the host checks each move against the top
+  speed for the game mode (sprinting plus knockback; sprint-flying in creative), with a
+  short burst allowed for lag. Too fast and the player is put back where the host last
+  accepted them; a jump to the world spawn (respawning) is fine. Walls aren't checked.
+- Chest and furnace clicks are only taken from a player who opened that container and is
+  near it, with a real item stack (known item, count within its stack size).
 - Code: `src/net/session.gd` (handshake, positions, edits), `src/player/avatar.gd`,
   `World.build_remote()`.
 
@@ -40,7 +46,9 @@ Launch options (after `--`): `--world=NAME` skip the menu and load or create tha
 `--seed=N` seed for a new world (random otherwise), `--time=0..1` time of day (0 midnight,
 0.25 sunrise, 0.5 noon, 0.75 sunset), `--day-length=SECONDS` (default 86400: real time), `--view=N` view distance (default 128), `--shadows` /
 `--cheap-shadows` (off by default: they cost ~40% FPS on integrated GPUs), `--bench`
-(fly forward 20 s and print FPS stats), `--profile-startup` (time each startup step and list slow frames). Try `--rendering-method gl_compatibility` on old GPUs.
+(fly forward 20 s and print FPS stats), `--profile-startup` (time each startup step and list slow frames),
+`--threads=N` chunk worker threads (default: cores − 1, at most 8; also `worker_threads` in
+settings.cfg: fewer leaves CPU for other programs but loads chunks slower). Try `--rendering-method gl_compatibility` on old GPUs.
 
 Controls: WASD walk, Space jump (and swim up in water), Ctrl sprint, Shift sneak, F toggle flying (Space/Shift
 up/down; fly down onto the ground to land), mouse look, hold LMB mine / LMB break (creative),
@@ -60,6 +68,9 @@ New worlds are **survival** by default (chosen in the New world dialog): hold le
 mine (time = the block's `hardness` × 0.75 s). The block's `"drops"` (or the block itself)
 pops out as a **dropped item** that drifts to you and goes into the 36-slot inventory when
 you're close (same items nearby merge; they vanish after 5 minutes). Placing uses items up.
+In multiplayer, dropped items are shared: the host owns them all (`src/world/item_drops.gd`)
+and sends them to everyone ~10 times a second; whoever reaches one first gets it (clients ask
+the host, so an item can't be picked up twice).
 
 **Tools**: wooden and stone pickaxes and axes (3 planks or cobblestone + 2 sticks). A block's
 `"tool"` mines `"speed"` times faster with that tool (wood ×2, stone ×4); blocks with
@@ -97,6 +108,17 @@ planted on it grow through 8 stages over a few minutes (`"grows_into"`, `"grow_s
 `src/world/plant_sim.gd`, saved with the world); ripe wheat gives wheat and seeds; 3 wheat
 make bread, and eating food (`"food"`) heals when you're hurt.
 
+**Saplings** (oak, birch, spruce) drop now and then from leaves, broken or decaying
+(`"sapling"` on the leaves). Planted on grass or dirt, one grows after about 4 minutes into
+the same tree the world generator makes (`"grows_tree"`: a tree id, or `{id: weight}`: an
+oak sapling sometimes becomes a big oak); with no room yet it tries again later.
+
+**Bed** (3 planks + 3 wheat): two blocks long, with the pillow at the end you face when you
+place it (it needs room for both halves; breaking either removes the whole bed). Right click
+to make it your respawn point; at night, sleep in it. When everyone in the game is in bed for a moment the night is skipped to the morning
+(move or jump to get up). You can't sleep with a ninja close by. If the bed is gone when you
+respawn, you're back at the world spawn. The bed is saved with your player.
+
 **Building**: torches (coal + stick; light 13, on floors and walls), slabs and stairs
 (stone, cobblestone, planks), wooden doors (right click opens both halves), fences,
 ladders (climb with Space or by walking into them; no fall damage), glass (smelt sand).
@@ -106,8 +128,8 @@ Torches, ladders, doors and plants pop off when what holds them goes. Holding a 
 
 Survival also has **health** (20 points, shown as a bar above the hotbar): falls of more than 3 blocks hurt
 (1 point per extra block), running out of breath underwater (10 s, a blue bar while underwater) hurts,
-and health slowly comes back after 4 s without damage. At 0 you respawn at the world's spawn
-point and keep your inventory. New worlds start you on dry land.
+and health slowly comes back after 4 s without damage. At 0 you respawn at your bed (or the
+world's spawn point) and keep your inventory. New worlds start you on dry land.
 
 **Water flows**: source blocks (level 8) spread up to 7 blocks sideways, getting lower, and
 pour down into air; flowing water without a source drains away (`src/world/fluid_sim.gd`,
@@ -129,8 +151,11 @@ release library:
     cmake --build engine/build-release -j4   # -> bin/libgocube.linux.template_release.x86_64.so
     godot4 --headless --export-release "Linux" export/linux/gocube.x86_64
 
-The preset includes `*.json` (mod manifests and content are not Godot resources, so
-they'd be left out otherwise) and the license files.
+`mods/` has a `.gdignore`: Godot doesn't import the built-in mods' textures and sounds (no
+`.import` files, no copies in `.godot/imported/`), and the game reads them straight from the
+files, as it does for players' mods. Since Godot also leaves ignored folders out of exports, the
+`addons/gocube_export` editor plugin (enabled in `project.godot`) adds every file under `mods/`
+to the export unchanged. The preset also includes `*.json` and the license files.
 
 ## Tests
     godot4 --headless -s res://tests/run_tests.gd [-- filter]   # unit + engine tests
@@ -162,8 +187,8 @@ creatures) and the engine's phase tests: [PROTOTYPES.md](PROTOTYPES.md),
 
 ## World generation and time
 The terrain comes from the C++ generator (`engine/src/generator.cpp`), deterministic per
-seed. New worlds have **biomes**: plains (tall grass, flowers, scattered oaks, lakes),
-forest (oaks, big branching oaks, birches), desert (sand over sandstone, cacti, dead
+seed. New worlds have **biomes**: plains (tall grass, flowers, scattered round oaks, lakes),
+forest (round oaks, big branching oaks, birches), desert (sand over sandstone, cacti, dead
 bushes) and snow (snowy ground, tall spruces, ice on water). Each column's biome is the
 nearest one in climate space (two slow noise fields: temperature and humidity); hill
 height is blended between biomes so borders have no cliffs. Also: lakes in flat places,
@@ -171,7 +196,8 @@ worm caves plus big caverns deep down, **lava** filling the lowest caves (it bur
 flows 4 blocks, and turns to stone or cobblestone where it meets water), falling sand and
 gravel, and leaves that decay once their tree is gone (placed leaves don't). Worlds made
 before biomes keep the original generator (`"generator"` in world.json) so their
-unexplored land still matches what's saved.
+unexplored land still matches what's saved; likewise worlds from before generator 3 keep
+the classic blocky oak, which new worlds replace with a rounder, uneven one.
 
 **Ores, trees and biomes are defined by mods** in content files; the core mod's own are in
 `mods/core/content/base.json`:
@@ -191,7 +217,8 @@ unexplored land still matches what's saved.
              "trees": {"mymod:palm": 40}, "plants": {"core:tall_grass": 120}, "lakes": 20}
 }
 ```
-Tree styles: `oak`, `big_oak`, `birch`, `spruce`, `cactus` (no leaves). A biome's `trees` are
+Tree styles: `round_oak`, `big_oak`, `birch`, `spruce`, `cactus` (no leaves), and `oak`
+(the classic blocky oak, used by older worlds). A biome's `trees` are
 percents of 8×8 tree spots, `plants` per mille of surface columns; also `filler_depth`,
 `under` / `under_depth` (a layer below the filler, like sandstone), `frozen` (ice on
 water) and `lakes` (percent).
@@ -213,7 +240,8 @@ Worlds live in `user://worlds/<name>/` (on Linux `~/.local/share/godot/app_userd
 `world.json` (seed, block id table, player position) and `chunks/` (only chunks the player
 edited, run-length encoded; the rest is regenerated from the seed). Saved on quit and
 every 60 s. Worlds from the old voxel-module version regenerate their terrain; their edits
-are not carried over.
+are not carried over. A world saved by a newer version of the game, or whose world.json is
+damaged, is refused with a message and left untouched (nothing is written to it).
 
 Voxels store numeric block ids, so each world keeps its own id table: adding mods appends
 new ids, and blocks from a removed mod keep their slot (shown magenta) until it returns.
@@ -254,23 +282,21 @@ engine draws and collides with the actual boxes. More keys: `"plant_on": [blocks
 ## Writing a mod
 Create `user://mods/<id>/mod.json` (see the header of `mod_loader.gd`), add JSON
 content files and/or an `entry` script with `init_mod(registry)`. Set `"api_version": 1`;
-mods written for a newer API version than the game supports are refused.
+mods written for a newer API version than the game supports are refused. mod.json is
+checked before anything of a mod loads (field types, dependency ids, and that `content` and
+`entry` are existing `.json` / `.gd` files inside the mod folder); a broken mod is skipped
+with the reason in the log. Content sections must map ids to objects.
 
-To distribute it as a pack: make a Godot project with the same engine build whose files
-live under `mods/<id>/`, add an export preset with `include_filter="*.json"`, and run
-`godot4 --headless --export-pack "<preset>" <id>.pck`. Players drop the `.pck` into
-`user://mods/` (Linux: `~/.local/share/godot/app_userdata/GoCube/mods/`).
+To share it, zip the mod folder (or its contents, with `mod.json` at the top of the zip).
+Players drop the `.zip` into `user://mods/` (Linux:
+`~/.local/share/godot/app_userdata/GoCube/mods/`); the game unpacks it to
+`user://mods/.unzipped/` and unpacks it again only when the zip changes. Files that would land
+outside the mod's folder are refused. Godot `.pck` packs that contain `mods/<id>/...` still work too.
+
+Players can turn mods off under **Settings → Mods** (saved in `settings.cfg`; takes effect on
+the next start). A mod that depends on one that's turned off is skipped as well.
 
 Mods are **not sandboxed**: only install mods you trust.
-
-## Next steps
-- Dropped items are only visible to the player they belong to; share them in multiplayer.
-- Saplings that grow into trees; a bed (sleep, respawn point); hunger.
-- More creatures and Block Eater behaviour (breeding).
-- Windows/macOS builds of the engine library.
-- Consider a double-precision build if worlds get large.
-- Evaluate [Godot Mod Loader](https://github.com/GodotModding/godot-mod-loader) if you
-  want script hooks/extensions beyond this registry.
 
 ## License
 GoCube is **source-available**: you may build it yourself and play your own build for free

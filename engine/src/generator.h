@@ -24,7 +24,17 @@ struct OreKind {
 };
 
 // Tree shapes.
-enum TreeStyle : uint8_t { TREE_OAK, TREE_BIG_OAK, TREE_BIRCH, TREE_SPRUCE, TREE_CACTUS };
+// TREE_OAK is the classic blocky oak (kept for older worlds); TREE_ROUND_OAK
+// replaces it in new ones.
+enum TreeStyle : uint8_t { TREE_OAK, TREE_BIG_OAK, TREE_BIRCH, TREE_SPRUCE, TREE_CACTUS, TREE_ROUND_OAK };
+
+// One block of a tree, in world coordinates (only_air: leaves, which don't
+// replace anything).
+struct TreeBlock {
+	int x, y, z;
+	BlockId id;
+	bool only_air;
+};
 
 // One kind of tree (defined by mods).
 struct TreeKind {
@@ -89,6 +99,11 @@ public:
 	// Trees whose leaves may reach columns [x0, x1) x [z0, z1).
 	void trees_near(int x0, int z0, int x1, int z1, std::vector<Tree> &out) const;
 
+	// The blocks of a tree of `kind` standing on the block at (x, ground, z)
+	// (a grown sapling). Its height and shape come from the position.
+	void tree_blocks(int kind, int x, int ground, int z, std::vector<TreeBlock> &out) const;
+	int tree_kind_count() const { return int(_trees.size()); }
+
 	// Fills a chunk whose minimum corner is `origin` (in blocks).
 	void generate(ChunkData &chunk, int ox, int oy, int oz) const;
 
@@ -105,6 +120,9 @@ private:
 	int terrain_height(int x, int z) const; // before lakes
 	int column(int x, int z, int &biome_index) const;
 	void place_tree(ChunkData &chunk, int ox, int oy, int oz, const Tree &t) const;
+	// Calls put(x, y, z, id, only_air) for every block of the tree.
+	template <typename Put>
+	void build_tree(const Tree &t, Put &&put) const;
 	void place_ores(ChunkData &chunk, int ox, int oy, int oz) const;
 };
 

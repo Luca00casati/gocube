@@ -824,6 +824,101 @@ def dead_bush():
     return img
 
 
+# --- saplings and the bed ---------------------------------------------------------
+
+def sapling(leaf, stem=(104, 74, 42), shape="round", seed=120):
+    """A young tree: a thin stem and a few clumps of leaves (or a little cone)."""
+    def make():
+        img = blank()
+        rnd = random.Random(seed)
+        for y in range(18, 32):
+            _px(img, 16 if y > 24 else 15 + (y % 2), y, stem)
+        if shape == "cone":
+            for row in range(16):
+                half = 1 + (row * 6) // 15 - (2 if row % 5 == 4 else 0)
+                y = 6 + row
+                for x in range(16 - half, 17 + half):
+                    _px(img, x, y, leaf[min(len(leaf) - 1, 1 + rnd.randrange(3))] if rnd.random() > 0.08 else leaf[0])
+            return img
+        for cx, cy, r in ((16, 11, 5.5), (11, 16, 4.0), (21, 15, 4.2)):
+            for y in range(int(cy - r), int(cy + r) + 1):
+                for x in range(int(cx - r), int(cx + r) + 1):
+                    d = math.hypot(x - cx, y - cy)
+                    if d <= r - rnd.random() * 1.2:
+                        shade = 1 + int((1 - d / r) * 3 + rnd.random() * 0.8)
+                        _px(img, x, y, leaf[max(0, min(len(leaf) - 1, shade - (1 if y > cy else 0)))])
+        return img
+    return make
+
+
+BLANKET = ramp("#7c1f22", "#9a2a2c", "#b43a36", "#c94b42")
+PILLOW = ramp("#c9c3b4", "#dcd7ca", "#eeeae0")
+
+
+def _blanket(x, y, rnd):
+    stripe = (x - 2) % 9 == 0
+    return BLANKET[0 if stripe else 2 + (rnd.random() > 0.85)]
+
+
+def bed_head_top():
+    """The head half seen from above, drawn for a bed facing north (the head
+    at the top of the image): frame on three sides, the pillow, then the
+    turned-down edge of the blanket. Rotated in game for other facings."""
+    img = Image.new("RGBA", (S, S))
+    rnd = random.Random(130)
+    for y in range(S):
+        for x in range(S):
+            if x < 2 or x > 29 or y < 2:
+                c = WOOD[2 + (x + y) % 2]
+            elif y < 16:
+                edge = x < 5 or x > 26 or y < 4 or y > 13
+                c = PILLOW[0 if edge else 1 + (rnd.random() > 0.7)]
+            elif y < 21:
+                c = PILLOW[1] if y < 19 else PILLOW[0]  # sheet
+            elif y < 24:
+                c = BLANKET[3 if y < 23 else 1]       # folded edge
+            else:
+                c = _blanket(x, y, rnd)
+            img.putpixel((x, y), c + (255,))
+    return img
+
+
+def bed_foot_top():
+    """The foot half from above (bed facing north): blanket, frame on three
+    sides, the blanket's end tucked in at the bottom."""
+    img = Image.new("RGBA", (S, S))
+    rnd = random.Random(132)
+    for y in range(S):
+        for x in range(S):
+            if x < 2 or x > 29 or y > 29:
+                c = WOOD[2 + (x + y) % 2]
+            elif y > 27:
+                c = BLANKET[1]
+            else:
+                c = _blanket(x, y, rnd)
+            img.putpixel((x, y), c + (255,))
+    return img
+
+
+def bed_side():
+    """The side of a 9/16-high bed: blanket hanging over a wooden frame that
+    goes down to the floor. Only the bottom 18 rows show."""
+    img = blank()
+    rnd = random.Random(131)
+    for y in range(14, 32):
+        for x in range(S):
+            if y < 23:
+                c = BLANKET[2 if y > 14 else 3] if y < 21 else BLANKET[0]
+            elif y < 30:
+                c = WOOD[1 + (x % 8 == 0)]
+            else:
+                c = WOOD[0]
+            if rnd.random() > 0.93:
+                c = tuple(max(0, v - 12) for v in c)
+            img.putpixel((x, y), c + (255,))
+    return img
+
+
 TEXTURES = {
     "stone": stone,
     "cobblestone": cobblestone,
@@ -892,6 +987,12 @@ TEXTURES = {
     "cactus_top": cactus_top,
     "dead_bush": dead_bush,
     "lava": lava,
+    "oak_sapling": sapling(LEAF),
+    "birch_sapling": sapling(BIRCH_LEAF, stem=(214, 204, 186), seed=121),
+    "spruce_sapling": sapling(SPRUCE_LEAF, stem=(92, 62, 36), shape="cone", seed=122),
+    "bed_head_top": bed_head_top,
+    "bed_foot_top": bed_foot_top,
+    "bed_side": bed_side,
 }
 
 if __name__ == "__main__":

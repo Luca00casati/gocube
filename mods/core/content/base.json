@@ -89,7 +89,15 @@
         "all": "textures/leaves.png"
       },
       "sound": "core:grass",
-      "leaves": true
+      "leaves": true,
+      "extra_drops": [
+        [
+          "core:oak_sapling",
+          1,
+          0.06
+        ]
+      ],
+      "sapling": "core:oak_sapling"
     },
     "coal_ore": {
       "hardness": 3.0,
@@ -617,7 +625,15 @@
       "textures": {
         "all": "textures/birch_leaves.png"
       },
-      "leaves": true
+      "leaves": true,
+      "extra_drops": [
+        [
+          "core:birch_sapling",
+          1,
+          0.06
+        ]
+      ],
+      "sapling": "core:birch_sapling"
     },
     "spruce_log": {
       "hardness": 2.0,
@@ -640,7 +656,15 @@
       "textures": {
         "all": "textures/spruce_leaves.png"
       },
-      "leaves": true
+      "leaves": true,
+      "extra_drops": [
+        [
+          "core:spruce_sapling",
+          1,
+          0.06
+        ]
+      ],
+      "sapling": "core:spruce_sapling"
     },
     "cactus": {
       "shape": "boxes",
@@ -783,6 +807,79 @@
       "textures": {
         "all": "textures/lava.png"
       }
+    },
+    "oak_sapling": {
+      "shape": "cross",
+      "hardness": 0,
+      "sound": "core:grass",
+      "color": "#356828",
+      "textures": {
+        "all": "textures/oak_sapling.png"
+      },
+      "plant_on": [
+        "core:grass",
+        "core:dirt",
+        "core:snow_grass"
+      ],
+      "grows_tree": {
+        "core:oak": 9,
+        "core:big_oak": 1
+      },
+      "grow_seconds": 240,
+      "fuel": 2
+    },
+    "birch_sapling": {
+      "shape": "cross",
+      "hardness": 0,
+      "sound": "core:grass",
+      "color": "#5a9236",
+      "textures": {
+        "all": "textures/birch_sapling.png"
+      },
+      "plant_on": [
+        "core:grass",
+        "core:dirt",
+        "core:snow_grass"
+      ],
+      "grows_tree": "core:birch",
+      "grow_seconds": 240,
+      "fuel": 2
+    },
+    "spruce_sapling": {
+      "shape": "cross",
+      "hardness": 0,
+      "sound": "core:grass",
+      "color": "#25492f",
+      "textures": {
+        "all": "textures/spruce_sapling.png"
+      },
+      "plant_on": [
+        "core:grass",
+        "core:dirt",
+        "core:snow_grass"
+      ],
+      "grows_tree": "core:spruce",
+      "grow_seconds": 240,
+      "fuel": 2
+    },
+    "bed": {
+      "shape": "bed",
+      "hardness": 0.3,
+      "tool": "axe",
+      "sound": "core:wood",
+      "color": "#b43a36",
+      "textures": {
+        "top": "textures/bed_foot_top.png",
+        "side": "textures/bed_side.png",
+        "bottom": "textures/planks.png"
+      },
+      "textures_head": {
+        "top": "textures/bed_head_top.png",
+        "side": "textures/bed_side.png",
+        "bottom": "textures/planks.png"
+      },
+      "bed": true,
+      "flammable": true
     }
   },
   "items": {
@@ -1328,6 +1425,17 @@
         "item": "core:sandstone",
         "count": 1
       }
+    },
+    "bed": {
+      "type": "shapeless",
+      "ingredients": {
+        "core:planks": 3,
+        "core:wheat": 3
+      },
+      "output": {
+        "item": "core:bed",
+        "count": 1
+      }
     }
   },
   "ores": {
@@ -1381,7 +1489,7 @@
         6
       ],
       "chance": 30,
-      "style": "oak"
+      "style": "round_oak"
     },
     "big_oak": {
       "log": "core:log",

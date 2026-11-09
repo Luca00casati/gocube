@@ -12,7 +12,7 @@ const WORLDS_DIR := "user://worlds"
 ## edits can't be carried over: their terrain generator was different.
 const FORMAT_VERSION := 2
 ## Newest world generator (see _make_engine).
-const GENERATOR_VERSION := 2
+const GENERATOR_VERSION := 3
 const DEFAULT_VIEW_DISTANCE := 128  # 256 halves FPS on an Intel HD 4600
 const CHUNK_SIZE := 32
 ## Highest block y in the world (the engine's vertical range is y -96..127);
@@ -43,14 +43,23 @@ var block_entities: BlockEntities
 var plants: PlantSim
 ## Multiplayer peer whose edit is being applied (0 = the local player).
 var editor := 0
+## Chunk worker threads for this world (0 automatic); -1 uses Settings.
+var worker_threads := -1
 
 
 ## persistent=false runs the world without reading or writing anything (benchmarks).
 ## new_mode ("survival" / "creative") applies to new worlds only.
+## Returns "" when built, else why the world can't be opened (then nothing is
+## built and nothing on disk is touched).
 func build(world_name: String, distance: int = DEFAULT_VIEW_DISTANCE, new_seed: int = -1,
-		persistent: bool = true, new_mode: String = "survival") -> void:
+		persistent: bool = true, new_mode: String = "survival") -> String:
 	if persistent:
 		dir = WORLDS_DIR.path_join(world_name)
+		var problem := check_meta(dir)
+		if problem != "":
+			push_warning("World '%s': %s" % [world_name, problem])
+			dir = ""  # so nothing saves into it
+			return problem
 		DirAccess.make_dir_recursive_absolute(dir.path_join("chunks"))
 		meta = _read_meta()
 	if not meta.is_empty() and int(meta.get("format", 1)) < FORMAT_VERSION:
@@ -61,8 +70,6 @@ func build(world_name: String, distance: int = DEFAULT_VIEW_DISTANCE, new_seed: 
 				"created": Time.get_datetime_string_from_system(), "generator": GENERATOR_VERSION}
 	elif not meta.has("mode"):
 		meta.mode = "creative"  # worlds from before game modes played like creative
-	elif int(meta.get("format", 0)) > FORMAT_VERSION:
-		push_error("World '%s' was saved by a newer version of the game" % world_name)
 	meta.format = FORMAT_VERSION
 
 	# Voxels store numeric ids, so a world keeps its own id table. It is written
@@ -90,6 +97,7 @@ func build(world_name: String, distance: int = DEFAULT_VIEW_DISTANCE, new_seed: 
 	plants.world = self
 	plants.deserialize(meta.get("plants", []))
 	add_child(plants)
+	return ""
 
 
 ## Client side of a multiplayer game: same seed and block table as the host,
@@ -108,7 +116,8 @@ func build_remote(block_ids: PackedStringArray, distance: int, world_seed: int, 
 
 
 ## generator: 1 = the original world (worlds made before biomes keep it, so
-## their unexplored land matches what's saved), 2 = biomes, lakes, caverns, lava.
+## their unexplored land matches what's saved), 2 = biomes, lakes, caverns, lava,
+## 3 = round oaks instead of the classic blocky oak.
 func _make_engine(distance: int, world_seed: int, generator: int = GENERATOR_VERSION) -> void:
 	view_distance = distance
 	atlas = BlockAtlas.new()
@@ -125,6 +134,7 @@ func _make_engine(distance: int, world_seed: int, generator: int = GENERATOR_VER
 
 	engine = GoCubeWorld.new()
 	engine.name = "Engine"
+	engine.worker_threads = worker_threads if worker_threads >= 0 else Settings.worker_threads
 	engine.configure_blocks(atlas.block_table)
 	engine.set_atlas_layout(atlas.cols, atlas.rows, BlockAtlas.CELL, BlockAtlas.FACE_OFFSET)
 	engine.set_materials(terrain_material, fluid_material)
@@ -133,7 +143,7 @@ func _make_engine(distance: int, world_seed: int, generator: int = GENERATOR_VER
 		ids[key] = maxi(0, Registry.block_index("core:" + key))
 	if generator >= 2:
 		engine.configure_biomes(_biome_table())
-	engine.configure_generator(world_seed, ids, _ore_table(), _tree_table())
+	engine.configure_generator(world_seed, ids, _ore_table(), _tree_table(generator))
 	engine.view_distance = distance
 
 
@@ -160,7 +170,9 @@ static func _ore_table() -> Array[Dictionary]:
 	return out
 
 
-static func _tree_table() -> Array[Dictionary]:
+## generator < 3: "round_oak" trees grow as the classic oak, so older worlds'
+## unexplored land matches what they saved.
+static func _tree_table(generator: int = GENERATOR_VERSION) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	for id in _tree_order():
 		var def: Dictionary = Registry.trees[id]
@@ -169,11 +181,16 @@ static func _tree_table() -> Array[Dictionary]:
 		var trunk: Array = def.get("trunk", [4, 6])
 		out.append({"log": log_id, "leaves": maxi(0, leaves), "min_trunk": int(trunk[0]),
 				"max_trunk": int(trunk[-1]), "chance": int(def.get("chance", 30)),
-				"style": TREE_STYLES.find(str(def.get("style", "oak")))})
+				"style": TREE_STYLES.find(_tree_style(def, generator))})
 	return out
 
 
-const TREE_STYLES := ["oak", "big_oak", "birch", "spruce", "cactus"]
+const TREE_STYLES := ["oak", "big_oak", "birch", "spruce", "cactus", "round_oak"]
+
+
+static func _tree_style(def: Dictionary, generator: int) -> String:
+	var style := str(def.get("style", "oak"))
+	return "oak" if style == "round_oak" and generator < 3 else style
 
 
 ## The tree ids in the order _tree_table() sends them (biomes refer to trees
@@ -225,6 +242,39 @@ func biome_name(x: int, z: int) -> String:
 	var ids := Registry.biomes.keys()
 	ids.sort()
 	return str(ids[engine.biome_at(x, z)])
+
+
+## Grows tree `tree_id` (a Registry.trees id) from the sapling at `pos`, the
+## same shape the world generator would make there. Its logs need room (air,
+## plants, leaves); leaves only fill air. Returns false (nothing changed) when
+## there's no room or the area isn't loaded.
+func grow_tree(pos: Vector3i, tree_id: String) -> bool:
+	var kind := _tree_order().find(tree_id)
+	if kind < 0:
+		return false
+	var blocks: Array = engine.tree_blocks(kind, pos + Vector3i.DOWN)
+	if blocks.is_empty():
+		return false
+	for b in blocks:
+		if b[2]:
+			continue
+		var here := get_block(b[0])
+		if b[0] != pos and here != 0 and not _makes_room(here):
+			return false
+	for b in blocks:
+		if not engine.is_chunk_loaded(chunk_of(b[0])):
+			return false  # part of it would land in an unloaded chunk
+	for b in blocks:
+		var here := get_block(b[0])
+		if here == 0 or (not b[2] and (b[0] == pos or _makes_room(here))):
+			set_block(b[0], b[1])
+	return true
+
+
+## Blocks a growing tree's trunk may push aside: plants and leaves.
+func _makes_room(block: int) -> bool:
+	var def: Dictionary = Registry.blocks.get(Registry.block_ids[block], {})
+	return def.get("replaceable", false) or def.get("leaves", false) or def.get("shape") == "cross"
 
 
 # --- Blocks ------------------------------------------------------------------------
@@ -352,6 +402,22 @@ func save(player: Dictionary = {}) -> void:
 	meta.saved = Time.get_datetime_string_from_system()
 	_write_meta()
 	engine.save_modified()
+
+
+## Why the world saved in `world_dir` can't be opened by this version, or ""
+## (also for a new world). Opening a newer world would write our older format
+## over it; a corrupt world.json would be replaced by a brand-new world.
+static func check_meta(world_dir: String) -> String:
+	var path := world_dir.path_join("world.json")
+	if not FileAccess.file_exists(path):
+		return ""
+	var json := JSON.new()
+	var data = json.data if json.parse(FileAccess.get_file_as_string(path)) == OK else null
+	if not data is Dictionary or not (data.get("seed") is float or data.get("seed") is int):
+		return "its world.json is damaged, so it isn't opened (to keep it safe)."
+	if int(data.get("format", 1)) > FORMAT_VERSION or int(data.get("generator", 1)) > GENERATOR_VERSION:
+		return "it was saved by a newer version of GoCube. Update the game to play it."
+	return ""
 
 
 func _read_meta() -> Dictionary:

@@ -29,6 +29,13 @@ func _start(opts: Dictionary) -> Node:
 	return game
 
 
+## Moves the (frozen) player in steps at walking speed.
+func _walk(player: Node3D, to: Vector3) -> void:
+	while player.global_position.distance_to(to) > 0.01:
+		player.global_position = player.global_position.move_toward(to, 4.0 * get_physics_process_delta_time())
+		await get_tree().physics_frame
+
+
 func _ready() -> void:
 	var role: String = OS.get_cmdline_user_args()[-1]
 	if role == "host":
@@ -69,9 +76,23 @@ func _ready() -> void:
 		game._player._apply_edit(target, 0)
 		var early := drops.get_child_count()
 		results["drop after host confirms"] = early == 0 and await _wait_for(
-				func(): return drops.get_child_count() == 1 and w.get_block(target) == 0, 5)
+				func(): return drops.count() == 1 and w.get_block(target) == 0, 5)
+		# Drops are the host's: we see its drop and picking it up goes through it.
+		var had: int = game._player.inventory.count_of("core:planks")
+		results["picked up shared drop"] = await _wait_for(func(): return drops.count() == 0 \
+				and game._player.inventory.count_of("core:planks") == had + 1, 5)
+		game._session.request_drop("core:coal", 2, game._player.global_position + Vector3(6, 1, 0))
+		results["host shares a dropped item"] = await _wait_for(func():
+				return drops._by_id.values().any(func(d): return d.item == "core:coal" and d.count == 2), 5)
 		# A chest through the host (stand next to it first: the host checks reach).
-		game._player.global_position = Vector3(CHEST) + Vector3(0.5, 0, 2.5)
+		# The host checks movement: a teleport is put back, walking is fine.
+		var before: Vector3 = game._player.global_position
+		var put_back := [false]
+		game._session.corrected.connect(func(_eye): put_back[0] = true)
+		game._player.global_position = before + Vector3(200, 0, 0)
+		results["teleport put back by host"] = await _wait_for(func(): return put_back[0] \
+				and game._player.global_position.distance_to(before) < 2.0, 5)
+		await _walk(game._player, Vector3(CHEST) + Vector3(0.5, 0, 2.5))
 		await get_tree().create_timer(0.3).timeout
 		var seen := {}
 		var held := [null]

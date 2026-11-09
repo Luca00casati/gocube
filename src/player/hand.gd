@@ -62,7 +62,7 @@ func swing() -> void:
 func _process(delta: float) -> void:
 	if player == null:
 		return
-	visible = not player.dead and not player.autopilot
+	visible = not player.dead and not player.autopilot and not player.sleeping
 	var item: String = player.selected_item()
 	if item != _shown_item:
 		_shown_item = item
@@ -93,7 +93,7 @@ func _show_item(item: String) -> void:
 		return
 	var mesh := ItemDrop.model_mesh(item, atlas)
 	_item.mesh = mesh
-	var is_block := Registry.blocks.has(item) and mesh.get_surface_count() == 6
+	var is_block := Registry.blocks.has(item) and mesh.get_surface_count() > 1  # boxes, not a flat icon
 	for i in mesh.get_surface_count():
 		var src := mesh.surface_get_material(i) as ShaderMaterial
 		_item.set_surface_override_material(i, _mat(src.get_shader_parameter("tex"), Color.WHITE, 12))

@@ -21,18 +21,22 @@ signal ended(reason: String)       # client: connection failed / rejected / lost
 signal remote_edit(position: Vector3i, old_block: int, new_block: int)
 ## Client: the host applied a block change we asked for (drop what we broke).
 signal own_edit_confirmed(position: Vector3i)
-## Client: items the host gave us to drop at a position ([[id, count], ...]).
-signal drops_received(at: Vector3, items: Array)
+## Client: the host gave us a dropped item we asked for (put it in the inventory).
+signal items_picked(item: String, count: int)
 ## Client: a container's contents / what we hold after clicking it.
 signal container_updated(position: Vector3i, data: Dictionary)
 signal container_held(position: Vector3i, held: Dictionary)
 ## Client: a creature hit us (damage, knockback).
 signal struck(damage: int, push: Vector3)
+## Client: everyone slept and the host skipped the night: get up.
+signal woken
+## Client: the host refused our movement and put us back at `eye` (an eye position).
+signal corrected(eye: Vector3)
 
 const Avatar := preload("res://src/player/avatar.gd")
 const Player := preload("res://src/player/player.gd")
 
-const PROTOCOL := 2
+const PROTOCOL := 3
 const DEFAULT_PORT := 24680
 const MAX_PLAYERS := 8
 const STATE_INTERVAL := 0.05       # seconds between position updates (20 Hz)
@@ -46,6 +50,8 @@ var mode := Mode.OFFLINE
 var world: World
 ## The local player's eyes (camera); its position is what others see.
 var local_player: Node3D
+var drops: ItemDrops               # dropped items (set by main)
+var _drop_timer := 0.0
 var held_light := 0         # light level of what the local player holds (a torch: 13); set by main
 var player_name := "Player"
 ## Time of day; the host's is authoritative.
@@ -53,6 +59,7 @@ var day_cycle: DayCycle
 ## Creatures: the host simulates them and sends their positions.
 var mobs: MobManager
 const MOB_INTERVAL := 0.1
+const DROP_INTERVAL := 0.1        # seconds between dropped-item updates to clients
 const MOB_REACH := 6.0
 var _mob_timer := 0.0
 
@@ -69,6 +76,15 @@ var _ended := false
 var _own_edits := {}  # client: positions we asked the host to change (no echo sound)
 var _viewers := {}    # host: container position -> [peer ids looking at it]
 const CONTAINER_REACH := 8.0
+## Host-side movement check (clients report their own positions): the fastest
+## a player can go, in blocks per second, as (horizontal, up, down). Survival
+## covers sprinting plus a creature's knockback; creative covers sprint-flying.
+const MOVE_SPEED_SURVIVAL := Vector3(14.0, 13.0, 62.0)
+const MOVE_SPEED_CREATIVE := Vector3(28.0, 28.0, 62.0)
+const MOVE_BURST := 0.75          # seconds of movement that may arrive at once (lag)
+const MOVE_SLACK := 1.0           # extra blocks always allowed
+const RESPAWN_RADIUS := 2.0       # a jump to the world spawn (respawning) is fine
+const CORRECT_EVERY := 0.5        # seconds between corrections sent to one client
 
 
 # --- Setup / teardown ----------------------------------------------------------
@@ -179,6 +195,47 @@ func _players_state(states: Dictionary) -> void:
 
 # --- Host side -----------------------------------------------------------------
 
+static func _now() -> float:
+	return Time.get_ticks_msec() / 1000.0
+
+
+func _move_speeds() -> Vector3:
+	return MOVE_SPEED_CREATIVE if world.meta.get("mode", "survival") == "creative" else MOVE_SPEED_SURVIVAL
+
+
+func _move_cap() -> Vector3:
+	return _move_speeds() * MOVE_BURST + Vector3.ONE * MOVE_SLACK
+
+
+## Host: whether a client may have moved from its last accepted position to
+## `pos`. Each player has a movement budget per direction that refills at the
+## top speed (up to MOVE_BURST seconds' worth, so late packets arriving
+## together pass) and is spent by moving. Respawning jumps to the world spawn.
+func _move_allowed(p: Dictionary, pos: Vector3) -> bool:
+	var now := _now()
+	var budget: Vector3 = p.get("budget", Vector3.ZERO) + _move_speeds() * (now - float(p.get("time", now)))
+	budget = budget.min(_move_cap())
+	p.time = now
+	var d: Vector3 = pos - (p.position as Vector3)
+	var cost := Vector3(Vector2(d.x, d.z).length(), maxf(d.y, 0.0), maxf(-d.y, 0.0))
+	if cost.x <= budget.x and cost.y <= budget.y and cost.z <= budget.z:
+		p.budget = budget - cost
+		return true
+	var sp: Array = world.meta.get("spawn", [])
+	var bed = p.get("bed")
+	if (sp.size() == 3 and Vector2(pos.x - sp[0], pos.z - sp[2]).length() <= RESPAWN_RADIUS) \
+			or (bed != null and Vector2(pos.x - bed.x - 0.5, pos.z - bed.z - 0.5).length() <= RESPAWN_RADIUS):
+		p.budget = _move_cap()
+		return true
+	p.budget = budget
+	return false
+
+
+@rpc("authority", "call_remote", "reliable")
+func _correct(eye: Vector3) -> void:
+	corrected.emit(eye)
+
+
 @rpc("any_peer", "call_remote", "reliable")
 func _hello(protocol: int, mods: Array, requested_name: String) -> void:
 	if not is_host():
@@ -208,6 +265,7 @@ func _hello(protocol: int, mods: Array, requested_name: String) -> void:
 		"block_ids": Array(Registry.block_ids),
 		"view_distance": world.view_distance,
 		"spawn": [spawn.x, spawn.y, spawn.z],
+		"world_spawn": world.meta.get("spawn", []),  # where the dead respawn
 		"seed": int(world.meta.seed),
 		"generator": int(world.meta.get("generator", 1)),
 		"mode": world.meta.get("mode", "survival"),
@@ -218,7 +276,8 @@ func _hello(protocol: int, mods: Array, requested_name: String) -> void:
 	if not world.block_changed.is_connected(_on_block_changed):
 		world.block_changed.connect(_on_block_changed)
 
-	_peers[id] = {"name": pname, "position": spawn, "yaw": 0.0}
+	_peers[id] = {"name": pname, "position": spawn, "yaw": 0.0,
+			"time": _now(), "budget": _move_cap()}
 	print("%s joined (peer %d)" % [pname, id])
 
 
@@ -232,6 +291,8 @@ func _on_peer_disconnected(id: int) -> void:
 		return
 	print("%s left" % _peers[id].name)
 	_peers.erase(id)
+	for pos in _viewers:
+		_viewers[pos].erase(id)
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
@@ -240,6 +301,11 @@ func _client_state(pos: Vector3, yaw: float, light: int) -> void:
 	if not is_host() or not _peers.has(id) or not pos.is_finite():
 		return
 	var p: Dictionary = _peers[id]
+	if not _move_allowed(p, pos):
+		if _now() - float(p.get("corrected", -INF)) >= CORRECT_EVERY:
+			p.corrected = _now()
+			_correct.rpc_id(id, p.position)
+		return
 	p.position = pos
 	p.yaw = yaw
 	p.light = clampi(light, 0, 15)
@@ -344,15 +410,97 @@ func _hit_mob(id: int, item: String) -> void:
 			return
 
 
-## Host: give a player items to drop at a position (container contents, creature drops).
-func give_drops(peer: int, at: Vector3, items: Array) -> void:
-	if peer != 0 and _peers.has(peer):
-		_drops.rpc_id(peer, at, items)
+# Beds and sleeping: the host skips the night once every player is in bed.
+
+## Client: we set our respawn point at the bed at `pos`.
+func set_bed(pos: Vector3i) -> void:
+	_set_bed.rpc_id(1, pos)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _set_bed(pos: Vector3i) -> void:
+	var id := multiplayer.get_remote_sender_id()
+	if not is_host() or not _peers.has(id) or not _can_reach(id, pos):
+		return
+	if Registry.blocks.get(Registry.block_ids[world.get_block(pos)], {}).get("bed", false):
+		_peers[id].bed = pos  # respawning there is a jump the host allows
+
+
+## Client: we lay down in a bed or got up.
+func set_sleeping(on: bool) -> void:
+	_set_sleeping.rpc_id(1, on)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _set_sleeping(on: bool) -> void:
+	var id := multiplayer.get_remote_sender_id()
+	if is_host() and _peers.has(id):
+		_peers[id].sleeping = on
+
+
+## Host / single player: whether every joined player is in bed (true alone).
+func peers_sleeping() -> bool:
+	return _peers.values().all(func(p): return p.get("sleeping", false))
+
+
+## Host: the night was skipped: send the new time and get everyone up.
+func night_skipped() -> void:
+	if not is_host() or _peers.is_empty():
+		return
+	for p in _peers.values():
+		p.sleeping = false
+	if day_cycle:
+		_time.rpc(day_cycle.time)
+	_wake_up.rpc()
 
 
 @rpc("authority", "call_remote", "reliable")
-func _drops(at: Vector3, items: Array) -> void:
-	drops_received.emit(at, items)
+func _wake_up() -> void:
+	woken.emit()
+
+
+# Dropped items: the host owns them all (ItemDrops) and sends their state to
+# everyone; clients ask to drop and to pick up.
+
+## Client: ask the host to drop items at a position (what we broke or threw).
+func request_drop(item: String, count: int, at: Vector3) -> void:
+	_request_drop.rpc_id(1, item, count, at)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_drop(item: String, count: int, at: Vector3) -> void:
+	var id := multiplayer.get_remote_sender_id()
+	if not is_host() or drops == null or not _peers.has(id) or not at.is_finite() \
+			or not valid_stack({"id": item, "count": count}) \
+			or at.distance_to(_peers[id].position) > EDIT_REACH + 2.0:
+		return
+	drops.spawn(item, count, at)
+
+
+## Client: ask the host for a dropped item we reached.
+func request_pickup(drop_id: int) -> void:
+	_request_pickup.rpc_id(1, drop_id)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_pickup(drop_id: int) -> void:
+	var id := multiplayer.get_remote_sender_id()
+	if not is_host() or drops == null or not _peers.has(id):
+		return
+	var got: Array = drops.take(drop_id, _peers[id].position)
+	if not got.is_empty():
+		_picked.rpc_id(id, got[0], got[1])
+
+
+@rpc("authority", "call_remote", "reliable")
+func _picked(item: String, count: int) -> void:
+	items_picked.emit(item, count)
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _drops_state(states: Dictionary) -> void:
+	if drops:
+		drops.apply_states(states)
 
 
 func open_container(pos: Vector3i) -> void:
@@ -371,6 +519,17 @@ func _container_data(pos: Vector3i) -> Dictionary:
 	var e := world.block_entities.get_entity(pos)
 	return {} if e.is_empty() else {"type": e.type, "slots": e.slots.duplicate(true),
 			"burn": e.burn, "burn_total": e.burn_total, "progress": e.progress}
+
+
+## An empty hand, or a stack of a known item within its stack size.
+static func valid_stack(stack: Dictionary) -> bool:
+	if stack.is_empty():
+		return true
+	if stack.size() != 2 or not stack.get("id") is String or not (stack.get("count") is int):
+		return false
+	var item: String = stack.id
+	return (Registry.items.has(item) or (Registry.blocks.has(item) and not Registry.blocks[item].has("variant_of"))) \
+			and stack.count >= 1 and stack.count <= Inventory.max_stack(item)
 
 
 func _can_reach(id: int, pos: Vector3i) -> bool:
@@ -394,7 +553,10 @@ func _open_container(pos: Vector3i) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _container_click(pos: Vector3i, slot: int, held: Dictionary) -> void:
 	var id := multiplayer.get_remote_sender_id()
-	if not is_host() or not _can_reach(id, pos):
+	# Only a player who opened this container (and is still near it) may click
+	# it, with a real item stack.
+	if not is_host() or id not in _viewers.get(pos, []) or not world.block_entities.has_entity(pos) \
+			or not _can_reach(id, pos) or not valid_stack(held):
 		_held.rpc_id(id, pos, held)  # refused: give it back
 		return
 	_held.rpc_id(id, pos, world.block_entities.click(pos, slot, held))
@@ -458,6 +620,11 @@ func _process(delta: float) -> void:
 		if _time_sync_timer >= TIME_SYNC_SECONDS:
 			_time_sync_timer = 0.0
 			_time.rpc(day_cycle.time)
+	if is_host() and drops and not _peers.is_empty():
+		_drop_timer += delta
+		if _drop_timer >= DROP_INTERVAL:
+			_drop_timer = 0.0
+			_drops_state.rpc(drops.states())
 	if is_host() and mobs and not _peers.is_empty():
 		_mob_timer += delta
 		if _mob_timer >= MOB_INTERVAL:

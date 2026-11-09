@@ -38,7 +38,7 @@ func _init() -> void:
 		else:
 			# Engine face order: +X, -X, +Y, -Y, +Z, -Z.
 			for face in ["side", "side", "top", "bottom", "side", "side"]:
-				tiles.append(_face_tile(def, face))
+				tiles.append(_face_tile(def, face, int(def.get("texture_turns", 0)) if face == "top" else 0))
 			_icon_tiles[id] = tiles[0]  # the side face shows best as a flat icon
 		var entry := {"solid": solid, "opaque": opaque, "fluid": fluid, "tiles": tiles,
 				"light": int(def.get("light", 0)), "fluid_level": int(def.get("level", 8)),
@@ -48,7 +48,9 @@ func _init() -> void:
 	atlas = _build_atlas()
 
 
-func _face_tile(def: Dictionary, face: String) -> int:
+## turns: quarter turns clockwise (seen from above) of a top texture, for
+## blocks that face a direction (beds).
+func _face_tile(def: Dictionary, face: String, turns := 0) -> int:
 	var textures: Dictionary = def.get("textures", {})
 	var rel = textures.get(face, textures.get("all"))
 	if rel != null:
@@ -58,13 +60,16 @@ func _face_tile(def: Dictionary, face: String) -> int:
 			mod_id = path.get_slice(":", 0)
 			path = path.get_slice(":", 1)
 		var full := ModLoader.get_mod_path(mod_id).path_join(path)
-		if _tile_index.has(full):
-			return _tile_index[full]
+		var key := full if turns % 4 == 0 else "%s@%d" % [full, turns % 4]
+		if _tile_index.has(key):
+			return _tile_index[key]
 		var img := _load_image(full)
 		if img:
 			if img.get_size() != Vector2i(TILE_SIZE, TILE_SIZE):
 				img.resize(TILE_SIZE, TILE_SIZE, Image.INTERPOLATE_NEAREST)
-			return _add(full, img)
+			for t in turns % 4:
+				img.rotate_90(CLOCKWISE)
+			return _add(key, img)
 		push_error("Block texture not found: " + full)
 	var color: Color = Color.html(def["color"]) if def.has("color") else MISSING_COLOR
 	var key := "#" + color.to_html()
@@ -131,11 +136,24 @@ func face_texture(block_index: int, face: int) -> Texture2D:
 
 const ICON_SIZE := 64
 
+## A whole bed seen from above in one tile: the head's top (north half) over
+## the foot's, each squeezed to half its length.
+func _bed_top(id: String) -> Image:
+	var head := Registry.block_index(BlockShapes.bed_id(id, "n", "head"))
+	var out := Image.create(TILE_SIZE, TILE_SIZE, false, Image.FORMAT_RGBA8)
+	var half := Vector2i(TILE_SIZE, TILE_SIZE / 2)
+	for part in [[head, 0], [Registry.block_index(id), TILE_SIZE / 2]]:
+		var img: Image = _tiles[block_table[part[0]].tiles[2]].duplicate()
+		img.resize(half.x, half.y, Image.INTERPOLATE_NEAREST)
+		out.blit_rect(img, Rect2i(Vector2i.ZERO, half), Vector2i(0, part[1]))
+	return out
+
+
 ## A block drawn as a small 3D cube (top, left and right faces, shaded like the
 ## terrain) for inventory slots.
-func _cube_icon(block_index: int, height := 1.0) -> Image:
+func _cube_icon(block_index: int, height := 1.0, top_image: Image = null) -> Image:
 	var tiles: PackedInt32Array = block_table[block_index].tiles
-	var top: Image = _tiles[tiles[2]]
+	var top: Image = top_image if top_image else _tiles[tiles[2]]
 	var left: Image = _tiles[tiles[5]]   # -Z: the face towards the viewer on the left
 	var right: Image = _tiles[tiles[0]]  # +X
 	var img := Image.create(ICON_SIZE, ICON_SIZE, false, Image.FORMAT_RGBA8)
@@ -193,7 +211,8 @@ func icon(id: String) -> Texture2D:
 	elif _icon_tiles.has(id) and shape in ["torch", "ladder", "cross", "door"]:
 		img = _tiles[_icon_tiles[id]]  # flat things show their texture
 	elif _icon_tiles.has(id):
-		img = _cube_icon(Registry.block_index(id), 0.5 if shape == "slab" else 1.0)
+		var top: Image = _bed_top(id) if shape == "bed" else null
+		img = _cube_icon(Registry.block_index(id), 0.5 if shape == "slab" else (0.5625 if shape == "bed" else 1.0), top)
 	else:
 		var def: Dictionary = Registry.items.get(id, {})
 		if def.has("texture"):

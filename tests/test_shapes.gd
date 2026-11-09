@@ -100,3 +100,18 @@ func test_raycast_hits_shape_boxes() -> void:
 	check(hit.hit and hit.position == Vector3i(0, Y + 1, 0), "hits the slab from above")
 	check_near(hit.distance, 1.5, 0.01, "at its top surface")
 	check_eq(hit.normal, Vector3i(0, 1, 0), "facing up")
+
+
+func test_bed_two_blocks() -> void:
+	var top_hit := {"previous": Vector3i(0, 1, 0), "normal": Vector3i(0, 1, 0)}
+	var p := BlockShapes.placement("core:bed", top_hit, Vector3(1, -0.5, 0), Vector3(0.5, 1, 0.5))
+	check_eq(p, [[Vector3i(0, 1, 0), "core:bed_e_foot"], [Vector3i(1, 1, 0), "core:bed_e_head"]],
+			"looking east: the foot here, the head one block east")
+	p = BlockShapes.placement("core:bed", top_hit, Vector3(0, -0.5, -1), Vector3(0.5, 1, 0.5))
+	check_eq(p[0][1], "core:bed", "the north-facing foot is the base block")
+	check_eq(BlockShapes.other_part("core:bed_e_foot", Vector3i(0, 1, 0)), Vector3i(1, 1, 0), "foot -> head")
+	check_eq(BlockShapes.other_part("core:bed_e_head", Vector3i(1, 1, 0)), Vector3i(0, 1, 0), "head -> foot")
+	check_eq(BlockShapes.bed_head("core:bed_e_foot", Vector3i(0, 1, 0)), Vector3i(1, 1, 0), "you sleep on the head")
+	check_eq(Registry.blocks["core:bed_s_head"].get("drops"), "core:bed", "the head drops a bed")
+	check(Registry.blocks["core:bed_w_head"].get("bed", false), "both halves are beds")
+	check_eq(Registry.blocks["core:bed_e_head"].texture_turns, 1, "the top turns with the bed")

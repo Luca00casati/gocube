@@ -76,13 +76,12 @@ func test_block_variants() -> void:
 	check("core:stone" in v and "core:lamp" in v and "core:planks" in v, "solid blocks have a Block Eater")
 	check(not ("core:air" in v or "core:water" in v or "core:water_3" in v), "air and water don't")
 	check("core:chest" in v and "core:furnace" in v, "chests and furnaces have one too")
-	var counts := {}
-	for i in 20000:
-		var k := m.random_variant()
-		counts[k] = counts.get(k, 0) + 1
-	check(counts.get("core:crystal_ore", 0) * 8 < counts.get("core:dirt", 0), "crystal ore ones are rare")
-	check(counts.get("core:coal_ore", 0) < counts.get("core:dirt", 0), "coal ore ones are less common than dirt")
-	check(counts.get("core:chest", 0) * 3 < counts.get("core:dirt", 0), "chest ones are rare")
+	# Checked on the weights, not by sampling: with this many blocks each form is
+	# drawn only a few dozen times in 20000, too few to compare reliably.
+	var weight := func(id): return m._weights[m._variants.find(id)]
+	check(weight.call("core:crystal_ore") * 8 < weight.call("core:dirt"), "crystal ore ones are rare")
+	check(weight.call("core:coal_ore") < weight.call("core:dirt"), "coal ore ones are less common than dirt")
+	check(weight.call("core:chest") * 3 < weight.call("core:dirt"), "chest ones are rare")
 	var regular := 0
 	for i in 400:
 		if m.random_variant() == "":

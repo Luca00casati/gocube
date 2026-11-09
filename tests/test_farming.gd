@@ -81,3 +81,42 @@ func test_tall_grass_drops() -> void:
 	check(seeds > 30 and seeds < 100, "tall grass sometimes gives seeds (%d / 400)" % seeds)
 	var ripe := Player.drops_of("core:wheat_7")
 	check(ripe.has("core:wheat") and ripe.count("core:seeds") >= 1, "ripe wheat gives wheat and seeds")
+
+
+func test_saplings_grow_into_trees() -> void:
+	var w := await make_world()
+	var log_id := Registry.block_index("core:birch_log")
+	for x in range(-3, 4):
+		for z in range(-3, 4):
+			w.set_block(Vector3i(x, Y, z), Registry.block_index("core:grass"))
+	var pos := Vector3i(0, Y + 1, 0)
+	w.set_block(pos, Registry.block_index("core:birch_sapling"))
+	check(w.plants.growing_count() >= 1, "a planted sapling is tracked")
+	w.set_block(pos + Vector3i(0, 3, 0), Registry.block_index("core:stone"))
+	for p in w.plants._growing:
+		w.plants._growing[p] = 0.0
+	w.plants._process(1.0)
+	check_eq(w.get_block(pos), Registry.block_index("core:birch_sapling"), "no room: still a sapling")
+	check(w.plants.growing_count() >= 1, "and it tries again later")
+	w.set_block(pos + Vector3i(0, 3, 0), 0)
+	for p in w.plants._growing:
+		w.plants._growing[p] = 0.0
+	w.plants._process(1.0)
+	check_eq(w.get_block(pos), log_id, "the sapling became a trunk")
+	var logs := 0
+	var leaves := 0
+	for x in range(-4, 5):
+		for z in range(-4, 5):
+			for y in range(Y + 1, Y + 14):
+				var b := w.get_block(Vector3i(x, y, z))
+				logs += int(b == log_id)
+				leaves += int(b == Registry.block_index("core:birch_leaves"))
+	check(logs >= 5, "a birch trunk (%d logs)" % logs)
+	check(leaves >= 10, "with leaves (%d)" % leaves)
+	check_eq(PlantSim.pick_tree({"core:oak": 1}), "core:oak", "weighted pick")
+
+
+func test_tree_table_keeps_classic_oak_in_old_worlds() -> void:
+	var oak := World._tree_order().find("core:oak")
+	check_eq(int(World._tree_table(2)[oak].style), World.TREE_STYLES.find("oak"), "older worlds: classic oak")
+	check_eq(int(World._tree_table(3)[oak].style), World.TREE_STYLES.find("round_oak"), "new worlds: round oak")

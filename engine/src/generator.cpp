@@ -360,19 +360,37 @@ void Generator::place_ores(ChunkData &chunk, int ox, int oy, int oz) const {
 }
 
 void Generator::place_tree(ChunkData &chunk, int ox, int oy, int oz, const Tree &t) const {
-	const TreeKind &k = _trees[t.kind];
-	const int base = t.ground + 1;
-	auto put = [&](int wx, int wy, int wz, BlockId id, bool only_air) {
+	build_tree(t, [&](int wx, int wy, int wz, BlockId id, bool only_air) {
 		const int x = wx - ox, y = wy - oy, z = wz - oz;
 		if (id == AIR || x < 0 || y < 0 || z < 0 || x >= CHUNK || y >= CHUNK || z >= CHUNK) {
 			return;
 		}
-		const BlockId here = chunk.get(x, y, z);
-		if (only_air && here != AIR) {
+		if (only_air && chunk.get(x, y, z) != AIR) {
 			return;
 		}
 		chunk.set(x, y, z, id);
-	};
+	});
+}
+
+void Generator::tree_blocks(int kind, int x, int ground, int z, std::vector<TreeBlock> &out) const {
+	if (kind < 0 || kind >= int(_trees.size())) {
+		return;
+	}
+	const TreeKind &tk = _trees[kind];
+	const uint32_t r = hash_point(x, ground, z, _seed + 67u);
+	const int span = std::max(1, tk.max_trunk - tk.min_trunk + 1);
+	const Tree t{ x, z, ground, tk.min_trunk + int(r % uint32_t(span)), kind };
+	build_tree(t, [&](int wx, int wy, int wz, BlockId id, bool only_air) {
+		if (id != AIR) {
+			out.push_back(TreeBlock{ wx, wy, wz, id, only_air });
+		}
+	});
+}
+
+template <typename Put>
+void Generator::build_tree(const Tree &t, Put &&put) const {
+	const TreeKind &k = _trees[t.kind];
+	const int base = t.ground + 1;
 	auto leaf = [&](int x, int y, int z) { put(x, y, z, k.leaves, true); };
 	// A rough ball of leaves (a little ragged, from the position hash).
 	auto blob = [&](int cx, int cy, int cz, float r) {
@@ -442,6 +460,27 @@ void Generator::place_tree(ChunkData &chunk, int ox, int oy, int oz, const Tree 
 				blob(int(std::round(bx)), by + 1, int(std::round(bz)), 2.3f);
 			}
 			blob(t.x, base + t.trunk, t.z, 2.8f);
+			for (int dy = 0; dy < t.trunk; dy++) {
+				put(t.x, base + dy, t.z, k.log, false);
+			}
+			return;
+		}
+		case TREE_ROUND_OAK: {
+			// A rounded, uneven crown: a main ball at the top of the trunk and
+			// 2-3 smaller ones around it, one on a short branch.
+			const int clumps = 2 + int(h % 2u);
+			for (int c = 0; c < clumps; c++) {
+				const float angle = ((h >> (3 + c * 6)) % 360u) * 0.01745f + c * 2.4f;
+				const float dist = 1.4f + ((h >> (9 + c * 3)) % 3u) * 0.4f;
+				const int cx = t.x + int(std::round(std::cos(angle) * dist));
+				const int cz = t.z + int(std::round(std::sin(angle) * dist));
+				const int cy = base + t.trunk - 2 + int((h >> (14 + c * 2)) % 3u);
+				if (c == 0) {
+					put(t.x + int(std::round(std::cos(angle))), cy - 1, t.z + int(std::round(std::sin(angle))), k.log, false);
+				}
+				blob(cx, cy, cz, 1.7f + ((h >> (20 + c)) % 2u) * 0.3f);
+			}
+			blob(t.x, base + t.trunk, t.z, 2.4f);
 			for (int dy = 0; dy < t.trunk; dy++) {
 				put(t.x, base + dy, t.z, k.log, false);
 			}

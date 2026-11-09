@@ -13,9 +13,14 @@ extends Node
 ##
 ## Sources, in order:
 ##   res://mods/<id>/          built-in mods (incl. the base game, "core")
-##   user://mods/*.pck|*.zip   resource packs; must contain mods/<id>/..., so they
+##   user://mods/*.zip         a zipped mod folder (mod.json at the top of the zip,
+##                             or inside one folder); unpacked to user://mods/.unzipped/
+##   user://mods/*.pck         resource packs; must contain mods/<id>/..., so they
 ##                             mount into res://mods/<id>/
 ##   user://mods/<id>/         unpacked mod folders (handy while developing)
+##
+## Mods listed in Settings.disabled_mods are found but not loaded (the Mods
+## part of the settings screen; takes effect the next time the game starts).
 ##
 ## WARNING: mod scripts run unsandboxed with full access to the game and system.
 
@@ -23,6 +28,7 @@ signal mods_loaded
 
 const BUILTIN_DIR := "res://mods"
 const USER_DIR := "user://mods"
+const UNZIP_DIR := "user://mods/.unzipped"
 const CORE_ID := "core"
 ## Version of the modding API (registry, content files, mod.json). Raise it when
 ## something changes in a way that breaks existing mods.
@@ -30,6 +36,9 @@ const API_VERSION := 1
 
 ## Manifests of successfully loaded mods, in load order. Each has a "path" key.
 var mods: Array[Dictionary] = []
+## Every mod found with a valid mod.json (loaded or not, core excluded), sorted
+## by id: for the settings screen.
+var available: Array[Dictionary] = []
 ## Instances of mod entry scripts, keyed by mod id.
 var instances: Dictionary = {}
 
@@ -47,6 +56,17 @@ func load_all() -> void:
 	var found := {}
 	_scan(BUILTIN_DIR, found)
 	_scan(USER_DIR, found)
+	_scan_zips(USER_DIR, found)
+
+	available.clear()
+	for id in found:
+		if id != CORE_ID:
+			available.append(found[id])
+	available.sort_custom(func(a, b): return a.id < b.id)
+	for id in Settings.disabled_mods:
+		if found.has(id) and id != CORE_ID:
+			print("Mod %s is turned off" % id)
+			found.erase(id)
 
 	for id in _resolve_order(found):
 		_load_mod(found[id])
@@ -65,7 +85,7 @@ func get_mod_path(mod_id: String) -> String:
 
 func _mount_packs(dir: String) -> void:
 	for file in DirAccess.get_files_at(dir):
-		if file.get_extension() in ["pck", "zip"]:
+		if file.get_extension() == "pck":
 			var path := ProjectSettings.globalize_path(dir.path_join(file))
 			# replace_files=false: a pack can add files but not clobber existing ones.
 			if not ProjectSettings.load_resource_pack(path, false):
@@ -76,23 +96,145 @@ func _scan(dir: String, found: Dictionary) -> void:
 	if not DirAccess.dir_exists_absolute(dir):
 		return
 	for sub in DirAccess.get_directories_at(dir):
-		var root := dir.path_join(sub)
-		var manifest_path := root.path_join("mod.json")
-		if not FileAccess.file_exists(manifest_path):
+		_add_found(dir.path_join(sub), found)
+
+
+## Each zip in `dir` is unpacked (again only when the zip changed) into
+## UNZIP_DIR/<zip name>/ and added like a folder.
+func _scan_zips(dir: String, found: Dictionary) -> void:
+	for file in DirAccess.get_files_at(dir):
+		if file.get_extension().to_lower() != "zip":
 			continue
-		var m = JSON.parse_string(FileAccess.get_file_as_string(manifest_path))
-		if not m is Dictionary or not _id_regex.search(str(m.get("id", ""))):
-			push_error("Invalid mod.json: " + manifest_path)
+		var zip := dir.path_join(file)
+		var out := UNZIP_DIR.path_join(file.get_basename())
+		var problem := unzip_mod(zip, out)
+		if problem != "":
+			push_error("Mod zip %s: %s; skipping it" % [zip, problem])
 			continue
-		if int(m.get("api_version", 1)) > API_VERSION:
-			push_error("Mod '%s' needs a newer game (mod API %d, this game has %d); skipping it"
-					% [m.id, int(m.api_version), API_VERSION])
+		_add_found(out, found)
+
+
+## Unpacks a mod zip into `out` (replacing what was there) unless `out` already
+## holds this version of it. The zip has mod.json at its top or in its single
+## top folder. Returns "" or what went wrong.
+func unzip_mod(zip_path: String, out: String) -> String:
+	var stamp := str(FileAccess.get_modified_time(zip_path)) + ":" + str(FileAccess.get_size(zip_path))
+	var stamp_file := out.path_join(".from_zip")
+	if FileAccess.file_exists(stamp_file) and FileAccess.get_file_as_string(stamp_file) == stamp:
+		return ""
+	var reader := ZIPReader.new()
+	if reader.open(zip_path) != OK:
+		return "can't open it as a zip"
+	var files := reader.get_files()
+	var prefix := ""
+	if not "mod.json" in files:
+		var tops := {}
+		for f in files:
+			tops[f.get_slice("/", 0)] = true
+		if tops.size() != 1 or not (tops.keys()[0] + "/mod.json") in files:
+			reader.close()
+			return "no mod.json at its top or in its one top folder"
+		prefix = tops.keys()[0] + "/"
+	_remove_dir(out)
+	DirAccess.make_dir_recursive_absolute(out)
+	for f in files:
+		if not f.begins_with(prefix) or f.ends_with("/"):
 			continue
-		if found.has(m.id):
-			push_warning("Duplicate mod id '%s' at %s, ignoring" % [m.id, root])
-			continue
-		m.path = root
-		found[m.id] = m
+		var rel: String = f.substr(prefix.length())
+		if rel.is_absolute_path() or rel.begins_with("/") or ".." in rel.split("/") or ":" in rel or "\\" in rel:
+			reader.close()
+			_remove_dir(out)
+			return "'%s' points outside the mod" % f
+		var target := out.path_join(rel)
+		DirAccess.make_dir_recursive_absolute(target.get_base_dir())
+		var w := FileAccess.open(target, FileAccess.WRITE)
+		if w == null:
+			reader.close()
+			return "can't write " + target
+		w.store_buffer(reader.read_file(f))
+		w.close()
+	reader.close()
+	var s := FileAccess.open(stamp_file, FileAccess.WRITE)
+	s.store_string(stamp)
+	s.close()
+	return ""
+
+
+static func _remove_dir(path: String) -> void:
+	var d := DirAccess.open(path)
+	if d == null:
+		return
+	d.include_hidden = true  # the .from_zip stamp
+	for sub in d.get_directories():
+		_remove_dir(path.path_join(sub))
+	for f in d.get_files():
+		DirAccess.remove_absolute(path.path_join(f))
+	DirAccess.remove_absolute(path)
+
+
+func _add_found(root: String, found: Dictionary) -> void:
+	var manifest_path := root.path_join("mod.json")
+	if not FileAccess.file_exists(manifest_path):
+		return
+	var json := JSON.new()
+	var m = json.data if json.parse(FileAccess.get_file_as_string(manifest_path)) == OK else null
+	var problem := manifest_problem(m, root)
+	if problem != "":
+		push_error("Invalid mod.json (%s), skipping it: %s" % [problem, manifest_path])
+		return
+	if int(m.get("api_version", 1)) > API_VERSION:
+		push_error("Mod '%s' needs a newer game (mod API %d, this game has %d); skipping it"
+				% [m.id, int(m.api_version), API_VERSION])
+		return
+	if found.has(m.id):
+		push_warning("Duplicate mod id '%s' at %s, ignoring" % [m.id, root])
+		return
+	m.path = root
+	found[m.id] = m
+
+
+## What is wrong with a mod.json (already parsed) for a mod in `root`, or "".
+## Checked before anything of the mod loads, so a broken mod is skipped as a
+## whole instead of failing halfway through.
+func manifest_problem(m, root: String) -> String:
+	if not m is Dictionary:
+		return "not a JSON object"
+	if not m.get("id") is String or not _id_regex.search(m.id):
+		return "\"id\" must be a string of a-z, 0-9 and _"
+	for key in ["name", "version"]:
+		if m.has(key) and not m[key] is String:
+			return "\"%s\" must be a string" % key
+	if m.has("api_version") and not (m.api_version is float or m.api_version is int):
+		return "\"api_version\" must be a number"
+	if not m.get("dependencies", []) is Array:
+		return "\"dependencies\" must be a list"
+	for dep in m.get("dependencies", []):
+		if not dep is String or not _id_regex.search(dep):
+			return "dependency %s isn't a mod id" % [dep]
+	if not m.get("content", []) is Array:
+		return "\"content\" must be a list"
+	for rel in m.get("content", []):
+		var why := _file_problem(rel, root, ".json")
+		if why != "":
+			return "content " + why
+	if m.has("entry"):
+		var why := _file_problem(m.entry, root, ".gd")
+		if why != "":
+			return "entry " + why
+	return ""
+
+
+## A path inside the mod folder to an existing file with this extension.
+func _file_problem(rel, root: String, extension: String) -> String:
+	if not rel is String or rel == "":
+		return "path must be a string"
+	if rel.is_absolute_path() or rel.begins_with("/") or ".." in rel.split("/") or "://" in rel:
+		return "'%s' must be a path inside the mod folder" % rel
+	if not rel.ends_with(extension):
+		return "'%s' must be a %s file" % [rel, extension]
+	if not FileAccess.file_exists(root.path_join(rel)):
+		return "'%s' doesn't exist" % rel
+	return ""
 
 
 ## Topological sort on dependencies; core always loads first.
@@ -116,7 +258,7 @@ func _visit(id: String, found: Dictionary, state: Dictionary, order: Array) -> b
 			return false
 		-1: return false
 	if not found.has(id):
-		push_error("Missing mod '%s'" % id)
+		push_error("Missing mod '%s'%s" % [id, " (it's turned off)" if id in Settings.disabled_mods else ""])
 		state[id] = -1
 		return false
 	state[id] = 1
@@ -166,6 +308,10 @@ func _load_content_file(path: String) -> void:
 	if not data is Dictionary:
 		push_error("Invalid content file: " + path)
 		return
+	for section in data:  # every section is {id: definition object}
+		if not data[section] is Dictionary or data[section].values().any(func(d): return not d is Dictionary):
+			push_error("Invalid content file %s: \"%s\" must map ids to objects; skipping the file" % [path, section])
+			return
 	for id in data.get("blocks", {}):
 		Registry.register_block(id, data.blocks[id])
 	for id in data.get("items", {}):

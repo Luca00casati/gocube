@@ -39,6 +39,13 @@ var _saving := false
 var _leaving := false
 var _pause_menu: Control
 var _underwater: ColorRect
+var _sleep_shade: ColorRect      # darkens the screen while sleeping
+var _notice_label: Label         # short messages ("Respawn point set")
+var _notice_time := 0.0
+var _slept := 0.0                # seconds everyone has been in bed
+const SLEEP_SECONDS := 2.5       # in bed this long (everyone) skips the night
+const MORNING := 0.26            # time of day sleeping wakes you at
+const NINJA_NEAR := 10.0         # can't sleep with a ninja this close
 var _day: DayCycle
 var _hud: CanvasLayer
 var _hotbar: Hotbar
@@ -48,7 +55,7 @@ var _sounds: Sounds
 var _hurt_flash: ColorRect
 var _death_screen: Control
 var _container_screen: ContainerScreen
-var _drops_node: Node3D
+var _drops_node: ItemDrops
 var _mobs: MobManager
 var _restored_player := false  # position came from the save (else: put on the ground)
 
@@ -83,6 +90,7 @@ func _ready() -> void:
 	add_child(_session)
 	_world = World.new()
 	_world.name = "World"
+	_world.worker_threads = int(_args.get("threads", -1))
 	add_child(_world)
 	_session.world = _world
 	_add_environment()
@@ -92,12 +100,19 @@ func _ready() -> void:
 	add_child(_sounds)
 	_session.remote_edit.connect(_on_remote_edit)
 	_session.own_edit_confirmed.connect(func(pos): _player.confirm_break(pos))
-	_session.drops_received.connect(func(at, items):
-		for it in items:
-			spawn_drop(it[0], it[1], at))
-	_drops_node = Node3D.new()
+	_drops_node = ItemDrops.new()
 	_drops_node.name = "Drops"
+	_drops_node.world = _world
+	_drops_node.picked_up.connect(func(_i, _n): _sounds.play("core:effects", "pickup", _cam.global_position, -8.0))
 	add_child(_drops_node)
+	_session.drops = _drops_node
+	_session.items_picked.connect(func(item: String, count: int):
+		if _player == null:
+			return
+		_sounds.play("core:effects", "pickup", _cam.global_position, -8.0)
+		var left: int = _player.inventory.add(item, count)
+		if left > 0:  # it no longer fits: back on the ground
+			spawn_drop(item, left, _player.global_position + Vector3(0, 0.5, 0)))
 	_mobs = MobManager.new()
 	_mobs.name = "Mobs"
 	_mobs.world = _world
@@ -124,12 +139,9 @@ func _ready() -> void:
 		else:
 			_sounds.play_block(variant, "break", at))
 	_mobs.ate.connect(func(at, block): _sounds.play_block(block, "break", at))
-	_mobs.killed.connect(func(at, attacker, items):
-		if attacker == 0:
-			for it in items:
-				spawn_drop(it[0], it[1], at)
-		else:
-			_session.give_drops(attacker, at, items))
+	_mobs.killed.connect(func(at, _attacker, items):
+		for it in items:
+			spawn_drop(it[0], it[1], at))
 	if _args.has("no-mobs"):
 		_mobs.process_mode = Node.PROCESS_MODE_DISABLED
 	add_child(_mobs)
@@ -151,8 +163,11 @@ func _start_local() -> void:
 		if err != OK:
 			_leave_to_menu.call_deferred("Couldn't host on port %d: %s" % [port, error_string(err)])
 			return
-	_world.build(world_name, int(_args.get("view", Settings.view_distance)),
+	var problem := _world.build(world_name, int(_args.get("view", Settings.view_distance)),
 			new_seed, not _args.has("bench"), game_mode)
+	if problem != "":
+		_leave_to_menu.call_deferred("Can't open world '%s': %s" % [world_name, problem])
+		return
 	print("World '%s' (seed %d) at %s" % [world_name, int(_world.meta.seed),
 			ProjectSettings.globalize_path(_world.dir) if _world.is_persistent() else "<not saved>"])
 	if net_mode == "host":
@@ -186,6 +201,16 @@ func _start_client() -> void:
 	_set_loading_text("Connecting to %s:%d…" % [join_address, port])
 	_session.ended.connect(_on_session_ended)
 	_session.welcomed.connect(_on_welcomed, CONNECT_ONE_SHOT)
+	_drops_node.remote = true  # the host owns dropped items
+	_drops_node.request_spawn = _session.request_drop
+	_drops_node.request_pickup = _session.request_pickup
+	_session.woken.connect(func():
+		if _player:
+			_player.wake())
+	_session.corrected.connect(func(eye: Vector3):
+		if _player:  # the host refused a move: back to where it last accepted us
+			_player.global_position += eye - _cam.global_position
+			_player.velocity = Vector3.ZERO)
 	var err := _session.join(join_address, port)
 	if err != OK:
 		_leave_to_menu.call_deferred("Couldn't connect: %s" % error_string(err))
@@ -196,6 +221,8 @@ func _on_welcomed(info: Dictionary) -> void:
 	_world.build_remote(PackedStringArray(info.block_ids), int(_args.get("view", Settings.view_distance)),
 			int(info.seed), info.chunks, str(info.get("mode", "survival")), int(info.get("generator", 1)))
 	_start_day(float(info.get("time", DayCycle.START_TIME)), float(info.get("day_length", DayCycle.DEFAULT_DAY_LENGTH)))
+	if (info.get("world_spawn", []) as Array).size() == 3:
+		_world.meta.spawn = info.world_spawn  # respawn where the host's players do
 	var s: Array = info.spawn  # an eye position next to the host
 	_spawn_player(Vector3(s[0], s[1] - Player.EYE_HEIGHT, s[2]))
 	_player.edit_handler = _session.request_edit
@@ -249,6 +276,11 @@ func _spawn_player(feet: Vector3) -> void:
 	player.died.connect(_on_died)
 	player.dropped.connect(func(item, at): spawn_drop(item, 1, at))
 	player.open_block.connect(_open_container)
+	player.use_bed.connect(_on_use_bed)
+	player.woke.connect(func():
+		_slept = 0.0
+		if _world.remote:
+			_session.set_sleeping(false))
 	player.mob_picker = _mobs.pick
 	var hand := Hand.new()
 	hand.player = player
@@ -275,6 +307,7 @@ func _spawn_player(feet: Vector3) -> void:
 	_hud.add_child(_hotbar)
 	_hud.move_child(_hotbar, 1)
 	_cam = player.camera
+	_drops_node.set_player(player)
 	_session.local_player = player.camera
 
 
@@ -323,32 +356,17 @@ func _on_remote_edit(pos: Vector3i, old_block: int, new_block: int) -> void:
 		_sounds.play_block(Registry.block_ids[new_block], "place", at)
 
 
-## An item in the world that the local player can pick up. Merges with the
-## same item lying close by.
+## Items on the ground that anyone can pick up (shared in multiplayer, see
+## ItemDrops). Merges with the same item lying close by.
 func spawn_drop(item: String, count: int, at: Vector3) -> void:
-	for d in _drops_node.get_children():
-		if d.item == item and d.global_position.distance_to(at) < 0.8 and not d.is_queued_for_deletion():
-			d.count += count
-			return
-	var drop := ItemDrop.new()
-	drop.setup(item, count, _world.atlas)
-	drop.world = _world
-	drop.player = _player
-	drop.velocity = Vector3(randf_range(-1.5, 1.5), 3.0, randf_range(-1.5, 1.5))
-	drop.picked_up.connect(func(_i, _n): _sounds.play("core:effects", "pickup", _cam.global_position, -8.0))
-	_drops_node.add_child(drop)
-	drop.global_position = at
+	_drops_node.spawn(item, count, at)
 
 
-## Host / single player: a chest or furnace was broken; its contents drop for
-## whoever broke it.
+## Host / single player: a chest or furnace was broken, or a block popped off.
 func _on_spilled(pos: Vector3i, items: Array) -> void:
 	var at := Vector3(pos) + Vector3.ONE * 0.5
-	if _world.editor == 0:
-		for it in items:
-			spawn_drop(it[0], it[1], at)
-	else:
-		_session.give_drops(_world.editor, at, items)
+	for it in items:
+		spawn_drop(it[0], it[1], at)
 
 
 func _open_container(pos: Vector3i) -> void:
@@ -472,7 +490,7 @@ func _debug_text() -> String:
 	lines.append("Chunks: %d loaded, %d meshed, %d queued" % [st.get("chunks", 0), st.get("meshed", 0), st.get("queued_jobs", 0)])
 	lines.append("Generate %.1f ms · light %.1f ms · mesh %.1f ms (per chunk)" % [st.get("generate_ms_avg", 0.0),
 			st.get("light_ms_avg", 0.0), st.get("mesh_ms_avg", 0.0)])
-	lines.append("Creatures: %d · drops: %d · view %d blocks" % [_mobs.count(), _drops_node.get_child_count(), _world.view_distance])
+	lines.append("Creatures: %d · drops: %d · view %d blocks" % [_mobs.count(), _drops_node.count(), _world.view_distance])
 	lines.append("Memory: %.0f MB · %s" % [OS.get_static_memory_usage() / 1048576.0,
 			"multiplayer (%d players)" % _session.player_count() if net_mode != "offline" else "single player"])
 	return "\n".join(lines)
@@ -510,7 +528,14 @@ func _on_died() -> void:
 
 func _respawn() -> void:
 	var s: Array = _world.meta.get("spawn", [0.5, 40.0, 0.5])
-	_player.respawn(Vector3(s[0], s[1], s[2]))
+	var at := Vector3(s[0], s[1], s[2])
+	if _player.bed != null:
+		if Registry.blocks.get(Registry.block_ids[_world.get_block(_player.bed)], {}).get("bed", false):
+			at = Vector3(_player.bed) + Vector3(0.5, 0.5625, 0.5)
+		else:
+			_player.bed = null
+			show_notice("Your bed was missing, so you're back at the world spawn")
+	_player.respawn(at)
 	_death_screen.queue_free()
 	_death_screen = null
 	_player.ui_open = false
@@ -605,6 +630,8 @@ func _player_state() -> Dictionary:
 	if not _player.creative:
 		state.inventory = _player.inventory.serialize()
 		state.health = _player.health
+	if _player.bed != null:
+		state.bed = [_player.bed.x, _player.bed.y, _player.bed.z]
 	return state
 
 
@@ -641,9 +668,55 @@ func _restore_player(state: Dictionary) -> void:
 		_player.inventory.deserialize(state.inventory)
 	if state.has("health"):
 		_player.health = clampi(int(state.health), 1, _player.MAX_HEALTH)
+	if state.get("bed") is Array and state.bed.size() == 3:
+		_player.bed = Vector3i(int(state.bed[0]), int(state.bed[1]), int(state.bed[2]))
+
+
+## A short message at the top of the screen.
+func show_notice(text: String) -> void:
+	_notice_label.text = text
+	_notice_time = 3.5
+
+
+## Right click on a bed: it becomes the respawn point; at night, sleep in it.
+func _on_use_bed(pos: Vector3i) -> void:
+	if _player.bed != pos:
+		_player.bed = pos
+		if _world.remote:
+			_session.set_bed(pos)
+		show_notice("Respawn point set")
+	if _day.day_amount() > 0.3:
+		show_notice("You can only sleep at night (respawn point set)")
+		return
+	if not _player.creative and _mobs.mobs().any(func(m):
+			return m.KIND == "ninja" and m.global_position.distance_to(_player.global_position) < NINJA_NEAR):
+		show_notice("You can't sleep now: a ninja is nearby")
+		return
+	_player.lie_down(pos)
+	_slept = 0.0
+	if _world.remote:
+		_session.set_sleeping(true)
+	if _session.is_host() and not _session.peers_sleeping():
+		show_notice("Sleeping… the night passes when everyone is in bed")
+
+
+## Single player / host: everyone in bed for a moment skips to the morning.
+func _update_sleep(delta: float) -> void:
+	if _notice_time > 0.0:
+		_notice_time -= delta
+		_notice_label.modulate.a = clampf(_notice_time, 0.0, 1.0)
+	var sleeping: bool = _player != null and _player.sleeping
+	_slept = _slept + delta if sleeping else 0.0
+	_sleep_shade.color.a = clampf(_slept / SLEEP_SECONDS, 0.0, 1.0) * 0.85
+	if not sleeping or _world.remote or _slept < SLEEP_SECONDS or not _session.peers_sleeping():
+		return
+	_day.time = MORNING
+	_session.night_skipped()
+	_player.wake()
 
 
 func _process(_delta: float) -> void:
+	_update_sleep(_delta)
 	if _loading and _cam and _spawn_area_meshed():
 		_loading.queue_free()
 		_loading = null
@@ -758,6 +831,20 @@ func _add_hud() -> void:
 	_underwater.visible = false
 	hud.add_child(_underwater)
 	hud.move_child(_underwater, 0)  # under the HUD text
+	_sleep_shade = ColorRect.new()
+	_sleep_shade.color = Color(0.0, 0.0, 0.03, 0.0)
+	_sleep_shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_sleep_shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hud.add_child(_sleep_shade)
+	_notice_label = Label.new()
+	_notice_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	_notice_label.position.y = 60
+	_notice_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_notice_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_notice_label.add_theme_constant_override("outline_size", 5)
+	_notice_label.add_theme_color_override("font_outline_color", Color.BLACK)
+	_notice_label.add_theme_font_size_override("font_size", 18)
+	hud.add_child(_notice_label)
 	_hurt_flash = ColorRect.new()
 	_hurt_flash.color = Color(0.8, 0.0, 0.0, 0.0)
 	_hurt_flash.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)

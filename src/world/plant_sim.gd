@@ -8,9 +8,11 @@ extends Node
 ## fluid under them.
 ## Leaf decay: leaves ("leaves": true) more than LEAF_REACH steps (through
 ## leaves) from any tree log disappear after a short random delay, now and then
-## dropping a stick; placed leaves are a "_placed" variant that never decays.
+## dropping a sapling ("sapling" of the leaves) or a stick; placed leaves are a "_placed" variant that never decays.
 ## Growth: a block with "grows_into" turns into that block after about
-## "grow_seconds" (randomised). Tracked crops are saved with the world.
+## "grow_seconds" (randomised); a sapling ("grows_tree": a tree id, or
+## {tree id: weight}) grows into that tree, trying again later when there's no
+## room. Tracked crops and saplings are saved with the world.
 ## Support: plants ("plant_on": [blocks]) need one of those below; blocks with
 ## "needs_support" need a solid block below (floor torch, door) or behind them
 ## on their facing side (wall torch, ladder); an upper door half needs its
@@ -31,6 +33,7 @@ var _leaf_check := {}  # leaves to test for a nearby log
 var _decaying := {}    # leaves -> seconds until they fall
 var _logs := {}        # block index -> true, for every tree's log
 const LEAF_REACH := 4
+const SAPLING_CHANCE := 0.05
 
 
 func _ready() -> void:
@@ -43,7 +46,7 @@ func _ready() -> void:
 
 func _on_block_changed(pos: Vector3i, block: int) -> void:
 	var def: Dictionary = Registry.blocks.get(Registry.block_ids[block], {})
-	if def.has("grows_into"):
+	if def.has("grows_into") or def.has("grows_tree"):
 		_growing[pos] = float(def.get("grow_seconds", 60.0)) * randf_range(0.6, 1.4)
 	else:
 		_growing.erase(pos)
@@ -84,9 +87,13 @@ func _process(delta: float) -> void:
 		_decaying[pos] -= delta
 		if _decaying[pos] <= 0.0:
 			_decaying.erase(pos)
-			if _is_leaves(world.get_block(pos)):
+			var leaf := world.get_block(pos)
+			if _is_leaves(leaf):
+				var sapling := str(Registry.blocks[Registry.block_ids[leaf]].get("sapling", ""))
 				world.set_block(pos, 0)  # its neighbours get checked in turn
-				if randf() < 0.06:
+				if sapling != "" and randf() < SAPLING_CHANCE:
+					popped.emit(pos, [[sapling, 1]])
+				elif randf() < 0.06:
 					popped.emit(pos, [["core:stick", 1]])
 	_timer += delta
 	if _timer < TICK:
@@ -98,7 +105,24 @@ func _process(delta: float) -> void:
 			var def: Dictionary = Registry.blocks.get(Registry.block_ids[world.get_block(pos)], {})
 			if def.has("grows_into"):
 				world.set_block(pos, Registry.block_index(def.grows_into))  # tracks the next stage
+			elif def.has("grows_tree") and not world.grow_tree(pos, pick_tree(def.grows_tree)):
+				_growing[pos] = float(def.get("grow_seconds", 60.0)) * 0.5  # no room yet: later
 	_timer = 0.0
+
+
+## A tree id from "grows_tree": the id itself, or picked by weight.
+static func pick_tree(grows) -> String:
+	if grows is Dictionary:
+		var total := 0.0
+		for w in grows.values():
+			total += float(w)
+		var roll := randf() * total
+		for id in grows:
+			roll -= float(grows[id])
+			if roll <= 0.0:
+				return str(id)
+		return str(grows.keys()[-1])
+	return str(grows)
 
 
 func _is_leaves(block: int) -> bool:

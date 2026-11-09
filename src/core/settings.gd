@@ -30,6 +30,9 @@ var mouse_sensitivity := 0.003
 var max_fps := 0
 var vsync := true
 var smooth_lighting := false
+## Threads generating and meshing chunks: 0 = automatic (cores - 1, at most 8).
+## Only in settings.cfg (or --threads=N): fewer leaves CPU for other programs.
+var worker_threads := 0
 var clock_24h := false  # in-game clock: 12-hour (7:19 AM) or 24-hour (07:19)
 ## Volumes, 0..1. Effects and ambience have their own audio buses ("Effects",
 ## "Ambience"), both feeding "Master".
@@ -37,6 +40,7 @@ var master_volume := 1.0
 var effects_volume := 1.0
 var ambience_volume := 0.7
 var keys := {}  # action -> Key
+var disabled_mods: Array = []  # ids of mods not to load (next start)
 
 
 func _ready() -> void:
@@ -47,11 +51,14 @@ func _ready() -> void:
 	vsync = bool(config.get_value("settings", "vsync", vsync))
 	smooth_lighting = bool(config.get_value("settings", "smooth_lighting", smooth_lighting))
 	clock_24h = bool(config.get_value("settings", "clock_24h", clock_24h))
+	worker_threads = clampi(int(config.get_value("settings", "worker_threads", worker_threads)), 0, 64)
 	master_volume = float(config.get_value("settings", "master_volume", master_volume))
 	effects_volume = float(config.get_value("settings", "effects_volume", effects_volume))
 	ambience_volume = float(config.get_value("settings", "ambience_volume", ambience_volume))
 	for action in ACTIONS:
 		keys[action] = int(config.get_value("keys", action, ACTIONS[action][1]))
+	var off = config.get_value("mods", "disabled", [])
+	disabled_mods = Array(off).filter(func(x): return x is String) if off is Array or off is PackedStringArray else []
 	apply()
 
 
@@ -80,11 +87,13 @@ func save() -> void:
 	config.set_value("settings", "vsync", vsync)
 	config.set_value("settings", "smooth_lighting", smooth_lighting)
 	config.set_value("settings", "clock_24h", clock_24h)
+	config.set_value("settings", "worker_threads", worker_threads)
 	config.set_value("settings", "master_volume", master_volume)
 	config.set_value("settings", "effects_volume", effects_volume)
 	config.set_value("settings", "ambience_volume", ambience_volume)
 	for action in keys:
 		config.set_value("keys", action, keys[action])
+	config.set_value("mods", "disabled", disabled_mods)
 	var err := config.save(PATH)
 	if err != OK:
 		push_error("Can't save settings: %s" % error_string(err))

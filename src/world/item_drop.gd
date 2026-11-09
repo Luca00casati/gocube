@@ -16,6 +16,13 @@ const LIFETIME := 300.0
 
 var item := ""
 var count := 1
+var drop_id := 0              # its id in ItemDrops (shared in multiplayer)
+## Multiplayer client: the host simulates this drop; we move it to
+## target_position and ask the host for it (request_pickup) when we reach it.
+var remote := false
+var target_position := Vector3.ZERO
+var request_pickup: Callable
+var _asked := -INF            # when we last asked the host for it
 var world: World
 var player: Node3D            # the local player (player.gd)
 var velocity := Vector3.ZERO
@@ -62,19 +69,62 @@ static func _material(tex: Texture2D) -> ShaderMaterial:
 static func model_mesh(item_id: String, atlas: BlockAtlas) -> ArrayMesh:
 	if not _meshes.has(item_id):
 		var index := Registry.block_index(item_id) if Registry.blocks.has(item_id) else -1
-		if index >= 0 and atlas.block_table[index].solid:
-			_meshes[item_id] = _cube_mesh(index, atlas)
+		if index >= 0 and Registry.blocks[item_id].get("shape") == "bed":
+			_meshes[item_id] = _bed_mesh(item_id, atlas)
+		elif index >= 0 and atlas.block_table[index].solid:
+			_meshes[item_id] = _cube_mesh(index, atlas, _model_bounds(item_id))
 		else:
 			_meshes[item_id] = _extruded_mesh(atlas.icon(item_id))
 	return _meshes[item_id]
 
 
-## A cube with each face's own texture (engine face order +X,-X,+Y,-Y,+Z,-Z).
-static func _cube_mesh(block_index: int, atlas: BlockAtlas) -> ArrayMesh:
+## The part of the block cell a single-box block fills (a slab, a bed), in
+## 0..1 cell units; the whole cell for everything else.
+static func _model_bounds(item_id: String) -> AABB:
+	var def: Dictionary = Registry.blocks.get(item_id, {})
+	var boxes: Array = []
+	match def.get("shape", "cube"):
+		"slab":
+			boxes = BlockShapes.model_boxes("slab", {"half": "bottom"})
+		"boxes":
+			boxes = def.get("boxes", [])
+		"bed":
+			boxes = BlockShapes.model_boxes("bed", {})
+	if boxes.size() != 1:
+		return AABB(Vector3.ZERO, Vector3.ONE)
+	var b: Array = boxes[0]
+	var mn := Vector3(b[0], b[1], b[2]) / 16.0
+	return AABB(mn, Vector3(b[3], b[4], b[5]) / 16.0 - mn)
+
+
+## A cube with each face's own texture (engine face order +X,-X,+Y,-Y,+Z,-Z),
+## shrunk to `bounds` (0..1 of the cell; the texture is cropped to match, as
+## in the world) and standing on the bottom of the cell.
+static func _cube_mesh(block_index: int, atlas: BlockAtlas, bounds := AABB(Vector3.ZERO, Vector3.ONE)) -> ArrayMesh:
 	var mesh := ArrayMesh.new()
+	_add_box(mesh, block_index, atlas, bounds)
+	return mesh
+
+
+## A whole bed in one cell: the head half (pillow) towards -Z, the foot half
+## towards +Z, each squeezed to half its length.
+static func _bed_mesh(item_id: String, atlas: BlockAtlas) -> ArrayMesh:
+	var mesh := ArrayMesh.new()
+	var height: float = BlockShapes.model_boxes("bed", {})[0][4] / 16.0
+	var head := Registry.block_index(BlockShapes.bed_id(item_id, "n", "head"))
+	# Without the two faces where the halves meet (the hand draws over everything).
+	_add_box(mesh, Registry.block_index(item_id), atlas, AABB(Vector3(0, 0, 0.5), Vector3(1, height, 0.5)), 5)
+	_add_box(mesh, head, atlas, AABB(Vector3.ZERO, Vector3(1, height, 0.5)), 4)
+	return mesh
+
+
+## skip: a face index to leave out, or -1.
+static func _add_box(mesh: ArrayMesh, block_index: int, atlas: BlockAtlas, bounds: AABB, skip := -1) -> void:
 	var h := CUBE_SIZE / 2.0
 	var normals := [Vector3.RIGHT, Vector3.LEFT, Vector3.UP, Vector3.DOWN, Vector3.BACK, Vector3.FORWARD]
 	for f in 6:
+		if f == skip:
+			continue
 		var n: Vector3 = normals[f]
 		# Two axes across the face: u to the right, v downwards (as seen from outside).
 		var up := Vector3.FORWARD if n.y > 0.5 else (Vector3.BACK if n.y < -0.5 else Vector3.UP)
@@ -83,8 +133,12 @@ static func _cube_mesh(block_index: int, atlas: BlockAtlas) -> ArrayMesh:
 		var verts := PackedVector3Array()
 		var uvs := PackedVector2Array()
 		for c in [Vector2(0, 0), Vector2(1, 0), Vector2(1, 1), Vector2(0, 1)]:
-			verts.append(center + right * (c.x - 0.5) * CUBE_SIZE - up * (c.y - 0.5) * CUBE_SIZE)
-			uvs.append(c)
+			# A point of the unit cube (0..1), squeezed into bounds.
+			var unit: Vector3 = (center + right * (c.x - 0.5) * CUBE_SIZE - up * (c.y - 0.5) * CUBE_SIZE) / CUBE_SIZE + Vector3.ONE * 0.5
+			var p := bounds.position + unit * bounds.size
+			verts.append((p - Vector3.ONE * 0.5) * CUBE_SIZE)
+			# Sides show the texture rows the block fills, like the world mesher.
+			uvs.append(Vector2(c.x, 1.0 - p.y) if absf(n.y) < 0.5 else c)
 		var arrays := []
 		arrays.resize(Mesh.ARRAY_MAX)
 		arrays[Mesh.ARRAY_VERTEX] = verts
@@ -92,8 +146,7 @@ static func _cube_mesh(block_index: int, atlas: BlockAtlas) -> ArrayMesh:
 		arrays[Mesh.ARRAY_TEX_UV] = uvs
 		arrays[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 1, 2, 0, 2, 3])
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		mesh.surface_set_material(f, _material(atlas.face_texture(block_index, f)))
-	return mesh
+		mesh.surface_set_material(mesh.get_surface_count() - 1, _material(atlas.face_texture(block_index, f)))
 
 
 ## The icon with depth: front and back faces, plus side walls wherever an
@@ -152,6 +205,9 @@ static func _extruded_mesh(icon: Texture2D) -> ArrayMesh:
 
 func _physics_process(delta: float) -> void:
 	_age += delta
+	if remote:
+		_follow_host(delta)
+		return
 	if _age > LIFETIME:
 		queue_free()
 		return
@@ -177,6 +233,21 @@ func _physics_process(delta: float) -> void:
 		global_position = r.position
 		if r.on_floor:
 			velocity = Vector3(velocity.x * 0.5, 0, velocity.z * 0.5)
+	_animate(delta)
+
+
+func _animate(delta: float) -> void:
 	if _model:
 		_model.position.y = BOX.y + 0.06 + 0.06 * sin(_age * 2.5)
 		_model.rotation.y += delta * 1.2  # slowly spinning
+
+
+## Client: glide to where the host has it; ask for it when we're close enough.
+func _follow_host(delta: float) -> void:
+	global_position = global_position.lerp(target_position, 1.0 - exp(-12.0 * delta))
+	if player and not player.dead and _age > PICKUP_DELAY and request_pickup.is_valid() \
+			and player.global_position.distance_to(global_position) < MAGNET_RADIUS \
+			and player.inventory.can_fit(item) and Time.get_ticks_msec() / 1000.0 - _asked > 1.0:
+		_asked = Time.get_ticks_msec() / 1000.0
+		request_pickup.call(drop_id)
+	_animate(delta)

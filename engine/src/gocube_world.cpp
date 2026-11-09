@@ -155,6 +155,20 @@ void GoCubeWorld::configure_biomes(const TypedArray<Dictionary> &biomes) {
 	}
 }
 
+Array GoCubeWorld::tree_blocks(int kind, const Vector3i &ground) const {
+	std::vector<TreeBlock> blocks;
+	_generator.tree_blocks(kind, ground.x, ground.y, ground.z, blocks);
+	Array out;
+	for (const TreeBlock &b : blocks) {
+		Array e;
+		e.append(Vector3i(b.x, b.y, b.z));
+		e.append(int(b.id));
+		e.append(b.only_air);
+		out.append(e);
+	}
+	return out;
+}
+
 int GoCubeWorld::biome_at(int x, int z) const {
 	return _generator.biome_at(x, z);
 }
@@ -199,7 +213,7 @@ void GoCubeWorld::configure_generator(int seed, const Dictionary &ids, const Typ
 		t.min_trunk = std::clamp(int(d.get("min_trunk", 4)), 2, 20);
 		t.max_trunk = std::clamp(int(d.get("max_trunk", 6)), t.min_trunk, 20);
 		t.chance = std::clamp(int(d.get("chance", 30)), 0, 100);
-		t.style = static_cast<uint8_t>(std::clamp(int(d.get("style", 0)), 0, int(TREE_CACTUS)));
+		t.style = static_cast<uint8_t>(std::clamp(int(d.get("style", 0)), 0, int(TREE_ROUND_OAK)));
 		tree_kinds.push_back(t); // every kind, so biomes can refer to them by index
 	}
 	_generator.set_biomes(_biome_kinds);
@@ -211,12 +225,30 @@ void GoCubeWorld::start() {
 	ERR_FAIL_COND_MSG(_blocks.empty(), "configure_blocks() first");
 	_started = true;
 	_stop = false;
-	const unsigned hw = std::thread::hardware_concurrency();
-	const unsigned count = hw > 1 ? hw - 1 : 1; // leave a core for the main thread
+	const unsigned count = static_cast<unsigned>(effective_worker_threads());
 	for (unsigned i = 0; i < count; i++) {
 		_workers.emplace_back(&GoCubeWorld::worker_loop, this);
 	}
 	set_process(true);
+}
+
+void GoCubeWorld::set_worker_threads(int count) {
+	ERR_FAIL_COND_MSG(_started, "set worker_threads before start()");
+	_worker_threads = std::clamp(count, 0, MAX_WORKERS);
+}
+
+int GoCubeWorld::get_worker_threads() const {
+	return _worker_threads;
+}
+
+// 0 = automatic: one per core, leaving one for the main thread, at most
+// AUTO_WORKERS (more adds little: the main thread uploading meshes limits).
+int GoCubeWorld::effective_worker_threads() const {
+	if (_worker_threads > 0) {
+		return _worker_threads;
+	}
+	const int hw = static_cast<int>(std::thread::hardware_concurrency());
+	return std::clamp(hw - 1, 1, AUTO_WORKERS);
 }
 
 void GoCubeWorld::set_view_distance(int blocks) {
@@ -315,6 +347,11 @@ Dictionary GoCubeWorld::get_edited_chunks() const {
 		}
 	}
 	return out;
+}
+
+bool GoCubeWorld::is_chunk_loaded(const Vector3i &chunk_pos) const {
+	auto it = _chunks.find(key(chunk_pos));
+	return it != _chunks.end() && it->second.data;
 }
 
 PackedByteArray GoCubeWorld::get_chunk_bytes(const Vector3i &chunk_pos) const {
@@ -1128,6 +1165,8 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("configure_blocks", "blocks"), &GoCubeWorld::configure_blocks);
 	ClassDB::bind_method(D_METHOD("set_atlas_layout", "cols", "rows", "cell", "face_offset"), &GoCubeWorld::set_atlas_layout);
 	ClassDB::bind_method(D_METHOD("set_materials", "terrain", "fluid"), &GoCubeWorld::set_materials);
+	ClassDB::bind_method(D_METHOD("is_chunk_loaded", "chunk_pos"), &GoCubeWorld::is_chunk_loaded);
+	ClassDB::bind_method(D_METHOD("tree_blocks", "kind", "ground"), &GoCubeWorld::tree_blocks);
 	ClassDB::bind_method(D_METHOD("configure_generator", "seed", "ids", "ores", "trees"), &GoCubeWorld::configure_generator);
 	ClassDB::bind_method(D_METHOD("configure_biomes", "biomes"), &GoCubeWorld::configure_biomes);
 	ClassDB::bind_method(D_METHOD("biome_at", "x", "z"), &GoCubeWorld::biome_at);
@@ -1149,6 +1188,10 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_view_distance"), &GoCubeWorld::get_view_distance);
 	ClassDB::bind_method(D_METHOD("set_viewer_position", "position"), &GoCubeWorld::set_viewer_position);
 	ClassDB::bind_method(D_METHOD("get_viewer_position"), &GoCubeWorld::get_viewer_position);
+	ClassDB::bind_method(D_METHOD("set_worker_threads", "count"), &GoCubeWorld::set_worker_threads);
+	ClassDB::bind_method(D_METHOD("get_worker_threads"), &GoCubeWorld::get_worker_threads);
+	ClassDB::bind_method(D_METHOD("effective_worker_threads"), &GoCubeWorld::effective_worker_threads);
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "worker_threads"), "set_worker_threads", "get_worker_threads");
 	ClassDB::bind_method(D_METHOD("set_smooth_lighting", "enabled"), &GoCubeWorld::set_smooth_lighting);
 	ClassDB::bind_method(D_METHOD("get_smooth_lighting"), &GoCubeWorld::get_smooth_lighting);
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "smooth_lighting"), "set_smooth_lighting", "get_smooth_lighting");

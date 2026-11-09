@@ -50,6 +50,11 @@ public:
 			const godot::TypedArray<godot::Dictionary> &trees);
 	void configure_biomes(const godot::TypedArray<godot::Dictionary> &biomes);
 	int biome_at(int x, int z) const;
+	// Whether a chunk's blocks are in memory (generated or loaded).
+	bool is_chunk_loaded(const godot::Vector3i &chunk_pos) const;
+	// A tree of kind `kind` (index into the configured trees) growing on the
+	// block at `ground`: [[Vector3i position, block id, only_into_air], ...].
+	godot::Array tree_blocks(int kind, const godot::Vector3i &ground) const;
 	void start();
 
 	void set_view_distance(int blocks);
@@ -57,6 +62,10 @@ public:
 	void set_viewer_position(const godot::Vector3 &position);
 	godot::Vector3 get_viewer_position() const;
 	// Smooth (per-corner) lighting; changing it rebuilds every chunk's mesh.
+	// Generation/meshing threads; 0 = automatic. Set before start().
+	void set_worker_threads(int count);
+	int get_worker_threads() const;
+	int effective_worker_threads() const;
 	void set_smooth_lighting(bool enabled);
 	bool get_smooth_lighting() const;
 	void set_upload_budget_ms(float ms);
@@ -139,6 +148,9 @@ private:
 	std::vector<BlockInfo> _blocks;
 	AtlasLayout _atlas;
 	std::atomic<bool> _smooth_lighting{ false };
+	int _worker_threads = 0; // 0 = automatic
+	static constexpr int MAX_WORKERS = 64;
+	static constexpr int AUTO_WORKERS = 8;
 	Generator _generator;
 	godot::Ref<godot::Material> _terrain_material, _fluid_material;
 	int _view_distance = 128;

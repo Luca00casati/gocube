@@ -1,6 +1,6 @@
 class_name BlockShapes
 ## Block shapes other than full cubes. A block definition's "shape":
-##   "slab", "stairs", "torch", "ladder", "door", "fence", "cross" (plants)
+##   "slab", "stairs", "torch", "ladder", "door", "bed", "fence", "cross" (plants)
 ## Shapes that face a direction or have states get variant blocks, registered
 ## next to the base block as "<id>_<suffix>" with "variant_of": base, so they
 ## drop the base item and stay out of inventories. Placement picks the variant
@@ -10,8 +10,9 @@ class_name BlockShapes
 ## PackedFloat32Array, 7 floats per box: min xyz, max xyz, texture y offset.
 
 const FACINGS := ["n", "e", "s", "w"]           # towards -z, +x, +z, -x
+const FACING_DIRS := {"n": Vector3i(0, 0, -1), "e": Vector3i(1, 0, 0), "s": Vector3i(0, 0, 1), "w": Vector3i(-1, 0, 0)}
 const ENGINE_SHAPE := {"cube": 0, "boxes": 1, "slab": 1, "stairs": 1, "torch": 1, "ladder": 1, "door": 1,
-		"fence": 3, "cross": 2}
+		"bed": 1, "fence": 3, "cross": 2}
 ## Shapes you walk through.
 const NOT_SOLID := ["torch", "ladder", "cross"]
 
@@ -39,6 +40,12 @@ static func variants(def: Dictionary) -> Dictionary:
 						if f == "n" and half == "lower" and not open:
 							suffix = ""
 						out[suffix] = {"facing": f, "half": half, "open": open}
+		"bed":
+			# Two blocks: the foot where it's placed, the head one block further
+			# in the facing direction (the way the player looked).
+			for f in FACINGS:
+				for part in ["foot", "head"]:
+					out[bed_suffix(f, part)] = {"facing": f, "part": part}
 		_:
 			out[""] = {}
 	return out
@@ -75,6 +82,10 @@ static func expand(blocks: Dictionary) -> void:
 				v.drops = id
 			if shape == "door" and vs[suffix].half == "upper" and def.has("textures_upper"):
 				v.textures = def.textures_upper
+			if shape == "bed":
+				if vs[suffix].part == "head" and def.has("textures_head"):
+					v.textures = def.textures_head
+				v.texture_turns = FACINGS.find(vs[suffix].facing)  # top drawn for "n"
 			blocks[v.id] = v
 
 
@@ -116,6 +127,8 @@ static func model_boxes(shape: String, state: Dictionary) -> Array:
 			boxes = [[7, 4, 0.5, 9, 14, 2.5, 4]]
 		"ladder":
 			boxes = [[0, 0, 0, 16, 16, 1, 0]]
+		"bed":
+			return [[0, 0, 0, 16, 9, 16, 0]]
 		"door":
 			boxes = [[0, 0, 0, 16, 16, 3, 0]]
 			if state.get("open", false):
@@ -175,6 +188,9 @@ static func placement(base: String, hit: Dictionary, look: Vector3, hit_point: V
 		"door":
 			var f := _look_facing(look)
 			return [[pos, door_id(base, f, "lower", false)], [pos + Vector3i.UP, door_id(base, f, "upper", false)]]
+		"bed":
+			var f := _look_facing(look)
+			return [[pos, bed_id(base, f, "foot")], [pos + FACING_DIRS[f], bed_id(base, f, "head")]]
 	return [[pos, base]]
 
 
@@ -220,9 +236,30 @@ static func toggle_door(id: String, pos: Vector3i) -> Array:
 	return [[pos, door_id(base, st.facing, st.half, open)], [other, door_id(base, st.facing, other_half, open)]]
 
 
-## The other half of a door at pos (to remove it too), or null.
-static func door_other_half(id: String, pos: Vector3i):
+static func bed_suffix(facing: String, part: String) -> String:
+	return "" if facing == "n" and part == "foot" else "_%s_%s" % [facing, part]
+
+
+static func bed_id(base: String, facing: String, part: String) -> String:
+	return base + bed_suffix(facing, part)
+
+
+## The other half of a door or bed at pos (to remove it too), or null.
+static func other_part(id: String, pos: Vector3i):
 	var def: Dictionary = Registry.blocks.get(id, {})
-	if def.get("shape") != "door":
-		return null
-	return pos + (Vector3i.UP if def.state.half == "lower" else Vector3i.DOWN)
+	var st: Dictionary = def.get("state", {})
+	match def.get("shape"):
+		"door":
+			return pos + (Vector3i.UP if st.half == "lower" else Vector3i.DOWN)
+		"bed":
+			var d: Vector3i = FACING_DIRS[st.facing]
+			return pos + (d if st.part == "foot" else -d)
+	return null
+
+
+## The head block of the bed at pos (the one you lie on), or pos itself.
+static func bed_head(id: String, pos: Vector3i) -> Vector3i:
+	var st: Dictionary = Registry.blocks.get(id, {}).get("state", {})
+	if st.get("part") == "foot":
+		return pos + FACING_DIRS[st.facing]
+	return pos

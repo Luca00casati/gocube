@@ -1,7 +1,7 @@
 class_name SettingsScreen
 extends Control
 ## Settings: view distance, mouse sensitivity, FPS limit, vsync, smooth
-## lighting and key bindings. Changes apply live and are saved on close.
+## lighting, key bindings and which mods load. Changes apply live and are saved on close.
 
 signal closed
 
@@ -142,6 +142,8 @@ func _ready() -> void:
 	fixed.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(fixed)
 
+	_add_mods(box)
+
 	var buttons := HBoxContainer.new()
 	buttons.alignment = BoxContainer.ALIGNMENT_END
 	box.add_child(buttons)
@@ -188,6 +190,34 @@ func _update_labels() -> void:
 		var name := Settings.key_name(action)
 		var clash := Settings.actions_using(Settings.keys[action]).size() > 1
 		_key_buttons[action].text = name + ("  (also used!)" if clash else "")
+
+
+## Mods: one checkbox per mod found (the base game always loads).
+func _add_mods(box: VBoxContainer) -> void:
+	var title := _label("Mods")
+	title.add_theme_font_size_override("font_size", 18)
+	box.add_child(title)
+	if ModLoader.available.is_empty():
+		var none := _label("No mods installed. Put mod folders or .zip files in user://mods.")
+		none.modulate = Color(1, 1, 1, 0.6)
+		none.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		box.add_child(none)
+		return
+	for m in ModLoader.available:
+		var check := CheckBox.new()
+		var id: String = m.id
+		check.text = "%s %s" % [m.get("name", id), m.get("version", "")]
+		check.tooltip_text = "%s · %s" % [id, m.path]
+		check.button_pressed = not id in Settings.disabled_mods
+		check.toggled.connect(func(on):
+			Settings.disabled_mods.erase(id)
+			if not on:
+				Settings.disabled_mods.append(id))
+		box.add_child(check)
+	var note := _label("Turning mods on or off takes effect the next time the game starts.")
+	note.modulate = Color(1, 1, 1, 0.6)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(note)
 
 
 static func _row(grid: GridContainer, left: Control, right: Control) -> void:

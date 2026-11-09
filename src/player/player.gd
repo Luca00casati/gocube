@@ -19,6 +19,10 @@ signal block_broken(block_id: String, at: Vector3)
 signal dropped(item: String, at: Vector3)
 ## Right click on a block with a "block_entity" (chest, furnace).
 signal open_block(position: Vector3i)
+## Right click on a bed: set the respawn point there and sleep (at night).
+signal use_bed(position: Vector3i)
+## Got up from a bed (moved or jumped).
+signal woke
 ## Left click on a creature (main decides: local hit or through the host).
 signal attack(mob_id: int)
 signal block_placed(block_id: String, at: Vector3)
@@ -90,6 +94,8 @@ var _drown_timer := 0.0
 var _step_distance := 0.0
 var velocity := Vector3.ZERO
 var flying := false
+var sleeping := false    # lying in a bed: can't move until moving wakes us
+var bed = null           # Vector3i of the bed we respawn at, or null
 var in_water := false
 var on_floor := false
 ## Movement stays off until the ground around the player has loaded.
@@ -190,7 +196,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode >= KEY_1 and event.keycode <= KEY_9:
 			selected = event.keycode - KEY_1
-	elif event is InputEventMouseButton and event.pressed:
+	elif event is InputEventMouseButton and event.pressed and not sleeping:
 		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		elif event.button_index == MOUSE_BUTTON_LEFT and _try_attack():
@@ -213,6 +219,13 @@ func _physics_process(delta: float) -> void:
 		return
 	if _frozen or dead:
 		velocity = Vector3.ZERO
+		return
+	if sleeping:
+		velocity = Vector3.ZERO
+		if not ui_open and (Input.is_action_pressed(&"jump") or Input.is_action_pressed(&"move_forward")
+				or Input.is_action_pressed(&"move_back") or Input.is_action_pressed(&"move_left")
+				or Input.is_action_pressed(&"move_right")):
+			wake()
 		return
 
 	var input := Vector2(
@@ -354,7 +367,31 @@ func damage(amount: int, source := "") -> void:
 		died.emit()
 
 
+## Lie down with the head on the bed block at `pos` (it's 9/16 high), looking
+## along the bed towards its foot.
+func lie_down(pos: Vector3i) -> void:
+	sleeping = true
+	velocity = Vector3.ZERO
+	global_position = Vector3(pos) + Vector3(0.5, 0.5625, 0.5)
+	camera.position.y = 0.35
+	var st: Dictionary = Registry.blocks.get(Registry.block_ids[world.get_block(pos)], {}).get("state", {})
+	if BlockShapes.FACING_DIRS.has(st.get("facing")):
+		var d: Vector3i = BlockShapes.FACING_DIRS[st.facing]
+		set_look(-0.3, atan2(float(d.x), float(d.z)))
+
+
+func wake() -> void:
+	if not sleeping:
+		return
+	sleeping = false
+	camera.position.y = EYE_HEIGHT
+	_unstuck()
+	woke.emit()
+
+
 func respawn(at: Vector3) -> void:
+	if sleeping:
+		wake()
 	health = MAX_HEALTH
 	breath = MAX_BREATH
 	dead = false
@@ -498,9 +535,9 @@ func _break_target() -> void:
 	if not creative:
 		pending_drops[hit.position] = drops_of(broken, selected_item())
 	_apply_edit(hit.position, Registry.block_index("core:air"))
-	var other = BlockShapes.door_other_half(broken, hit.position)
+	var other = BlockShapes.other_part(broken, hit.position)
 	if other != null and BlockShapes.base_of(Registry.block_ids[world.get_block(other)]) == BlockShapes.base_of(broken):
-		_apply_edit(other, Registry.block_index("core:air"))  # a door goes as a whole
+		_apply_edit(other, Registry.block_index("core:air"))  # a door or bed goes as a whole
 	block_broken.emit(broken, at)
 	if not edit_handler.is_valid():
 		confirm_break(hit.position)  # local: the block is gone, drop it now
@@ -520,6 +557,11 @@ func _place() -> void:
 	if hit.hit and not Input.is_action_pressed(&"sneak") \
 			and Registry.blocks.get(Registry.block_ids[hit.block], {}).has("block_entity"):
 		open_block.emit(hit.position)
+		return
+	# Beds: sleep / set the respawn point (sneak to place against them instead).
+	if hit.hit and not Input.is_action_pressed(&"sneak") \
+			and Registry.blocks.get(Registry.block_ids[hit.block], {}).get("bed", false):
+		use_bed.emit(BlockShapes.bed_head(Registry.block_ids[hit.block], hit.position))
 		return
 	# Doors open and close (sneak to place against them instead).
 	if hit.hit and not Input.is_action_pressed(&"sneak"):

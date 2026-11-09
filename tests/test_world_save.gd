@@ -22,6 +22,24 @@ func test_edits_and_meta_survive_reload() -> void:
 	_delete()
 
 
+func test_newer_or_damaged_world_is_refused_untouched() -> void:
+	var path := World.WORLDS_DIR.path_join(NAME).path_join("world.json")
+	for text in [JSON.stringify({"seed": 5, "format": World.FORMAT_VERSION + 1, "mode": "survival"}),
+			JSON.stringify({"seed": 5, "format": World.FORMAT_VERSION, "generator": World.GENERATOR_VERSION + 1}),
+			"{ not json"]:
+		_delete()
+		DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+		var f := FileAccess.open(path, FileAccess.WRITE)
+		f.store_string(text)
+		f.close()
+		var w: World = add(World.new())
+		var problem := w.build(NAME, 32, -1, true)
+		check(problem != "", "refused: " + text)
+		check(w.engine == null and not w.is_persistent(), "nothing built for: " + text)
+		check_eq(FileAccess.get_file_as_string(path), text, "world.json left as it was")
+	_delete()
+
+
 func _delete() -> void:
 	var dir := World.WORLDS_DIR.path_join(NAME)
 	if not DirAccess.dir_exists_absolute(dir):
