@@ -2,7 +2,9 @@
 
 ## Tests
     godot4 --headless -s res://tests/run_tests.gd [-- filter]
-    bash tests/mp_smoke.sh godot4
+
+Everything is in GDScript, including `test_mp_processes` (host and client as two
+real Godot processes, about 20 s).
 
 ## Multiplayer: check the client path before calling a feature done
 Single player is the host path; most multiplayer bugs come from the client path
@@ -18,7 +20,7 @@ host owns (drops, containers, creatures, beds, time) is only done when:
    is left half done (both halves of a door or bed, or neither).
 3. Anything only the host knows (spawn, beds, first night, mode) reaches the
    client, or the client asks the host for it.
-4. `tests/mp_smoke.sh` still passes (two real processes over the network).
+4. `test_mp_processes` still passes (two real processes over the network).
 
 In a test, wait for the expected result before comparing worlds: the two worlds
 also match before the host has answered.

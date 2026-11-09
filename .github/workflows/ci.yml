@@ -49,8 +49,5 @@ jobs:
           done
           exit 1
 
-      - name: Tests
+      - name: Tests (multiplayer across two processes included)
         run: ./godot --headless -s res://tests/run_tests.gd
-
-      - name: Multiplayer smoke test
-        run: bash tests/mp_smoke.sh ./godot

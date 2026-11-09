@@ -171,19 +171,19 @@ files, as it does for players' mods. Since Godot also leaves ignored folders out
 to the export unchanged. The preset also includes `*.json` and the license files.
 
 ## Tests
-    godot4 --headless -s res://tests/run_tests.gd [-- filter]   # unit + engine tests
-    bash tests/mp_smoke.sh godot4                                # host + client processes
+    godot4 --headless -s res://tests/run_tests.gd [-- filter]
 A test fails on a failed check, a file that doesn't compile, or any error logged while it
 runs (a test that checks something is refused declares the error with `expect_error`). Test
 worlds are named `_test…` and, like any other `user://_test…` folder, are deleted for good
-(not to the trash) before and after every test. The multiplayer test plays its own
-`_mp_smoke_<pid>` world and removes it, even when interrupted.
+(not to the trash) before and after every test. `test_mp_processes` starts a
+headless host and a headless client as two separate Godot processes (`mp_smoke.tscn`) and
+checks what the client reports; it takes about 20 s (`-- mp_processes` runs only it).
 `test_multiplayer` runs a host and a client game in one process (each with its own
-network stack); both it and the smoke test drive the client's player as a person would
+network stack); both it and `test_mp_processes` drive the client's player as a person would
 (aim, place, break, open doors, use beds; `tests/mp_play.gd`) and check that the host's
 and the client's worlds end up the same. A new feature that changes the world or the
 player is checked on the client too, including what happens when the host refuses it
-(see CLAUDE.md). CI (`.github/workflows/ci.yml`) builds the engine and runs both on every push.
+(see CLAUDE.md). CI (`.github/workflows/ci.yml`) builds the engine and runs them on every push.
 
 ## Prototypes
 Feasibility results that led to the own engine (lighting, caves/trees/water, many

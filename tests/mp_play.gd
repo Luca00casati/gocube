@@ -1,7 +1,8 @@
 extends RefCounted
 ## Driving a player the way a person would, for the multiplayer tests
-## (test_multiplayer.gd in one process, mp_smoke.gd across two): aim at a
-## point, walk at walking speed, and compare the area a test played in.
+## (test_multiplayer.gd in one process; mp_smoke.gd in two, started by
+## test_mp_processes.gd): aim at a point, walk at walking speed, and compare
+## the area a test played in.
 
 const Player := preload("res://src/player/player.gd")
 

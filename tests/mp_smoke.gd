@@ -1,12 +1,13 @@
 extends Node
-## Multiplayer smoke test: a host and a client process (see mp_smoke.sh).
+## Multiplayer smoke test: a host and a client process, started by
+## test_mp_processes.gd:  mp_smoke.tscn -- host <world> <port>  /  -- client <port>
 ## The client exits 0 if edits made before and after joining reach it, its
 ## requests are applied (or refused and answered) by the host, and a short
 ## round of play (placing, breaking, a door, a bed) works. Both print a
-## fingerprint of the play area at the end; mp_smoke.sh checks they match.
+## fingerprint of the play area at the end; test_mp_processes.gd checks they match.
 
 const Play := preload("res://tests/mp_play.gd")
-const PORT := 24711
+const DEFAULT_PORT := 24711
 const LAMP_BEFORE := Vector3i(5, 20, 5)
 const ORE_AFTER := Vector3i(6, 20, 5)
 const CHEST := Vector3i(5, 22, 5)
@@ -91,8 +92,9 @@ func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
 	var role: String = args[0] if args.size() > 0 else ""
 	if role == "host":
-		var world_name: String = args[1] if args.size() > 1 else "_mp_smoke"
-		var game := await _start({"world_name": world_name, "net_mode": "host", "port": PORT, "player_name": "Host"})
+		var world_name: String = args[1] if args.size() > 1 else "_test_mp_smoke"
+		var port: int = int(args[2]) if args.size() > 2 else DEFAULT_PORT
+		var game := await _start({"world_name": world_name, "net_mode": "host", "port": port, "player_name": "Host"})
 		await _wait_for(func(): return game._loading == null, 30)
 		game._world.set_block(LAMP_BEFORE, Registry.block_index("core:lamp"))
 		game._world.set_block(CHEST, Registry.block_index("core:chest"))
@@ -109,7 +111,8 @@ func _ready() -> void:
 		print("HOST AREA ", Play.area_hash(game._world, _play_area(game._world)))
 		get_tree().quit()
 		return
-	var game := await _start({"net_mode": "client", "join_address": "127.0.0.1", "port": PORT, "player_name": "Client"})
+	var port: int = int(args[1]) if args.size() > 1 else DEFAULT_PORT
+	var game := await _start({"net_mode": "client", "join_address": "127.0.0.1", "port": port, "player_name": "Client"})
 	var ok := await _wait_for(func(): return game._player != null and game._loading == null, 30)
 	var w: World = game._world if ok else null
 	var results := {
