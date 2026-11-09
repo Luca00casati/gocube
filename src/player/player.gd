@@ -625,8 +625,12 @@ func _place() -> void:
 		if there != 0 and not world.is_fluid(there) \
 				and not Registry.blocks.get(Registry.block_ids[there], {}).get("replaceable", false):
 			return  # occupied (e.g. no room for a door's upper half)
-		if not supported(p[1], cell):
-			return  # a torch or ladder needs something to hang on
+		# A torch or ladder needs something to hang on; a door's upper half
+		# stands on its lower half, placed along with it.
+		var on_lower := places.any(func(q): return q[0] == cell + Vector3i.DOWN \
+				and BlockShapes.base_of(q[1]) == BlockShapes.base_of(p[1]))
+		if not on_lower and not supported(p[1], cell):
+			return
 		if def.get("solid", true) and overlaps_block(global_position, cell):
 			return  # it would be inside you
 	if places.is_empty():

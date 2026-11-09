@@ -111,15 +111,65 @@ int Generator::column(int x, int z, int &biome_index) const {
 }
 
 int Generator::height_at(int x, int z) const {
-	int level, bottom;
+	int level, bottom, bank;
 	const int h = terrain_height(x, z);
-	if (lake_at(x, z, level, bottom)) {
+	if (lake_at(x, z, level, bottom, &bank)) {
 		return bottom;
 	}
-	return h;
+	return std::max(h, bank);
 }
 
-bool Generator::lake_at(int x, int z, int &level, int &bottom) const {
+// The lake that lake cell (cx, cz) may hold: its centre and radius, and
+// whether the biome rolled one (before looking at the ground there).
+bool Generator::lake_spot(int cx, int cz, int &px, int &pz, float &radius) const {
+	const uint32_t r = hash_point(cx, 13, cz, _seed + 991u);
+	px = cx * LAKE_CELL + 10 + int(r % uint32_t(LAKE_CELL - 20));
+	pz = cz * LAKE_CELL + 10 + int((r >> 8) % uint32_t(LAKE_CELL - 20));
+	radius = 4.0f + float((r >> 16) % 5u);
+	return int((r >> 20) % 100u) < biome(biome_at(px, pz)).lakes;
+}
+
+// How far from its centre a lake reaches, bank included (its edge is at most
+// 1.25 radius out, see lake_at).
+static float lake_reach(float radius) {
+	return radius * 1.25f + Generator::LAKE_BANK + 1.0f;
+}
+
+// The water level of the lake in cell (cx, cz), or INT32_MIN if there is none:
+// none rolled, at the sea, ground not flat enough, or it would touch the lake
+// of a cell that comes before it (two lakes never meet at different levels).
+int Generator::lake_level(int cx, int cz, int px, int pz, float radius) const {
+	for (int nz = cz - 1; nz <= cz; nz++) {
+		for (int nx = cx - 1; nx <= cx + 1; nx++) {
+			if (nz == cz && nx >= cx) {
+				break;
+			}
+			int qx, qz;
+			float qr;
+			if (lake_spot(nx, nz, qx, qz, qr) &&
+					std::hypot(float(qx - px), float(qz - pz)) < lake_reach(radius) + lake_reach(qr)) {
+				return INT32_MIN;
+			}
+		}
+	}
+	const int lv = terrain_height(px, pz);
+	if (lv <= SEA_LEVEL + 2) {
+		return INT32_MIN; // only on land above the sea
+	}
+	const int ri = int(radius);
+	const int probe[4][2] = { { ri, 0 }, { -ri, 0 }, { 0, ri }, { 0, -ri } };
+	for (const auto &pr : probe) {
+		if (std::abs(terrain_height(px + pr[0], pz + pr[1]) - lv) > 3) {
+			return INT32_MIN; // only on fairly flat land
+		}
+	}
+	return lv;
+}
+
+bool Generator::lake_at(int x, int z, int &level, int &bottom, int *bank) const {
+	if (bank) {
+		*bank = INT32_MIN;
+	}
 	if (_biomes.empty()) {
 		return false;
 	}
@@ -127,39 +177,31 @@ bool Generator::lake_at(int x, int z, int &level, int &bottom) const {
 	const int ccx = cell_floor(x), ccz = cell_floor(z);
 	for (int cz = ccz - 1; cz <= ccz + 1; cz++) {
 		for (int cx = ccx - 1; cx <= ccx + 1; cx++) {
-			const uint32_t r = hash_point(cx, 13, cz, _seed + 991u);
-			const int px = cx * LAKE_CELL + 10 + int(r % uint32_t(LAKE_CELL - 20));
-			const int pz = cz * LAKE_CELL + 10 + int((r >> 8) % uint32_t(LAKE_CELL - 20));
-			const float radius = 4.0f + float((r >> 16) % 5u);
+			int px, pz;
+			float radius;
+			if (!lake_spot(cx, cz, px, pz, radius)) {
+				continue;
+			}
 			const float dx = float(x - px), dz = float(z - pz);
 			const float dist = std::sqrt(dx * dx + dz * dz);
-			if (dist > radius * 1.3f) {
+			if (dist > lake_reach(radius)) {
 				continue; // cheap test first
 			}
-			if (int((r >> 20) % 100u) >= biome(biome_at(px, pz)).lakes) {
+			const int lv = lake_level(cx, cz, px, pz, radius);
+			if (lv == INT32_MIN) {
 				continue;
 			}
 			const float edge = radius * (1.0f + 0.25f * noise2(x * 0.21f, z * 0.21f, _seed + 993u));
-			if (dist >= edge) {
-				continue;
+			if (dist < edge) {
+				level = lv;
+				bottom = lv - std::max(1, int(std::round((1.0f - dist / edge) * 4.0f)));
+				return true;
 			}
-			// Only on fairly flat land above the sea.
-			const int lv = terrain_height(px, pz);
-			if (lv <= SEA_LEVEL + 2) {
-				continue;
+			// Just outside: a bank at least as high as the water, so no lake
+			// water ever stands next to open air (on a slope, say).
+			if (bank && dist < edge + LAKE_BANK) {
+				*bank = std::max(*bank, lv);
 			}
-			const int ri = int(radius);
-			bool flat = true;
-			const int probe[4][2] = { { ri, 0 }, { -ri, 0 }, { 0, ri }, { 0, -ri } };
-			for (const auto &pr : probe) {
-				flat = flat && std::abs(terrain_height(px + pr[0], pz + pr[1]) - lv) <= 3;
-			}
-			if (!flat) {
-				continue;
-			}
-			level = lv;
-			bottom = lv - std::max(1, int(std::round((1.0f - dist / edge) * 4.0f)));
-			return true;
 		}
 	}
 	return false;
@@ -241,6 +283,7 @@ void Generator::generate(ChunkData &chunk, int ox, int oy, int oz) const {
 	// Column heights, lakes and biomes for this chunk.
 	int heights[CHUNK_AREA];
 	int lake_level[CHUNK_AREA]; // INT_MIN: no lake
+	bool lake_bank[CHUNK_AREA]; // right next to a lake: no cave may open it
 	int biomes[CHUNK_AREA];
 	int min_h = 1 << 30, max_h = -(1 << 30);
 	for (int z = 0; z < CHUNK; z++) {
@@ -248,11 +291,15 @@ void Generator::generate(ChunkData &chunk, int ox, int oy, int oz) const {
 			const int i = z * CHUNK + x;
 			int biome_index;
 			int h = column(ox + x, oz + z, biome_index);
-			int level, bottom;
+			int level, bottom, bank;
 			lake_level[i] = INT32_MIN;
-			if (lake_at(ox + x, oz + z, level, bottom)) {
+			lake_bank[i] = false;
+			if (lake_at(ox + x, oz + z, level, bottom, &bank)) {
 				lake_level[i] = level;
 				h = bottom;
+			} else {
+				h = std::max(h, bank); // a lake's bank
+				lake_bank[i] = bank != INT32_MIN;
 			}
 			heights[i] = h;
 			biomes[i] = biome_index;
@@ -283,7 +330,7 @@ void Generator::generate(ChunkData &chunk, int ox, int oy, int oz) const {
 			const int lake = lake_level[i];
 			const BiomeKind &bm = biome(biomes[i]);
 			const bool beach = h <= SEA_LEVEL + 1 && lake == INT32_MIN;
-			const bool caves_allowed_column = h > SEA_LEVEL + 2 && lake == INT32_MIN;
+			const bool caves_allowed_column = h > SEA_LEVEL + 2 && lake == INT32_MIN && !lake_bank[i];
 			const int wx = ox + x, wz = oz + z;
 			const int water_top = lake != INT32_MIN ? lake : SEA_LEVEL;
 			for (int y = 0; y < CHUNK; y++) {

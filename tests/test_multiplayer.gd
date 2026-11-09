@@ -1,0 +1,221 @@
+extends "res://tests/test_suite.gd"
+## A host and a client game in one process, connected over ENet on localhost
+## (each in its own subtree with its own SceneMultiplayer). The client player
+## acts the way a person would (aim, then break / place / use), and after every
+## action both worlds must agree block for block.
+##
+## Layout, around the client's feet O on a stone platform the host builds:
+##   client at O, host player at O + (4, 0, 0) (frozen, no creatures).
+
+const Play := preload("res://tests/mp_play.gd")
+
+var host: Node   # main.gd
+var client: Node
+var o: Vector3i  # the client's feet cell
+var _containers: Array[Node] = []
+
+
+func _start(side: String, opts: Dictionary) -> Node:
+	var box := Node.new()
+	box.name = "MP" + side
+	add(box)
+	_containers.append(box)
+	# RPCs go by node path relative to the multiplayer root: both games are
+	# "Main/Session" under their own root.
+	tree.set_multiplayer(SceneMultiplayer.new(), box.get_path())
+	var game: Node = load("res://src/main.tscn").instantiate()
+	game.name = "Main"
+	game._args = {"no-mobs": "1", "view": "64", "time": "0.5"}
+	for k in opts:
+		game.set(k, opts[k])
+	box.add_child(game)
+	return game
+
+
+func _connect() -> bool:
+	var port := 25000 + randi() % 5000
+	host = _start("Host", {"world_name": "_test_mp_host", "net_mode": "host", "port": port,
+			"player_name": "Host", "new_seed": 4242})
+	if not await wait_until(func(): return host._loading == null and host._player != null, 30):
+		check(false, "the host's world loaded")
+		return false
+	host._player._frozen = true
+	client = _start("Client", {"net_mode": "client", "join_address": "127.0.0.1", "port": port,
+			"player_name": "Client"})
+	if not await wait_until(func(): return client._player != null and client._loading == null, 30):
+		check(false, "the client joined and loaded")
+		return false
+	Play.take_over(client._player)
+	await _build_platform()
+	return true
+
+
+## The play area at the client's feet, client and host standing on it.
+func _build_platform() -> void:
+	o = Vector3i(client._player.global_position.floor())
+	Play.build_area(host._world, o)
+	client._player.global_position = Vector3(o) + Vector3(0.5, 0, 0.5)
+	host._player.global_position = Vector3(o) + Vector3(4.5, 0, 0.5)
+	check(await _match("the platform"), "the client got the host's platform")
+	await frames(10)  # the host has seen the client's new position
+
+
+func _end() -> void:
+	for box in _containers:
+		tree.set_multiplayer(null, box.get_path())
+
+
+func _peer_id() -> int:
+	return host._session._peers.keys()[0] if not host._session._peers.is_empty() else 0
+
+
+## Waits for `cond` (what an action should lead to), then for both worlds to match.
+func _until(cond: Callable, what: String) -> bool:
+	if not await wait_until(cond, 5):
+		check(false, what + ": didn't happen")
+	return await _match(what)
+
+
+## Whether both worlds have the same blocks all over the play area (waits a
+## little for messages under way).
+func _match(what: String) -> bool:
+	var same := func(): return Play.area_blocks(host._world, o) == Play.area_blocks(client._world, o)
+	var ok: bool = await wait_until(same, 5)
+	if not ok:
+		var h := Play.area_blocks(host._world, o)
+		var c := Play.area_blocks(client._world, o)
+		var i := range(h.size()).filter(func(k): return h[k] != c[k])
+		check(false, "%s: worlds differ in %d cells, e.g. host %s, client %s" % [what, i.size(), h[i[0]], c[i[0]]])
+	return ok
+
+
+func _block(game: Node, rel: Vector3i) -> String:
+	return Registry.block_ids[game._world.get_block(o + rel)]
+
+
+func _aim(rel: Vector3) -> void:
+	Play.aim(client._player, Vector3(o) + rel)
+
+
+func _walk(to: Vector3) -> void:
+	await Play.walk(client._player, to)
+
+
+func _give(item: String, count: int) -> void:
+	Play.give(client._player, item, count)
+
+
+func test_two_players() -> void:
+	if not await _connect():
+		_end()
+		return
+	var p: Node3D = client._player
+	var hs: Session = host._session
+
+	# Breaking: the host applies it and the drop ends up in the client's inventory.
+	host._world.set_block(o + Vector3i(-2, 0, 0), Registry.block_index("core:planks"))
+	await _match("a block the host put down")
+	_aim(Vector3(-1.5, 0.5, 0.5))
+	p._break_target()
+	await _until(func(): return _block(host, Vector3i(-2, 0, 0)) == "core:air", "breaking")
+	check_eq(_block(host, Vector3i(-2, 0, 0)), "core:air", "broken on the host")
+	check(await wait_until(func(): return p.inventory.count_of("core:planks") == 1, 5), "the drop reached the client")
+	check(await wait_until(func(): return host._drops_node.count() == 0 and client._drops_node.count() == 0, 5),
+			"no drop left on either side")
+
+	# Placing: the item is used up and the block is there for both.
+	_aim(Vector3(-1.5, 0, 0.5))  # top of the floor
+	p._place()
+	await _until(func(): return _block(host, Vector3i(-2, 0, 0)) == "core:planks", "placing")
+	check_eq(_block(host, Vector3i(-2, 0, 0)), "core:planks", "placed on the host")
+	check_eq(p.inventory.count_of("core:planks"), 0, "the item was used")
+
+	# A placement the host refuses (the host player stands there): the item comes back.
+	_give("core:stone", 1)
+	_aim(Vector3(4.5, 0, 0.5))
+	p._place()
+	check_eq(p.inventory.count_of("core:stone"), 0, "used up while the host decides")
+	check(await wait_until(func(): return p.inventory.count_of("core:stone") == 1, 5), "refused: the stone came back")
+	await _match("a refused placement")
+	check_eq(_block(client, Vector3i(4, 0, 0)), "core:air", "nothing placed in the host player")
+
+	# A bed: two blocks, placed whole; using it sets the respawn point on the host too.
+	_give("core:bed", 1)
+	_aim(Vector3(-1.3, 0, -1.7))  # looking mostly north
+	p._place()
+	await _until(func(): return _block(host, Vector3i(-2, 0, -2)).begins_with("core:bed"), "placing a bed")
+	var foot := Vector3i(-2, 0, -2)
+	check(_block(host, foot).begins_with("core:bed"), "the bed's foot is there")
+	var head: Vector3i = BlockShapes.bed_head(_block(host, foot), o + foot) - o
+	check(_block(host, head).ends_with("_head"), "and its head")
+	check_eq(p.inventory.count_of("core:bed"), 0, "one bed used")
+	_aim(Vector3(head) + Vector3(0.5, 0.5, 0.5))
+	p._place()  # use it
+	check(await wait_until(func(): return hs._peers[_peer_id()].get("bed") == o + head, 5), "the host knows our bed")
+	check_eq(p.bed, o + head, "our respawn point")
+
+	# Death and respawn at the bed: the host accepts where we come back.
+	var corrections := [0]
+	client._session.corrected.connect(func(_eye): corrections[0] += 1)
+	await _walk(Vector3(o) + Vector3(-5.5, 0, 2.5))
+	p.damage(1000)
+	check(p.dead and client._death_screen != null, "died")
+	client._respawn()
+	check(await wait_until(func(): return client._loading == null, 10), "respawned")
+	p._frozen = true
+	check(p.global_position.distance_to(Vector3(o + head) + Vector3(0.5, 0.5625, 0.5)) < 1.5, "at the bed")
+	await wait_until(func(): return (hs._peers[_peer_id()].position as Vector3).distance_to(p.camera.global_position) < 0.5, 3)
+	check_eq(corrections[0], 0, "the host didn't put us back")
+
+	# Breaking the bed: both halves go, one bed comes back.
+	await _walk(Vector3(o) + Vector3(0.5, 0, 0.5))
+	_aim(Vector3(foot) + Vector3(0.5, 0.3, 0.5))
+	p._break_target()
+	await _until(func(): return _block(host, foot) == "core:air", "breaking the bed")
+	check_eq(_block(host, foot), "core:air", "foot gone")
+	check_eq(_block(host, head), "core:air", "head gone")
+	await _walk(Vector3(o) + Vector3(-0.5, 0, -0.5))  # next to it, to pick it up
+	check(await wait_until(func(): return p.inventory.count_of("core:bed") == 1, 5), "one bed back")
+	await frames(30)
+	check_eq(p.inventory.count_of("core:bed"), 1, "only one")
+
+	# A door: placed as two blocks, opened by the client, closed by the host.
+	_give("core:wood_door", 1)
+	await _walk(Vector3(o) + Vector3(0.5, 0, 0.5))
+	_aim(Vector3(0.5, 0, -1.5))
+	p._place()
+	await _until(func(): return _block(host, Vector3i(0, 1, -2)) != "core:air", "placing a door")
+	check(_block(host, Vector3i(0, 0, -2)).begins_with("core:wood_door"), "lower half")
+	check(_block(host, Vector3i(0, 1, -2)).ends_with("_upper"), "upper half")
+	_aim(Vector3(0.5, 0.5, -1.5))
+	p._place()  # open it
+	await _until(func(): return _block(host, Vector3i(0, 0, -2)).ends_with("_open"), "opening the door")
+	check(_block(host, Vector3i(0, 0, -2)).ends_with("_open"), "open on the host")
+	for t in BlockShapes.toggle_door(_block(host, Vector3i(0, 0, -2)), o + Vector3i(0, 0, -2)):
+		host._world.set_block(t[0], Registry.block_index(t[1]))
+	await _until(func(): return not _block(client, Vector3i(0, 0, -2)).ends_with("_open"), "the host closing the door")
+	check(not _block(client, Vector3i(0, 1, -2)).ends_with("_open"), "closed for the client")
+
+	# Throwing an item: the host owns it, both see it, walking over picks it up.
+	client.spawn_drop("core:stick", 1, Vector3(o) + Vector3(-5.5, 0.5, 2.5))
+	check(await wait_until(func(): return host._drops_node.count() == 1 and client._drops_node.count() == 1, 5),
+			"the drop is on both sides")
+	await _walk(Vector3(o) + Vector3(-4.5, 0, 2.5))
+	check(await wait_until(func(): return p.inventory.count_of("core:stick") == 1, 5), "picked up")
+	check(await wait_until(func(): return host._drops_node.count() == 0 and client._drops_node.count() == 0, 5),
+			"gone for both")
+
+	# Death without a bed: back at the world spawn, the same one the host has.
+	await _walk(Vector3(o) + Vector3(0.5, 0, 0.5))
+	p.bed = null
+	p.damage(1000)
+	client._respawn()
+	check(await wait_until(func(): return client._loading == null, 15), "respawned at the world spawn")
+	var sp: Array = host._world.meta.spawn
+	check(Vector2(p.global_position.x - sp[0], p.global_position.z - sp[2]).length() < 1.0, "at the host's spawn")
+	check(await wait_until(func():
+			return (hs._peers[_peer_id()].position as Vector3).distance_to(p.camera.global_position) < 1.0, 3),
+			"the host accepted it")
+	check_eq(corrections[0], 0, "never put back")
+	check(not p.dead and p.health == p.MAX_HEALTH, "alive and well")
+	_end()

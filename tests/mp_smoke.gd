@@ -1,8 +1,11 @@
 extends Node
 ## Multiplayer smoke test: a host and a client process (see mp_smoke.sh).
-## The client exits 0 if edits made before and after joining reach it and its
-## own edit request is applied by the host.
+## The client exits 0 if edits made before and after joining reach it, its
+## requests are applied (or refused and answered) by the host, and a short
+## round of play (placing, breaking, a door, a bed) works. Both print a
+## fingerprint of the play area at the end; mp_smoke.sh checks they match.
 
+const Play := preload("res://tests/mp_play.gd")
 const PORT := 24711
 const LAMP_BEFORE := Vector3i(5, 20, 5)
 const ORE_AFTER := Vector3i(6, 20, 5)
@@ -31,9 +34,57 @@ func _start(opts: Dictionary) -> Node:
 
 ## Moves the (frozen) player in steps at walking speed.
 func _walk(player: Node3D, to: Vector3) -> void:
-	while player.global_position.distance_to(to) > 0.01:
-		player.global_position = player.global_position.move_toward(to, 4.0 * get_physics_process_delta_time())
-		await get_tree().physics_frame
+	await Play.walk(player, to)
+
+
+## Where the scripted play happens: next to the world spawn (the host player
+## stands at the spawn, outside the area).
+static func _play_area(w: World) -> Vector3i:
+	var sp: Array = w.meta.spawn
+	return Vector3i(Vector3(sp[0], sp[1], sp[2]).floor()) + Vector3i(9, 0, 0)
+
+
+## The client plays a little, as a person would. Returns what worked.
+func _play(game: Node) -> Dictionary:
+	var p: Node3D = game._player
+	var w: World = game._world
+	var o := _play_area(w)
+	var at := func(rel: Vector3i) -> String: return Registry.block_ids[w.get_block(o + rel)]
+	var r := {}
+	Play.take_over(p)
+	await get_tree().create_timer(2.5).timeout  # the edit flood above used up our requests
+	await _walk(p, Vector3(o) + Vector3(0.5, 0, 0.5))
+	Play.give(p, "core:planks", 1)
+	Play.aim(p, Vector3(o) + Vector3(-1.5, 0, 0.5))
+	p._place()
+	r["play: place a block"] = await _wait_for(func(): return at.call(Vector3i(-2, 0, 0)) == "core:planks", 5)
+	Play.aim(p, Vector3(o) + Vector3(-1.5, 0.5, 0.5))
+	p._break_target()
+	r["play: break it, get it back"] = await _wait_for(func(): return at.call(Vector3i(-2, 0, 0)) == "core:air" \
+			and p.inventory.count_of("core:planks") == 1, 5)
+	Play.give(p, "core:wood_door", 1)
+	Play.aim(p, Vector3(o) + Vector3(0.5, 0, -1.5))
+	p._place()
+	r["play: place a door"] = await _wait_for(func(): return at.call(Vector3i(0, 1, -2)).ends_with("_upper"), 5)
+	Play.aim(p, Vector3(o) + Vector3(0.5, 0.5, -1.5))
+	p._place()
+	r["play: open it"] = await _wait_for(func(): return at.call(Vector3i(0, 0, -2)).ends_with("_open"), 5)
+	Play.give(p, "core:bed", 1)
+	Play.aim(p, Vector3(o) + Vector3(-1.3, 0, -1.7))
+	p._place()
+	r["play: place a bed"] = await _wait_for(func(): return at.call(Vector3i(-2, 0, -2)).begins_with("core:bed") \
+			and at.call(Vector3i(-2, 0, -3)).ends_with("_head"), 5)
+	Play.aim(p, Vector3(o) + Vector3(-1.5, 0.3, -2.5))  # the head
+	p._place()
+	r["play: sleep there (respawn point)"] = p.bed == o + Vector3i(-2, 0, -3)
+	await _walk(p, Vector3(o) + Vector3(-0.5, 0, -0.5))
+	Play.aim(p, Vector3(o) + Vector3(-1.5, 0.3, -1.5))  # the foot
+	p._break_target()
+	r["play: break the bed, one comes back"] = await _wait_for(func(): return at.call(Vector3i(-2, 0, -3)) == "core:air" \
+			and p.inventory.count_of("core:bed") == 1, 5)
+	await _wait_for(func(): return game._session._own_edits.is_empty(), 5)
+	print("AREA ", Play.area_hash(w, o))
+	return r
 
 
 func _ready() -> void:
@@ -49,11 +100,13 @@ func _ready() -> void:
 		var g: Dictionary = game._world.raycast(Vector3(8.5, World.TOP_Y, 8.5), Vector3.DOWN, 400)
 		game._mobs.spawn_at(Vector3(8.5, g.position.y + 1, 8.5))
 		game._player.inventory.slots[game._player.selected] = {"id": "core:torch", "count": 1}
+		Play.build_area(game._world, _play_area(game._world))
 		print("HOST ready")
 		await _wait_for(func(): return not game._session._peers.is_empty(), 60)
 		await get_tree().create_timer(1.5).timeout
 		game._world.set_block(ORE_AFTER, Registry.block_index("core:gold_ore"))
 		await _wait_for(func(): return game._session._peers.is_empty(), 60)
+		print("HOST AREA ", Play.area_hash(game._world, _play_area(game._world)))
 		get_tree().quit()
 		return
 	var game := await _start({"net_mode": "client", "join_address": "127.0.0.1", "port": PORT, "player_name": "Client"})
@@ -140,6 +193,7 @@ func _ready() -> void:
 			game._session.request_edit(base + Vector3i(i % 4, i / 16, (i / 4) % 4), Registry.block_index("core:planks"))
 		results["edit flood limited"] = await _wait_for(func(): return game._session._own_edits.is_empty(), 5) \
 				and refusals[0] >= 50
+		results.merge(await _play(game))
 	var failed := results.keys().filter(func(k): return not results[k])
 	for k in results:
 		print("%s  %s" % ["PASS" if results[k] else "FAIL", k])

@@ -177,7 +177,13 @@ A test fails on a failed check, a file that doesn't compile, or any error logged
 runs (a test that checks something is refused declares the error with `expect_error`). Test
 worlds are named `_test…` and, like any other `user://_test…` folder, are deleted for good
 (not to the trash) before and after every test. The multiplayer test plays its own
-`_mp_smoke_<pid>` world and removes it, even when interrupted. CI (`.github/workflows/ci.yml`) builds the engine and runs both on every push.
+`_mp_smoke_<pid>` world and removes it, even when interrupted.
+`test_multiplayer` runs a host and a client game in one process (each with its own
+network stack); both it and the smoke test drive the client's player as a person would
+(aim, place, break, open doors, use beds; `tests/mp_play.gd`) and check that the host's
+and the client's worlds end up the same. A new feature that changes the world or the
+player is checked on the client too, including what happens when the host refuses it
+(see CLAUDE.md). CI (`.github/workflows/ci.yml`) builds the engine and runs both on every push.
 
 ## Prototypes
 Feasibility results that led to the own engine (lighting, caves/trees/water, many

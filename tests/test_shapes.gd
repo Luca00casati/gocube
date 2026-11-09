@@ -67,6 +67,10 @@ func test_door_open_close() -> void:
 	check_eq(Registry.block_ids[w.get_block(Vector3i(0, Y + 2, 0))], "core:wood_door_n_upper_open", "upper half opened")
 	r = w.move_box(Vector3(0.5, Y + 1, 1.5), Vector3(0.6, 1.8, 0.6), Vector3(0, 0, -2))
 	check(not r.hit_wall, "an open door lets you through")
+	# A door stands on the floor, with nothing behind it.
+	check(PlantSim.supported(w, "core:wood_door_e_lower", Vector3i(2, Y + 1, 2)), "a door on open floor stands")
+	w.set_block(Vector3i(2, Y, 2), 0)
+	check(not PlantSim.supported(w, "core:wood_door_e_lower", Vector3i(2, Y + 1, 2)), "not on air")
 
 
 func test_placement_variants() -> void:

@@ -90,3 +90,30 @@ func test_lava_meets_water() -> void:
 	for i in 8:
 		w.fluids._process(0.3)
 	check_eq(Registry.block_ids[w.get_block(Vector3i(0, Y + 1, 0))], "core:stone", "a lava source next to water turns to stone")
+
+
+## Lake water (above the sea) never stands next to open air, so it never
+## hangs as a wall on a slope: lakes get a bank as high as their water.
+func test_lakes_are_closed_in() -> void:
+	var water := Registry.block_index("core:water")
+	var cells := 0
+	var open := []
+	for seed_value in [4242, 777, 31337]:
+		var w := await make_world(seed_value, "", 128, Vector3(0.5, 10, 0.5))
+		# Unloaded chunks read as air: wait for everything scanned.
+		check(await wait_until(func(): return w.is_area_meshed(AABB(Vector3(-56, -4, -56), Vector3(112, 48, 112)))),
+				"the area loaded")
+		for x in range(-56, 56):
+			for z in range(-56, 56):
+				for y in range(-3, 45):  # above the sea (level -4)
+					var p := Vector3i(x, y, z)
+					if w.get_block(p) != water:
+						continue
+					cells += 1
+					for d in [Vector3i(1, 0, 0), Vector3i(-1, 0, 0), Vector3i(0, 0, 1), Vector3i(0, 0, -1), Vector3i.DOWN]:
+						if w.get_block(p + d) == 0:
+							open.append(p)
+		w.queue_free()
+		await frames(2)
+	check(cells > 50, "found lakes to check (%d water cells)" % cells)
+	check(open.is_empty(), "%d lake water cells next to air, e.g. %s" % [open.size(), open.slice(0, 4)])

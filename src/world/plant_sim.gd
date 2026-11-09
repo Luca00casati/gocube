@@ -158,8 +158,10 @@ static func supported(w: World, id: String, pos: Vector3i) -> bool:
 	if not def.get("needs_support", false):
 		return true
 	var st: Dictionary = def.get("state", {})
-	if def.get("shape") == "door" and st.get("half") == "upper":
-		return BlockShapes.base_of(below) == BlockShapes.base_of(id)
+	if def.get("shape") == "door":  # stands on the floor whichever way it faces
+		if st.get("half") == "upper":
+			return BlockShapes.base_of(below) == BlockShapes.base_of(id)
+		return _solid(w, pos + Vector3i.DOWN)
 	var facing := str(st.get("facing", "floor"))
 	var support: Vector3i = pos + (FACING_DIR[facing] if FACING_DIR.has(facing) else Vector3i.DOWN)
 	return _solid(w, support)

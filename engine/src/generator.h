@@ -90,6 +90,7 @@ public:
 	static constexpr int TREE_CELL = 8;
 	static constexpr int TREE_REACH = 5;         // how far a tree's leaves spread
 	static constexpr int LAKE_CELL = 48;
+	static constexpr float LAKE_BANK = 2.5f;      // ground at water level this far around a lake
 
 
 	void configure(uint32_t seed, const GeneratorIds &ids, const std::vector<OreKind> &ores,
@@ -99,10 +100,18 @@ public:
 	// The biome of a column (index into the biomes; 0 if none are configured).
 	int biome_at(int x, int z) const;
 	// A lake at this column: true, with its water level and the bottom.
-	bool lake_at(int x, int z, int &level, int &bottom) const;
+	// Otherwise `bank` (if given) is the level of a lake just next to it (the
+	// ground there is raised to it), or INT32_MIN.
+	bool lake_at(int x, int z, int &level, int &bottom, int *bank = nullptr) const;
 
 	// Surface height (y of the topmost terrain block) at a column.
 	int height_at(int x, int z) const;
+
+private:
+	bool lake_spot(int cx, int cz, int &px, int &pz, float &radius) const;
+	int lake_level(int cx, int cz, int px, int pz, float radius) const;
+
+public:
 	bool is_cave(int x, int y, int z) const;
 	// Trees whose leaves may reach columns [x0, x1) x [z0, z1).
 	void trees_near(int x0, int z0, int x1, int z1, std::vector<Tree> &out) const;
