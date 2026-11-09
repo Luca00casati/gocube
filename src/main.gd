@@ -100,6 +100,7 @@ func _ready() -> void:
 	add_child(_sounds)
 	_session.remote_edit.connect(_on_remote_edit)
 	_session.own_edit_confirmed.connect(func(pos): _player.confirm_break(pos))
+	_session.own_edit_refused.connect(func(pos): _player.pending_drops.erase(pos))
 	_drops_node = ItemDrops.new()
 	_drops_node.name = "Drops"
 	_drops_node.world = _world

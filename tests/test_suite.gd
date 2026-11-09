@@ -13,6 +13,15 @@ func check(condition: bool, what: String) -> void:
 		_failures.append(what)
 
 
+## Errors whose text contains one of these don't fail the test (see expect_error).
+var expected_errors: PackedStringArray = []
+
+
+## The test checks that something is refused with an error mentioning `part`.
+func expect_error(part: String) -> void:
+	expected_errors.append(part)
+
+
 func check_eq(actual, expected, what: String) -> void:
 	if actual != expected:
 		_failures.append("%s: expected %s, got %s" % [what, expected, actual])

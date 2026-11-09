@@ -64,3 +64,60 @@ func test_zipped_mods_unpack() -> void:
 	check(ModLoader.unzip_mod(dir.path_join("none.zip"), dir.path_join("out_none")) != "", "a zip without mod.json is refused")
 	ModLoader._remove_dir(dir)
 	check(not DirAccess.dir_exists_absolute(dir), "cleaned up")
+
+
+func test_content_is_checked_before_anything_registers() -> void:
+	check_eq(ModLoader.content_problem({"blocks": {"a": {}}, "items": {}}), "", "good content")
+	for bad in [[], "x", {"blocks": []}, {"blocks": {"a": 5}}, {"items": {"a": {}, "b": "c"}}]:
+		check(ModLoader.content_problem(bad) != "", "refused: %s" % [bad])
+	var root := "user://_test_badmod"
+	DirAccess.make_dir_recursive_absolute(root)
+	var f := FileAccess.open(root.path_join("mod.json"), FileAccess.WRITE)
+	f.store_string('{"id": "badmod", "content": ["a.json", "b.json"]}')
+	f.close()
+	for pair in [["a.json", '{"blocks": {"fine": {}}}'], ["b.json", '{"blocks": {"broken": 3}}']]:
+		f = FileAccess.open(root.path_join(pair[0]), FileAccess.WRITE)
+		f.store_string(pair[1])
+		f.close()
+	var found := {}
+	expect_error("Mod 'badmod'")
+	ModLoader._add_found(root, found)
+	check(not found.has("badmod"), "a mod with one bad content file is skipped whole")
+	ModLoader._remove_dir(root)
+
+
+func test_failed_mod_is_undone() -> void:
+	var root := "user://_test_failmod"
+	DirAccess.make_dir_recursive_absolute(root)
+	var f := FileAccess.open(root.path_join("main.gd"), FileAccess.WRITE)
+	f.store_string("extends RefCounted\n\nfunc init_mod(registry) -> bool:\n\tregistry.register_block(\"half_done\", {})\n\tregistry.register_block(\"core:stone\", {\"color\": \"#ff00ff\"})\n\treturn false\n")
+	f.close()
+	var stone: Dictionary = Registry.blocks["core:stone"]
+	var count := Registry.blocks.size()
+	expect_error("Mod 'failmod'")
+	Registry._frozen = false  # as while mods load
+	var ok: bool = ModLoader._load_mod({"id": "failmod", "entry": "main.gd", "path": root,
+			"_content": [{"items": {"thing": {}}}]})
+	Registry._frozen = true
+	check(not ok, "reported as failed")
+	check(not Registry.blocks.has("failmod:half_done") and not Registry.items.has("failmod:thing"), "its content is gone")
+	check(Registry.blocks["core:stone"] == stone and Registry.blocks.size() == count, "what it overrode is back")
+	check(not ModLoader.mods.any(func(m): return m.id == "failmod"), "not listed as loaded")
+	ModLoader._remove_dir(root)
+
+
+func test_mod_fingerprints() -> void:
+	var core: Dictionary = ModLoader.mods[0]
+	check_eq(str(core.get("hash", "")).length(), 12, "core has a fingerprint")
+	var root := "user://_test_fp"
+	DirAccess.make_dir_recursive_absolute(root.path_join("c"))
+	var f := FileAccess.open(root.path_join("c/a.json"), FileAccess.WRITE)
+	f.store_string("{}")
+	f.close()
+	var first := ModLoader.fingerprint(root)
+	check_eq(ModLoader.fingerprint(root), first, "the same files, the same fingerprint")
+	f = FileAccess.open(root.path_join("c/a.json"), FileAccess.WRITE)
+	f.store_string("{ }")
+	f.close()
+	check(ModLoader.fingerprint(root) != first, "a changed file changes it")
+	ModLoader._remove_dir(root)

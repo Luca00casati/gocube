@@ -7,7 +7,8 @@ extends Node
 ##     "name": "My Mod", "version": "1.0.0",
 ##     "dependencies": ["othermod"],        # "core" is implicit
 ##     "content": ["content/blocks.json"],  # data-only content (optional)
-##     "entry": "main.gd",                  # code entry point (optional)
+##     "entry": "main.gd",                  # code entry point (optional): init_mod(registry)
+##                                          # may return false to give up (the mod is undone)
 ##     "api_version": 1                     # modding API it was written for (default 1)
 ##   }
 ##
@@ -18,6 +19,11 @@ extends Node
 ##   user://mods/*.pck         resource packs; must contain mods/<id>/..., so they
 ##                             mount into res://mods/<id>/
 ##   user://mods/<id>/         unpacked mod folders (handy while developing)
+##
+## Every content file is read and checked before anything of a mod is
+## registered; a mod whose entry script can't load (or whose init_mod returns
+## false) is undone: its registrations are rolled back and mods depending on
+## it are skipped.
 ##
 ## Mods listed in Settings.disabled_mods are found but not loaded (the Mods
 ## part of the settings screen; takes effect the next time the game starts).
@@ -68,8 +74,15 @@ func load_all() -> void:
 			print("Mod %s is turned off" % id)
 			found.erase(id)
 
+	var failed := {}
 	for id in _resolve_order(found):
-		_load_mod(found[id])
+		var deps: Array = found[id].get("dependencies", [])
+		var broken_dep = deps.filter(func(d): return failed.has(d))
+		if not broken_dep.is_empty():
+			push_error("Skipping mod '%s': dependency '%s' failed to load" % [id, broken_dep[0]])
+			failed[id] = true
+		elif not _load_mod(found[id]):
+			failed[id] = true
 
 	Registry._freeze()
 	mods_loaded.emit()
@@ -189,8 +202,28 @@ func _add_found(root: String, found: Dictionary) -> void:
 	if found.has(m.id):
 		push_warning("Duplicate mod id '%s' at %s, ignoring" % [m.id, root])
 		return
+	var content := []
+	for rel in m.get("content", []):
+		var path := root.path_join(rel)
+		var data = JSON.parse_string(FileAccess.get_file_as_string(path))
+		var why := content_problem(data)
+		if why != "":
+			push_error("Mod '%s': content file %s %s; skipping the mod" % [m.id, rel, why])
+			return
+		content.append(data)
 	m.path = root
+	m._content = content  # parsed, checked content files
 	found[m.id] = m
+
+
+## What is wrong with a parsed content file, or "".
+static func content_problem(data) -> String:
+	if not data is Dictionary:
+		return "isn't a JSON object"
+	for section in data:  # every section is {id: definition object}
+		if not data[section] is Dictionary or data[section].values().any(func(d): return not d is Dictionary):
+			return "has \"%s\" not mapping ids to objects" % section
+	return ""
 
 
 ## What is wrong with a mod.json (already parsed) for a mod in `root`, or "".
@@ -275,43 +308,73 @@ func _visit(id: String, found: Dictionary, state: Dictionary, order: Array) -> b
 	return true
 
 
-func _load_mod(m: Dictionary) -> void:
+## Loads one mod. Returns false (with everything it registered undone) if
+## its entry script fails.
+func _load_mod(m: Dictionary) -> bool:
 	_loading = m
+	var before := Registry._snapshot()
 	Registry._begin_mod(m.id)
-
-	for rel in m.get("content", []):
-		_load_content_file(m.path.path_join(rel))
-
+	for data in m.get("_content", []):
+		_register_content(data)
+	var ok := true
 	if m.has("entry"):
 		var script = load(m.path.path_join(m.entry))
-		if script is Script:
+		if not script is Script or not script.can_instantiate():
+			push_error("Mod '%s': could not load entry script %s; undoing the mod" % [m.id, m.entry])
+			ok = false
+		else:
 			var inst = script.new()
 			if inst is Node:
 				inst.name = m.id
 				add_child(inst)
-			if inst.has_method("init_mod"):
-				inst.init_mod(Registry)
-			instances[m.id] = inst
-		else:
-			push_error("Mod '%s': could not load entry script %s" % [m.id, m.entry])
-
+			if inst.has_method("init_mod") and inst.init_mod(Registry) == false:
+				push_error("Mod '%s': init_mod gave up; undoing the mod" % m.id)
+				ok = false
+				if inst is Node:
+					inst.queue_free()
+			else:
+				instances[m.id] = inst
 	Registry._end_mod()
 	_loading = {}
+	m.erase("_content")
+	if not ok:
+		Registry._restore(before)
+		return false
+	m.hash = fingerprint(m.path)
 	mods.append(m)
 	print("Loaded mod %s %s" % [m.id, m.get("version", "")])
+	return true
+
+
+## A short hash of every file in a mod folder (names and contents), so players
+## can tell whether two copies of a mod with the same version really match.
+static func fingerprint(root: String) -> String:
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	for rel in _files_under(root, ""):
+		ctx.update(rel.to_utf8_buffer())
+		ctx.update(PackedByteArray([0]))
+		ctx.update(FileAccess.get_file_as_bytes(root.path_join(rel)))
+	return ctx.finish().hex_encode().left(12)
+
+
+## Relative paths of the files under root (not hidden ones), sorted.
+static func _files_under(root: String, rel: String) -> PackedStringArray:
+	var out := PackedStringArray()
+	var dir := root.path_join(rel) if rel != "" else root
+	var files := DirAccess.get_files_at(dir)
+	for f in files:
+		out.append(rel.path_join(f) if rel != "" else f)
+	for d in DirAccess.get_directories_at(dir):
+		out.append_array(_files_under(root, rel.path_join(d) if rel != "" else d))
+	out.sort()
+	return out
 
 
 ## Content file format: { "blocks": {id: def}, "items": {id: def}, "recipes": {id: def},
 ##                        "ores": {id: def}, "trees": {id: def}, "biomes": {id: def}, "sound_sets": {id: def} }
-func _load_content_file(path: String) -> void:
-	var data = JSON.parse_string(FileAccess.get_file_as_string(path))
-	if not data is Dictionary:
-		push_error("Invalid content file: " + path)
-		return
-	for section in data:  # every section is {id: definition object}
-		if not data[section] is Dictionary or data[section].values().any(func(d): return not d is Dictionary):
-			push_error("Invalid content file %s: \"%s\" must map ids to objects; skipping the file" % [path, section])
-			return
+## (already checked with content_problem)
+func _register_content(data: Dictionary) -> void:
 	for id in data.get("blocks", {}):
 		Registry.register_block(id, data.blocks[id])
 	for id in data.get("items", {}):

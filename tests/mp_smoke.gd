@@ -37,9 +37,11 @@ func _walk(player: Node3D, to: Vector3) -> void:
 
 
 func _ready() -> void:
-	var role: String = OS.get_cmdline_user_args()[-1]
+	var args := OS.get_cmdline_user_args()
+	var role: String = args[0] if args.size() > 0 else ""
 	if role == "host":
-		var game := await _start({"world_name": "_mp_smoke", "net_mode": "host", "port": PORT, "player_name": "Host"})
+		var world_name: String = args[1] if args.size() > 1 else "_mp_smoke"
+		var game := await _start({"world_name": world_name, "net_mode": "host", "port": PORT, "player_name": "Host"})
 		await _wait_for(func(): return game._loading == null, 30)
 		game._world.set_block(LAMP_BEFORE, Registry.block_index("core:lamp"))
 		game._world.set_block(CHEST, Registry.block_index("core:chest"))
@@ -104,6 +106,21 @@ func _ready() -> void:
 		game._session.container_click(CHEST, 1, {"id": "core:stick", "count": 2})
 		results["chest click via host"] = await _wait_for(func(): return held[0] == {} \
 				and seen.slots[1] == {"id": "core:stick", "count": 2}, 5)
+		# An edit the host refuses (out of reach) is answered, not left pending.
+		var refused := [false]
+		var far := Vector3i(game._player.global_position.floor()) + Vector3i(40, 0, 0)
+		game._session.own_edit_refused.connect(func(p): refused[0] = refused[0] or p == far)
+		game._session.request_edit(far, Registry.block_index("core:planks"))
+		results["refused edit answered"] = await _wait_for(func(): return refused[0] \
+				and not game._session._own_edits.has(far), 5)
+		# Flooding: the host applies only a burst of edits, refusing the rest.
+		var base := Vector3i(game._player.global_position.floor()) + Vector3i(-2, 3, -2)
+		var refusals := [0]
+		game._session.own_edit_refused.connect(func(_p): refusals[0] += 1)
+		for i in 100:
+			game._session.request_edit(base + Vector3i(i % 4, i / 16, (i / 4) % 4), Registry.block_index("core:planks"))
+		results["edit flood limited"] = await _wait_for(func(): return game._session._own_edits.is_empty(), 5) \
+				and refusals[0] >= 50
 	var failed := results.keys().filter(func(k): return not results[k])
 	for k in results:
 		print("%s  %s" % ["PASS" if results[k] else "FAIL", k])

@@ -21,6 +21,8 @@ signal ended(reason: String)       # client: connection failed / rejected / lost
 signal remote_edit(position: Vector3i, old_block: int, new_block: int)
 ## Client: the host applied a block change we asked for (drop what we broke).
 signal own_edit_confirmed(position: Vector3i)
+## Client: the host refused a block change we asked for (nothing was broken).
+signal own_edit_refused(position: Vector3i)
 ## Client: the host gave us a dropped item we asked for (put it in the inventory).
 signal items_picked(item: String, count: int)
 ## Client: a container's contents / what we hold after clicking it.
@@ -36,7 +38,7 @@ signal corrected(eye: Vector3)
 const Avatar := preload("res://src/player/avatar.gd")
 const Player := preload("res://src/player/player.gd")
 
-const PROTOCOL := 3
+const PROTOCOL := 4
 const DEFAULT_PORT := 24680
 const MAX_PLAYERS := 8
 const STATE_INTERVAL := 0.05       # seconds between position updates (20 Hz)
@@ -73,7 +75,8 @@ var _time_sync_timer := 0.0
 var _connect_started := 0
 var _welcomed := false
 var _ended := false
-var _own_edits := {}  # client: positions we asked the host to change (no echo sound)
+var _own_edits := {}  # client: position we asked the host to change -> when (no echo sound)
+const EDIT_PENDING_SECONDS := 5.0  # a request the host never answered is forgotten after this
 var _viewers := {}    # host: container position -> [peer ids looking at it]
 const CONTAINER_REACH := 8.0
 ## Host-side movement check (clients report their own positions): the fastest
@@ -85,6 +88,19 @@ const MOVE_BURST := 0.75          # seconds of movement that may arrive at once 
 const MOVE_SLACK := 1.0           # extra blocks always allowed
 const RESPAWN_RADIUS := 2.0       # a jump to the world spawn (respawning) is fine
 const CORRECT_EVERY := 0.5        # seconds between corrections sent to one client
+## Host: how many requests of each kind a client may send per second, and in
+## one burst (lag can bunch them up). Requests over the limit are ignored.
+const RATES := {
+	"edit": [20.0, 40.0],       # breaking and placing (creative mines fast; doors and beds are two)
+	"hit": [8.0, 12.0],
+	"chunk": [30.0, 120.0],
+	"drop": [10.0, 30.0],
+	"pickup": [20.0, 60.0],
+	"container": [20.0, 40.0],
+	"other": [4.0, 10.0],       # bed, sleeping
+}
+const NAME_LENGTH := 16
+const MAX_MODS := 256             # longest mod list accepted in a hello
 
 
 # --- Setup / teardown ----------------------------------------------------------
@@ -143,8 +159,10 @@ func player_count() -> int:
 	return _peers.size() + 1 if is_host() else _player_count
 
 
+## "id@version#fingerprint" of every loaded mod: two players can only play
+## together with exactly the same mods (the fingerprint covers their files).
 static func mod_list() -> Array:
-	var mods := ModLoader.mods.map(func(m): return "%s@%s" % [m.id, m.get("version", "")])
+	var mods := ModLoader.mods.map(func(m): return "%s@%s#%s" % [m.id, m.get("version", ""), m.get("hash", "")])
 	mods.sort()
 	return mods
 
@@ -183,7 +201,7 @@ func _rejected(reason: String) -> void:
 
 ## Clients ask the host to change a block; the host validates and applies it.
 func request_edit(pos: Vector3i, block: int) -> void:
-	_own_edits[pos] = true
+	_own_edits[pos] = _now()
 	_request_edit.rpc_id(1, pos, block)
 
 
@@ -241,12 +259,19 @@ func _hello(protocol: int, mods: Array, requested_name: String) -> void:
 	if not is_host():
 		return
 	var id := multiplayer.get_remote_sender_id()
+	if _peers.has(id):
+		return  # only once (a second hello would reset its position)
 	var reason := ""
-	if protocol != PROTOCOL:
+	if mods.size() > MAX_MODS or mods.any(func(m): return not m is String or m.length() > 200):
+		reason = "Bad hello."
+		mods = []
+	elif protocol != PROTOCOL:
 		reason = "Game version mismatch (server protocol %d, yours %d)." % [PROTOCOL, protocol]
 	elif mods != mod_list():
-		reason = "Your mods don't match the server's.\nServer: %s\nYours: %s" % [
-				", ".join(mod_list()), ", ".join(mods)]
+		var mine := mod_list()
+		reason = "Your mods don't match the server's (after # is a fingerprint of the mod's files).\n" \
+				+ "Only on the server, or different there: %s\nOnly yours, or different: %s" % [
+				", ".join(mine.filter(func(x): return x not in mods)), ", ".join(mods.filter(func(x): return x not in mine))]
 	if reason != "":
 		print("Rejected peer %d: %s" % [id, reason])
 		_rejected.rpc_id(id, reason)
@@ -254,7 +279,7 @@ func _hello(protocol: int, mods: Array, requested_name: String) -> void:
 		get_tree().create_timer(1.0).timeout.connect(_kick.bind(id))
 		return
 
-	var pname := requested_name.strip_edges().left(16)
+	var pname := clean_name(requested_name)
 	if pname == "":
 		pname = "Player %d" % id
 	var spawn := local_player.global_position + Vector3(2, 0, 2)
@@ -281,6 +306,39 @@ func _hello(protocol: int, mods: Array, requested_name: String) -> void:
 	print("%s joined (peer %d)" % [pname, id])
 
 
+## A player name as shown to others: printable characters only, trimmed and
+## at most NAME_LENGTH long.
+static func clean_name(requested: String) -> String:
+	var out := ""
+	for c in requested.left(NAME_LENGTH * 4):
+		var u := c.unicode_at(0)
+		if u >= 32 and u != 127 and not (u >= 0x80 and u < 0xA0) and not (u >= 0x200B and u <= 0x200F) \
+				and not (u >= 0x202A and u <= 0x202E) and not (u >= 0x2066 and u <= 0x2069):
+			out += c
+	return out.strip_edges().left(NAME_LENGTH).strip_edges()
+
+
+## Host: whether peer `id` may make another request of this kind now (see RATES).
+func _allow(id: int, kind: String) -> bool:
+	var p = _peers.get(id)
+	if p == null:
+		return false
+	var rate: Array = RATES[kind]
+	if not p.has("rates"):
+		p.rates = {}
+	var now := _now()
+	var b: Array = p.rates.get(kind, [rate[1], now])  # [tokens, last update]
+	var tokens := minf(rate[1], b[0] + (now - b[1]) * rate[0])
+	if tokens < 1.0:
+		p.rates[kind] = [tokens, now]
+		if now - float(p.get("flood_logged", -INF)) > 5.0:
+			p.flood_logged = now
+			print("Peer %d sends too many %s requests; ignoring some" % [id, kind])
+		return false
+	p.rates[kind] = [tokens - 1.0, now]
+	return true
+
+
 func _kick(id: int) -> void:
 	if is_host() and id in multiplayer.get_peers():
 		multiplayer.multiplayer_peer.disconnect_peer(id)
@@ -298,7 +356,7 @@ func _on_peer_disconnected(id: int) -> void:
 @rpc("any_peer", "call_remote", "unreliable_ordered")
 func _client_state(pos: Vector3, yaw: float, light: int) -> void:
 	var id := multiplayer.get_remote_sender_id()
-	if not is_host() or not _peers.has(id) or not pos.is_finite():
+	if not is_host() or not _peers.has(id) or not pos.is_finite() or not is_finite(yaw):
 		return
 	var p: Dictionary = _peers[id]
 	if not _move_allowed(p, pos):
@@ -307,7 +365,7 @@ func _client_state(pos: Vector3, yaw: float, light: int) -> void:
 			_correct.rpc_id(id, p.position)
 		return
 	p.position = pos
-	p.yaw = yaw
+	p.yaw = wrapf(yaw, -PI, PI)
 	p.light = clampi(light, 0, 15)
 
 
@@ -316,24 +374,42 @@ func _request_edit(pos: Vector3i, block: int) -> void:
 	var id := multiplayer.get_remote_sender_id()
 	if not is_host() or not _peers.has(id):
 		return
-	if block < 0 or block >= Registry.block_ids.size():
+	if not _edit_allowed(id, pos, block):
+		_edit_refused.rpc_id(id, pos)  # so it doesn't wait for an answer
 		return
-	var def = Registry.blocks.get(Registry.block_ids[block])
-	if block != Registry.block_index("core:air") and (def == null or not def.get("solid", true)):
-		return  # unknown/missing or non-placeable block
-	var player_pos: Vector3 = _peers[id].position
-	if player_pos.distance_to(Vector3(pos) + Vector3.ONE * 0.5) > EDIT_REACH:
-		return
-	if block != Registry.block_index("core:air"):
-		for state in _host_states().values():  # nobody may get built into a block
-			if Player.overlaps_block(state[0] - Vector3(0, Player.EYE_HEIGHT, 0), pos):
-				return
 	var old := world.get_block(pos)
 	world.editor = id  # spilled container contents go to this player
 	var ok := world.set_block(pos, block)  # -> block_changed -> sent to everyone
 	world.editor = 0
 	if ok:
 		remote_edit.emit(pos, old, block)
+	else:
+		_edit_refused.rpc_id(id, pos)  # its chunk isn't loaded here
+
+
+## Host: whether peer `id` may set the block at pos (within its request rate,
+## a known placeable block, within reach, nobody inside it).
+func _edit_allowed(id: int, pos: Vector3i, block: int) -> bool:
+	if not _allow(id, "edit") or block < 0 or block >= Registry.block_ids.size():
+		return false
+	var def = Registry.blocks.get(Registry.block_ids[block])
+	if block != Registry.block_index("core:air") and (def == null or not def.get("solid", true)):
+		return false  # unknown/missing or non-placeable block
+	var player_pos: Vector3 = _peers[id].position
+	if player_pos.distance_to(Vector3(pos) + Vector3.ONE * 0.5) > EDIT_REACH:
+		return false
+	if block != Registry.block_index("core:air"):
+		for state in _host_states().values():  # nobody may get built into a block
+			if Player.overlaps_block(state[0] - Vector3(0, Player.EYE_HEIGHT, 0), pos):
+				return false
+	return true
+
+
+## Client: the host didn't make a change we asked for.
+@rpc("authority", "call_remote", "reliable")
+func _edit_refused(pos: Vector3i) -> void:
+	if _own_edits.erase(pos):
+		own_edit_refused.emit(pos)
 
 
 func _on_block_changed(pos: Vector3i, block: int) -> void:
@@ -401,7 +477,7 @@ func hit_mob(id: int, item: String) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _hit_mob(id: int, item: String) -> void:
 	var peer := multiplayer.get_remote_sender_id()
-	if not is_host() or mobs == null or not _peers.has(peer):
+	if not is_host() or mobs == null or not _allow(peer, "hit"):
 		return
 	var from: Vector3 = _peers[peer].position
 	for mob in mobs.mobs():
@@ -420,7 +496,7 @@ func set_bed(pos: Vector3i) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _set_bed(pos: Vector3i) -> void:
 	var id := multiplayer.get_remote_sender_id()
-	if not is_host() or not _peers.has(id) or not _can_reach(id, pos):
+	if not is_host() or not _allow(id, "other") or not _can_reach(id, pos):
 		return
 	if Registry.blocks.get(Registry.block_ids[world.get_block(pos)], {}).get("bed", false):
 		_peers[id].bed = pos  # respawning there is a jump the host allows
@@ -434,7 +510,7 @@ func set_sleeping(on: bool) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _set_sleeping(on: bool) -> void:
 	var id := multiplayer.get_remote_sender_id()
-	if is_host() and _peers.has(id):
+	if is_host() and _allow(id, "other"):
 		_peers[id].sleeping = on
 
 
@@ -470,7 +546,7 @@ func request_drop(item: String, count: int, at: Vector3) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _request_drop(item: String, count: int, at: Vector3) -> void:
 	var id := multiplayer.get_remote_sender_id()
-	if not is_host() or drops == null or not _peers.has(id) or not at.is_finite() \
+	if not is_host() or drops == null or not _allow(id, "drop") or not at.is_finite() \
 			or not valid_stack({"id": item, "count": count}) \
 			or at.distance_to(_peers[id].position) > EDIT_REACH + 2.0:
 		return
@@ -485,7 +561,7 @@ func request_pickup(drop_id: int) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _request_pickup(drop_id: int) -> void:
 	var id := multiplayer.get_remote_sender_id()
-	if not is_host() or drops == null or not _peers.has(id):
+	if not is_host() or drops == null or not _allow(id, "pickup"):
 		return
 	var got: Array = drops.take(drop_id, _peers[id].position)
 	if not got.is_empty():
@@ -539,7 +615,8 @@ func _can_reach(id: int, pos: Vector3i) -> bool:
 @rpc("any_peer", "call_remote", "reliable")
 func _open_container(pos: Vector3i) -> void:
 	var id := multiplayer.get_remote_sender_id()
-	if not is_host() or not world.block_entities.has_entity(pos) or not _can_reach(id, pos):
+	if not is_host() or not _allow(id, "container") or not world.block_entities.has_entity(pos) \
+			or not _can_reach(id, pos):
 		return
 	if not _viewers.has(pos):
 		_viewers[pos] = []
@@ -555,8 +632,8 @@ func _container_click(pos: Vector3i, slot: int, held: Dictionary) -> void:
 	var id := multiplayer.get_remote_sender_id()
 	# Only a player who opened this container (and is still near it) may click
 	# it, with a real item stack.
-	if not is_host() or id not in _viewers.get(pos, []) or not world.block_entities.has_entity(pos) \
-			or not _can_reach(id, pos) or not valid_stack(held):
+	if not is_host() or not _allow(id, "container") or id not in _viewers.get(pos, []) \
+			or not world.block_entities.has_entity(pos) or not _can_reach(id, pos) or not valid_stack(held):
 		_held.rpc_id(id, pos, held)  # refused: give it back
 		return
 	_held.rpc_id(id, pos, world.block_entities.click(pos, slot, held))
@@ -587,7 +664,7 @@ func _held(pos: Vector3i, held: Dictionary) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _request_chunk(chunk_pos: Vector3i) -> void:
 	var id := multiplayer.get_remote_sender_id()
-	if is_host() and _peers.has(id):
+	if is_host() and _allow(id, "chunk"):
 		var bytes := world.chunk_bytes(chunk_pos)
 		if not bytes.is_empty():
 			_chunk.rpc_id(id, chunk_pos, bytes)
@@ -611,6 +688,12 @@ func _host_states() -> Dictionary:
 # --- Both sides ----------------------------------------------------------------
 
 func _process(delta: float) -> void:
+	if is_client() and not _own_edits.is_empty():
+		var now := _now()
+		for pos in _own_edits.keys():
+			if now - float(_own_edits[pos]) > EDIT_PENDING_SECONDS:
+				_own_edits.erase(pos)  # never answered (lost with a reconnect, say)
+				own_edit_refused.emit(pos)
 	if is_client() and not _welcomed and not _ended \
 			and Time.get_ticks_msec() - _connect_started > CONNECT_TIMEOUT_MS:
 		_end("Connection timed out.")

@@ -122,3 +122,26 @@ func test_trees_come_from_the_registry() -> void:
 				if w.get_block(Vector3i(x, y, z)) == Registry.block_index("core:log"):
 					logs += 1
 	check(logs > 0, "trees generate (%d log blocks)" % logs)
+
+
+func test_leaving_and_coming_back_quickly() -> void:
+	World.delete_world("_test_reload")
+	var w := await make_world(4242, "_test_reload")
+	var spot := Vector3i(3, _surface(w, 3, 3) + 1, 3)
+	check(w.set_block(spot, Registry.block_index("core:planks")), "edit near the start")
+	# Back and forth faster than chunks can load: work queued for the old visits
+	# is dropped, and results for an earlier visit don't replace newer ones.
+	for i in 6:
+		w.set_viewer(Vector3(3000.5 * (1 if i % 2 == 0 else -1), 20, 0.5))
+		await frames(2)
+		w.set_viewer(Vector3(0.5, 20, 0.5))
+		await frames(2)
+	var stats: Dictionary = w.engine.get_stats()
+	check(int(stats.queued_jobs) <= int(stats.chunks) * 2,
+			"no pile of work for areas we left (%d jobs, %d chunks)" % [stats.queued_jobs, stats.chunks])
+	var area := AABB(Vector3(-16, -20, -16), Vector3(32, 80, 32))
+	check(await wait_until(func(): return w.is_area_meshed(area)), "loaded again")
+	check_eq(w.get_block(spot), Registry.block_index("core:planks"), "the edit survived")
+	w.queue_free()
+	await frames(2)
+	World.delete_world("_test_reload")

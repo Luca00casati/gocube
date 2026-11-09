@@ -63,8 +63,10 @@ func build(world_name: String, distance: int = DEFAULT_VIEW_DISTANCE, new_seed: 
 		DirAccess.make_dir_recursive_absolute(dir.path_join("chunks"))
 		meta = _read_meta()
 	if not meta.is_empty() and int(meta.get("format", 1)) < FORMAT_VERSION:
-		push_warning("World '%s' was made with the old voxel engine; its terrain is regenerated and old edits are not carried over" % world_name)
-		meta.erase("player")  # the old position may now be inside terrain
+		if persistent:
+			DirAccess.copy_absolute(dir.path_join("world.json"),
+					dir.path_join("world.json.format%d.bak" % int(meta.get("format", 1))))
+		migrate(meta, world_name)
 	if meta.is_empty():
 		meta = {"seed": new_seed if new_seed >= 0 else randi(), "mode": new_mode,
 				"created": Time.get_datetime_string_from_system(), "generator": GENERATOR_VERSION}
@@ -429,6 +431,21 @@ func _read_meta() -> Dictionary:
 		return data
 	push_error("Corrupt %s; not loading it" % path)
 	return {}
+
+
+## Brings an older world's world.json up to FORMAT_VERSION, one format at a
+## time (the caller keeps a backup of the file). To change the save format:
+## raise FORMAT_VERSION and add a step from the previous one here.
+static func migrate(m: Dictionary, world_name := "") -> void:
+	while int(m.get("format", 1)) < FORMAT_VERSION:
+		var from := int(m.get("format", 1))
+		match from:
+			1:
+				# Voxel-module worlds (blocks.sqlite): the engine and its terrain
+				# generator changed, so the terrain is regenerated.
+				push_warning("World '%s' was made with the old voxel engine; its terrain is regenerated and old edits are not carried over" % world_name)
+				m.erase("player")  # the old position may now be inside terrain
+		m.format = from + 1
 
 
 ## Write to a temp file then rename, so a crash mid-write can't corrupt the save.

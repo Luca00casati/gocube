@@ -25,8 +25,10 @@ forward it on the router for play over the internet). The host's machine runs th
 and saves it. World generation is deterministic, so joining players generate the
 terrain themselves from the seed; only edits travel over the network.
 
-- Everyone must have the **same mods** (ids and versions). Mods are never downloaded from
-  the server — mod scripts are unsandboxed — so mismatched players are refused with a list.
+- Everyone must have the **same mods**: same ids, versions and files (each mod gets a
+  fingerprint of its files, so two different builds with the same version don't pass). Mods are
+  never downloaded from the server — mod scripts are unsandboxed — so mismatched players are
+  refused with a list of what differs.
 - On join the host sends the seed, its block id table and every edited chunk; after
   that each edit is sent as (position, block). A player who hasn't loaded that chunk
   asks the host for the whole chunk.
@@ -38,6 +40,11 @@ terrain themselves from the seed; only edits travel over the network.
   accepted them; a jump to the world spawn (respawning) is fine. Walls aren't checked.
 - Chest and furnace clicks are only taken from a player who opened that container and is
   near it, with a real item stack (known item, count within its stack size).
+- Every request a joining player sends has a rate limit (edits, hits, chunk requests, drops,
+  pickups, containers, beds; `RATES` in `session.gd`); extra ones are ignored. A refused edit is
+  answered, so the player doesn't wait for it, and an edit request never answered is forgotten
+  after 5 s. Names are cleaned (printable characters, at most 16), positions and facing must be
+  finite numbers, and a player can only say hello once.
 - Code: `src/net/session.gd` (handshake, positions, edits), `src/player/avatar.gd`,
   `World.build_remote()`.
 
@@ -161,7 +168,8 @@ to the export unchanged. The preset also includes `*.json` and the license files
     godot4 --headless -s res://tests/run_tests.gd [-- filter]   # unit + engine tests
     bash tests/mp_smoke.sh godot4                                # host + client processes
 A test fails on a failed check, a file that doesn't compile, or any error logged while it
-runs. CI (`.github/workflows/ci.yml`) builds the engine and runs both on every push.
+runs (a test that checks something is refused declares the error with `expect_error`). The
+multiplayer test plays its own `_mp_smoke_<pid>` world and removes it, even when interrupted. CI (`.github/workflows/ci.yml`) builds the engine and runs both on every push.
 
 ## Prototypes
 Feasibility results that led to the own engine (lighting, caves/trees/water, many
@@ -239,8 +247,11 @@ and turn with the sky, and a drifting layer of blocky clouds tinted by the time 
 Worlds live in `user://worlds/<name>/` (on Linux `~/.local/share/godot/app_userdata/GoCube/`):
 `world.json` (seed, block id table, player position) and `chunks/` (only chunks the player
 edited, run-length encoded; the rest is regenerated from the seed). Saved on quit and
-every 60 s. Worlds from the old voxel-module version regenerate their terrain; their edits
-are not carried over. A world saved by a newer version of the game, or whose world.json is
+every 60 s. `world.json` has a `format` number (and a `generator` number for the terrain).
+An older world is upgraded one format at a time (`World.migrate`), after a copy of its
+world.json is kept as `world.json.format<N>.bak`; to change the format, raise
+`FORMAT_VERSION` and add a step there. Worlds from the old voxel-module version (format 1)
+regenerate their terrain; their edits are not carried over. A world saved by a newer version of the game, or whose world.json is
 damaged, is refused with a message and left untouched (nothing is written to it).
 
 Voxels store numeric block ids, so each world keeps its own id table: adding mods appends
@@ -284,8 +295,11 @@ Create `user://mods/<id>/mod.json` (see the header of `mod_loader.gd`), add JSON
 content files and/or an `entry` script with `init_mod(registry)`. Set `"api_version": 1`;
 mods written for a newer API version than the game supports are refused. mod.json is
 checked before anything of a mod loads (field types, dependency ids, and that `content` and
-`entry` are existing `.json` / `.gd` files inside the mod folder); a broken mod is skipped
-with the reason in the log. Content sections must map ids to objects.
+`entry` are existing `.json` / `.gd` files inside the mod folder), and so is every content
+file (sections must map ids to objects); a broken mod is skipped whole, with the reason in the
+log. If a mod's entry script doesn't load, or its `init_mod` returns `false`, everything the
+mod registered is undone (including definitions it replaced) and mods depending on it are
+skipped.
 
 To share it, zip the mod folder (or its contents, with `mod.json` at the top of the zip).
 Players drop the `.zip` into `user://mods/` (Linux:

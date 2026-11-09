@@ -116,6 +116,7 @@ private:
 		bool meshed = false;
 		bool dirty = false;        // edited since last saved
 		uint32_t mesh_version = 0; // bumped on every remesh request; stale meshes are dropped
+		uint32_t serial = 0;       // this load of the chunk: results for an earlier load are dropped
 		std::array<int8_t, CHUNK_AREA> local_tops{}; // topmost opaque local y per column, or -1
 		godot::RID mesh;
 		godot::RID instance;
@@ -128,6 +129,7 @@ private:
 		godot::Vector3i pos;
 		float priority; // lower runs first
 		uint32_t version = 0;
+		uint32_t serial = 0; // Chunk::serial when queued
 		bool urgent = false;
 		std::shared_ptr<const ChunkData> self;
 		std::array<std::shared_ptr<const ChunkData>, 27> neighbourhood; // neighbourhood_index()
@@ -141,6 +143,7 @@ private:
 		std::array<int8_t, CHUNK_AREA> local_tops{};
 		Surface opaque, fluid;
 		uint32_t version = 0;
+		uint32_t serial = 0;
 		bool urgent = false;
 	};
 
@@ -163,6 +166,7 @@ private:
 	godot::Vector3 _viewer;
 	godot::Vector3i _last_viewer_chunk{ 1 << 20, 0, 0 };
 	std::unordered_map<int64_t, Chunk> _chunks;
+	uint32_t _next_serial = 1; // for Chunk::serial
 	std::unordered_set<int64_t> _mesh_candidates;
 	std::unordered_set<int64_t> _urgent; // remesh after an edit: jump the queues
 	// Per chunk column (key with y = 0): topmost opaque world y per (x, z).
@@ -205,6 +209,7 @@ private:
 
 	void worker_loop();
 	void push_job(Job &&job);
+	void drop_stale_jobs(); // jobs for chunks unloaded since they were queued
 	void stop_workers();
 	void free_chunk_render(Chunk &c);
 	void update_desired(const godot::Vector3i &center);

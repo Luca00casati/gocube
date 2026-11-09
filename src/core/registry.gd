@@ -80,6 +80,23 @@ func _end_mod() -> void:
 	_current_mod = ""
 
 
+const _TABLES := ["blocks", "items", "recipes", "ores", "trees", "biomes", "sound_sets"]
+
+
+## Everything registered so far, to undo a mod that fails halfway (_restore).
+## Entries are never changed after registering, so copying the tables is enough.
+func _snapshot() -> Dictionary:
+	var out := {}
+	for t in _TABLES:
+		out[t] = (get(t) as Dictionary).duplicate()
+	return out
+
+
+func _restore(snapshot: Dictionary) -> void:
+	for t in _TABLES:
+		set(t, snapshot[t])
+
+
 ## Locks the registry and assigns default numeric block ids.
 func _freeze() -> void:
 	BlockShapes.expand(blocks)  # facing / state variants of shaped blocks

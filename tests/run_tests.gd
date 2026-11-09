@@ -2,7 +2,8 @@ extends SceneTree
 ## Runs every tests/test_*.gd file's test_* methods; exits with 1 on failure.
 ##   godot4 --headless -s res://tests/run_tests.gd [-- name_filter]
 ## A test fails if a check fails, if its file doesn't compile, or if any error
-## (script, engine or shader; not warnings) is logged while it runs.
+## (script, engine or shader; not warnings) is logged while it runs, other
+## than ones the test expects (expect_error).
 
 
 class ErrorCounter extends Logger:
@@ -71,8 +72,10 @@ func _run() -> void:
 			await suite.call(name)
 			var failures: PackedStringArray = suite._finish()
 			await process_frame
+			var expected: PackedStringArray = suite.expected_errors
 			for e in _errors.take():
-				failures.append("error logged: " + e)
+				if not Array(expected).any(func(x): return x in e):
+					failures.append("error logged: " + e)
 			var label := "%s :: %s (%d ms)" % [file.get_basename(), name, Time.get_ticks_msec() - t0]
 			if failures.is_empty():
 				passed += 1

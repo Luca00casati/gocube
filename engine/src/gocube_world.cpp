@@ -840,6 +840,14 @@ void GoCubeWorld::push_job(Job &&job) {
 	_job_cv.notify_one();
 }
 
+void GoCubeWorld::drop_stale_jobs() {
+	std::lock_guard<std::mutex> lock(_job_mutex);
+	_jobs.erase(std::remove_if(_jobs.begin(), _jobs.end(), [this](const Job &j) {
+		auto it = _chunks.find(key(j.pos));
+		return it == _chunks.end() || it->second.serial != j.serial;
+	}), _jobs.end());
+}
+
 void GoCubeWorld::worker_loop() {
 	while (true) {
 		Job job;
@@ -860,6 +868,7 @@ void GoCubeWorld::worker_loop() {
 		r.kind = job.kind;
 		r.pos = job.pos;
 		r.version = job.version;
+		r.serial = job.serial;
 		r.urgent = job.urgent;
 		const int64_t t0 = now_us();
 		if (job.kind == JOB_GENERATE) {
@@ -979,10 +988,22 @@ void GoCubeWorld::_process(double delta) {
 	}
 	for (Result &r : done) {
 		auto it = _chunks.find(key(r.pos));
-		if (it == _chunks.end()) {
-			continue; // unloaded meanwhile
+		if (it == _chunks.end() || it->second.serial != r.serial) {
+			continue; // unloaded meanwhile (and maybe loaded again since: a newer job is on its way)
 		}
 		if (r.kind == JOB_GENERATE) {
+			if (it->second.data) {
+				continue; // the host's copy arrived first (set_chunk_override)
+			}
+			{
+				// The host's copy arrived while this was being generated: it wins.
+				std::lock_guard<std::mutex> lock(_override_mutex);
+				auto oit = _overrides.find(key(r.pos));
+				if (oit != _overrides.end() && oit->second != r.data) {
+					r.data = oit->second;
+					chunk_local_tops(*r.data, _blocks, r.local_tops);
+				}
+			}
 			it->second.data = r.data;
 			it->second.local_tops = r.local_tops;
 			update_column_tops(r.pos.x, r.pos.z);
@@ -1016,6 +1037,7 @@ void GoCubeWorld::_process(double delta) {
 void GoCubeWorld::update_desired(const Vector3i &center) {
 	const int r = radius_chunks() + 1; // one extra ring: neighbours needed for meshing
 	// Unload chunks that are well out of range.
+	bool unloaded = false;
 	for (auto it = _chunks.begin(); it != _chunks.end();) {
 		// Recover chunk coordinates from the key (sign-extend 21-bit fields).
 		const int64_t k = it->first;
@@ -1029,9 +1051,13 @@ void GoCubeWorld::update_desired(const Vector3i &center) {
 			_urgent.erase(it->first);
 			_column_tops.erase(key(Vector3i(cx, 0, cz)));
 			it = _chunks.erase(it);
+			unloaded = true;
 		} else {
 			++it;
 		}
+	}
+	if (unloaded) {
+		drop_stale_jobs();
 	}
 	// Request missing chunks, nearest first.
 	for (int dz = -r; dz <= r; dz++) {
@@ -1045,10 +1071,12 @@ void GoCubeWorld::update_desired(const Vector3i &center) {
 				if (_chunks.count(k)) {
 					continue;
 				}
-				_chunks.emplace(k, Chunk());
+				Chunk &c = _chunks.emplace(k, Chunk()).first->second;
+				c.serial = _next_serial++;
 				Job job;
 				job.kind = JOB_GENERATE;
 				job.pos = p;
+				job.serial = c.serial;
 				job.priority = float(dx * dx + dz * dz) + std::abs(cy) * 0.5f;
 				push_job(std::move(job));
 			}
@@ -1081,6 +1109,7 @@ void GoCubeWorld::schedule_meshing(const Vector3i &center) {
 		job.pos = p;
 		job.priority = float(dx * dx + dz * dz) + std::abs(p.y) * 0.5f - (urgent ? 1e6f : 0.0f);
 		job.version = c.mesh_version;
+		job.serial = c.serial;
 		job.urgent = urgent;
 		job.self = c.data;
 		bool ready = true;
@@ -1127,7 +1156,7 @@ void GoCubeWorld::upload(Result &r) {
 		return;
 	}
 	Chunk &c = it->second;
-	if (r.version != c.mesh_version) {
+	if (r.serial != c.serial || r.version != c.mesh_version) {
 		return; // a newer mesh for this chunk is on its way
 	}
 	free_chunk_render(c);
