@@ -174,8 +174,10 @@ to the export unchanged. The preset also includes `*.json` and the license files
     godot4 --headless -s res://tests/run_tests.gd [-- filter]   # unit + engine tests
     bash tests/mp_smoke.sh godot4                                # host + client processes
 A test fails on a failed check, a file that doesn't compile, or any error logged while it
-runs (a test that checks something is refused declares the error with `expect_error`). The
-multiplayer test plays its own `_mp_smoke_<pid>` world and removes it, even when interrupted. CI (`.github/workflows/ci.yml`) builds the engine and runs both on every push.
+runs (a test that checks something is refused declares the error with `expect_error`). Test
+worlds are named `_test…` and, like any other `user://_test…` folder, are deleted for good
+(not to the trash) before and after every test. The multiplayer test plays its own
+`_mp_smoke_<pid>` world and removes it, even when interrupted. CI (`.github/workflows/ci.yml`) builds the engine and runs both on every push.
 
 ## Prototypes
 Feasibility results that led to the own engine (lighting, caves/trees/water, many

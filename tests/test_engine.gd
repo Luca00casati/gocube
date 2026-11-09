@@ -125,8 +125,7 @@ func test_trees_come_from_the_registry() -> void:
 
 
 func test_leaving_and_coming_back_quickly() -> void:
-	World.delete_world("_test_reload")
-	var w := await make_world(4242, "_test_reload")
+	var w := await make_world(4242, "_test_reload")  # deleted by the test runner afterwards
 	var spot := Vector3i(3, _surface(w, 3, 3) + 1, 3)
 	check(w.set_block(spot, Registry.block_index("core:planks")), "edit near the start")
 	# Back and forth faster than chunks can load: work queued for the old visits
@@ -143,5 +142,3 @@ func test_leaving_and_coming_back_quickly() -> void:
 	check(await wait_until(func(): return w.is_area_meshed(area)), "loaded again")
 	check_eq(w.get_block(spot), Registry.block_index("core:planks"), "the edit survived")
 	w.queue_free()
-	await frames(2)
-	World.delete_world("_test_reload")

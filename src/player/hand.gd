@@ -1,6 +1,7 @@
 class_name Hand
 extends Node3D
-## First-person arm and held item, attached to the camera. Swings when you hit,
+## First-person arm and held item, attached to the camera. Drawn in front of
+## the world, the item in front of the hand in front of the arm (LAYER_*). Swings when you hit,
 ## place or mine; bobs while walking; lit by the time of day (and dimmer
 ## underground).
 
@@ -13,7 +14,8 @@ var atlas: BlockAtlas
 var _arm: MeshInstance3D
 var _item: MeshInstance3D
 var _shown_item := "?"
-var _mats: Array[ShaderMaterial] = []
+var _mats: Array[ShaderMaterial] = []       # all, for the light
+var _item_mats: Array[ShaderMaterial] = []  # the held item's (replaced when it changes)
 var _swing := 0.0
 var _bob := 0.0
 var _light := 1.0
@@ -26,7 +28,8 @@ func _ready() -> void:
 	var arm_mesh := BoxMesh.new()
 	arm_mesh.size = Vector3(0.11, 0.11, 0.42)
 	_arm.mesh = arm_mesh
-	_arm.material_override = _mat(null, Color(0.34, 0.46, 0.72), 10)  # sleeve
+	_arm.material_override = _mat(null, Color(0.34, 0.46, 0.72), LAYER_ARM)  # sleeve
+	_arm.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_arm.position = Vector3(0.0, -0.02, 0.12)
 	_arm.rotation = Vector3(0.15, -0.12, 0.0)
 	add_child(_arm)
@@ -34,17 +37,26 @@ func _ready() -> void:
 	var fist_mesh := BoxMesh.new()
 	fist_mesh.size = Vector3(0.12, 0.12, 0.12)
 	fist.mesh = fist_mesh
-	fist.material_override = _mat(null, Color(0.86, 0.68, 0.54), 11)  # hand
+	fist.material_override = _mat(null, Color(0.86, 0.68, 0.54), LAYER_HAND)  # hand
+	fist.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	fist.position = Vector3(0, 0, -0.24)
 	_arm.add_child(fist)
 	_item = MeshInstance3D.new()
+	_item.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(_item)
 
 
-func _mat(tex: Texture2D, tint: Color, priority: int) -> ShaderMaterial:
+## Drawing order, front last: the held item in front of the hand, the hand in
+## front of the arm (see hand.gdshader).
+const LAYER_ARM := 0
+const LAYER_HAND := 1
+const LAYER_ITEM := 2
+
+
+func _mat(tex: Texture2D, tint: Color, layer: int) -> ShaderMaterial:
 	var m := ShaderMaterial.new()
 	m.shader = SHADER
-	m.render_priority = priority
+	m.set_shader_parameter("layer", layer)
 	m.set_shader_parameter("use_tex", tex != null)
 	if tex:
 		m.set_shader_parameter("tex", tex)
@@ -93,10 +105,15 @@ func _show_item(item: String) -> void:
 		return
 	var mesh := ItemDrop.model_mesh(item, atlas)
 	_item.mesh = mesh
+	for m in _item_mats:
+		_mats.erase(m)
+	_item_mats.clear()
 	var is_block := Registry.blocks.has(item) and mesh.get_surface_count() > 1  # boxes, not a flat icon
 	for i in mesh.get_surface_count():
 		var src := mesh.surface_get_material(i) as ShaderMaterial
-		_item.set_surface_override_material(i, _mat(src.get_shader_parameter("tex"), Color.WHITE, 12))
+		var m := _mat(src.get_shader_parameter("tex"), Color.WHITE, LAYER_ITEM)
+		_item_mats.append(m)
+		_item.set_surface_override_material(i, m)
 	if is_block:
 		_item.scale = Vector3.ONE * 1.1
 		_item.position = Vector3(-0.04, 0.04, -0.2)

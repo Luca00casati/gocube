@@ -57,6 +57,7 @@ func add(node: Node) -> Node:
 ## given), loaded around `center`.
 func make_world(world_seed: int = 4242, world_name: String = "", view: int = 64,
 		center := Vector3(0.5, 20, 0.5)) -> World:
+	assert(world_name == "" or world_name.begins_with("_test"), "test worlds are named _test... (deleted after each test)")
 	var w := World.new()
 	w.name = "TestWorld"
 	add(w)

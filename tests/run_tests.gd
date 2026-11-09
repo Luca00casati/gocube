@@ -4,6 +4,9 @@ extends SceneTree
 ## A test fails if a check fails, if its file doesn't compile, or if any error
 ## (script, engine or shader; not warnings) is logged while it runs, other
 ## than ones the test expects (expect_error).
+## Test data (worlds and folders in user:// whose names start with "_test") is
+## deleted before and after every test, so nothing is left behind and no test
+## sees another's leftovers.
 
 
 class ErrorCounter extends Logger:
@@ -34,6 +37,29 @@ func _initialize() -> void:
 	_run.call_deferred()
 
 
+## Permanently deletes test worlds (user://worlds/_test*) and other test
+## folders (user://_test*).
+static func _remove_test_data() -> void:
+	for parent in ["user://worlds", "user://"]:
+		if not DirAccess.dir_exists_absolute(parent):
+			continue
+		for d in DirAccess.get_directories_at(parent):
+			if d.begins_with("_test"):
+				_remove_dir(parent.path_join(d))
+
+
+static func _remove_dir(path: String) -> void:
+	var d := DirAccess.open(path)
+	if d == null:
+		return
+	d.include_hidden = true
+	for sub in d.get_directories():
+		_remove_dir(path.path_join(sub))
+	for f in d.get_files():
+		DirAccess.remove_absolute(path.path_join(f))
+	DirAccess.remove_absolute(path)
+
+
 func _run() -> void:
 	var filter := ""
 	if not OS.get_cmdline_user_args().is_empty():
@@ -50,6 +76,7 @@ func _run() -> void:
 		print("FAIL  loading mods")
 		for e in setup_errors:
 			print("        - ", e)
+	_remove_test_data()
 	var t_all := Time.get_ticks_msec()
 	for file in files:
 		if filter != "" and not filter in file:
@@ -72,6 +99,8 @@ func _run() -> void:
 			await suite.call(name)
 			var failures: PackedStringArray = suite._finish()
 			await process_frame
+			await process_frame  # freed worlds have saved their last chunks by now
+			_remove_test_data()
 			var expected: PackedStringArray = suite.expected_errors
 			for e in _errors.take():
 				if not Array(expected).any(func(x): return x in e):
