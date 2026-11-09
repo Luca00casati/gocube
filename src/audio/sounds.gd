@@ -4,8 +4,14 @@ extends Node
 ## Blocks pick a set with "sound": "mod:set"; a set lists files per kind
 ## ("step", "break", "place", ...). A random file is chosen and its pitch varied
 ## a little, so repeats don't sound identical.
+##
+## Effects play through a fixed set of always-playing polyphonic players:
+## Godot 4.7.2 never frees the playback object a play() creates (~7 KB per
+## sound with a real audio driver, so ~70 MB an hour of footsteps), while a
+## polyphonic stream reuses a fixed number of slots.
 
 const POOL_SIZE := 12
+const VOICES_PER_PLAYER := 2
 const MAX_DISTANCE := 32.0
 const AMBIENCE_DB := -14.0
 
@@ -23,7 +29,11 @@ func _ready() -> void:
 		p.bus = &"Effects"
 		p.max_distance = MAX_DISTANCE
 		p.unit_size = 6.0
+		var poly := AudioStreamPolyphonic.new()
+		poly.polyphony = VOICES_PER_PLAYER
+		p.stream = poly
 		add_child(p)
+		p.play()
 		_pool.append(p)
 	_day = _ambience_player("day")
 	_night = _ambience_player("night")
@@ -42,8 +52,11 @@ func stop_all() -> void:
 	for p in [_day, _night]:
 		if p:
 			p.stop()
+			p.stream = null
 	for p in _pool:
 		p.stop()
+		p.stream = null
+	_streams.clear()
 
 
 func _exit_tree() -> void:
@@ -73,11 +86,13 @@ func play(set_id: String, kind: String, at: Vector3, volume_db: float = 0.0) -> 
 		return
 	var p := _pool[_next]
 	_next = (_next + 1) % _pool.size()
-	p.stream = stream
+	if not p.playing:
+		p.play()
+	var playback := p.get_stream_playback() as AudioStreamPlaybackPolyphonic
+	if playback == null:
+		return
 	p.global_position = at
-	p.volume_db = volume_db
-	p.pitch_scale = randf_range(0.9, 1.1)
-	p.play()
+	playback.play_stream(stream, 0.0, volume_db, randf_range(0.9, 1.1))
 
 
 func set_underwater(on: bool) -> void:

@@ -20,6 +20,9 @@ struct MeshOptions {
 	// face's air side, and solid cells there darken the corner (ambient
 	// occlusion). Off: one flat light value per face (the classic look).
 	bool smooth_lighting = false;
+	// World block position of the chunk's (0, 0, 0) block, for per-block
+	// variation that must not change when the chunk is remeshed.
+	int origin_x = 0, origin_y = 0, origin_z = 0;
 };
 
 struct Surface {

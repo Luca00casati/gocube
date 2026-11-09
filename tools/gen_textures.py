@@ -154,24 +154,27 @@ def dirt(seed=5):
 
 
 def grass_top():
+    """Distinct small blades in many directions over a softly varied base, so it
+    reads as a lawn rather than blotches; wraps at the edges to tile."""
     rnd = random.Random(6)
-    blades = set()
-    for _ in range(70):
+    v = [[0.0] * S for _ in range(S)]  # position on the GRASS ramp, 0..1
+    for y in range(S):
+        for x in range(S):
+            tuft = fbm(6, x, y, ((8, 0.7), (16, 0.3))) - 0.5
+            v[y][x] = 0.46 + 0.28 * tuft + rnd.uniform(-0.04, 0.04)
+    dirs = [(0, -1), (1, -1), (-1, -1), (1, 0), (-1, 0), (0, 1), (1, 1), (-1, 1)]
+    for _ in range(150):  # blades: shadowed root, bright tip
         x, y = rnd.randrange(S), rnd.randrange(S)
-        blades.add((x, y, rnd.random() < 0.6))
-
-    bright = {(x, y) for x, y, b in blades if b}
-    dark = {(x, y) for x, y, b in blades if not b}
-
-    def px(x, y):
-        t = fbm(6, x, y, ((4, 0.55), (8, 0.3), (32, 0.15)))
-        base = (t - 0.25) / 0.5
-        if (x, y) in bright or (x, (y + 1) % S) in bright:
-            base += 0.25  # 1x2 lit blade
-        elif (x, y) in dark:
-            base -= 0.25
-        return pick(GRASS[1:], base)
-    return image(px)
+        dx, dy = rnd.choice(dirs)
+        length = rnd.choice((2, 3, 3, 4))
+        tip = rnd.uniform(0.78, 1.0)
+        for k in range(length):
+            px, py = (x + dx * k) % S, (y + dy * k) % S
+            if k == 0:
+                v[py][px] = min(v[py][px], 0.22)
+            else:
+                v[py][px] = max(v[py][px], 0.5 + (tip - 0.5) * k / (length - 1))
+    return image(lambda x, y: pick(GRASS, v[y][x]))
 
 
 def grass_side():

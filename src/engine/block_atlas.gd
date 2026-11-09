@@ -41,7 +41,8 @@ func _init() -> void:
 				tiles.append(_face_tile(def, face))
 			_icon_tiles[id] = tiles[0]  # the side face shows best as a flat icon
 		block_table.append({"solid": solid, "opaque": opaque, "fluid": fluid, "tiles": tiles,
-				"light": int(def.get("light", 0)), "fluid_level": int(def.get("level", 8))})
+				"light": int(def.get("light", 0)), "fluid_level": int(def.get("level", 8)),
+				"random_rotation": bool(def.get("random_rotation", false))})
 	atlas = _build_atlas()
 
 
@@ -126,12 +127,58 @@ func face_texture(block_index: int, face: int) -> Texture2D:
 	return _icons[key]
 
 
+const ICON_SIZE := 64
+
+## A block drawn as a small 3D cube (top, left and right faces, shaded like the
+## terrain) for inventory slots.
+func _cube_icon(block_index: int) -> Image:
+	var tiles: PackedInt32Array = block_table[block_index].tiles
+	var top: Image = _tiles[tiles[2]]
+	var left: Image = _tiles[tiles[5]]   # -Z: the face towards the viewer on the left
+	var right: Image = _tiles[tiles[0]]  # +X
+	var img := Image.create(ICON_SIZE, ICON_SIZE, false, Image.FORMAT_RGBA8)
+	var k := ICON_SIZE / 64.0
+	# Corners of the cube outline (a 2:1 isometric view).
+	var l := Vector2(4, 18) * k
+	var back := Vector2(32, 4) * k
+	var front := Vector2(32, 32) * k
+	var rgt := Vector2(60, 18) * k
+	var down := Vector2(0, 30) * k
+	var faces := [
+		[top, l, back - l, front - l, 1.0],
+		[left, l, front - l, down, 0.8],
+		[right, front, rgt - front, down, 0.62],
+	]
+	for y in ICON_SIZE:
+		for x in ICON_SIZE:
+			var p := Vector2(x + 0.5, y + 0.5)
+			for f in faces:
+				var o: Vector2 = f[1]
+				var a: Vector2 = f[2]
+				var b: Vector2 = f[3]
+				# Solve p = o + u*a + v*b.
+				var det := a.x * b.y - a.y * b.x
+				var d := p - o
+				var u := (d.x * b.y - d.y * b.x) / det
+				var v := (a.x * d.y - a.y * d.x) / det
+				if u < 0.0 or u >= 1.0 or v < 0.0 or v >= 1.0:
+					continue
+				var tex: Image = f[0]
+				var c := tex.get_pixel(int(u * TILE_SIZE), int(v * TILE_SIZE))
+				if c.a < 0.5:
+					continue
+				var shade: float = f[4]
+				img.set_pixel(x, y, Color(c.r * shade, c.g * shade, c.b * shade, 1.0))
+				break
+	return img
+
+
 func icon(id: String) -> Texture2D:
 	if _icons.has(id):
 		return _icons[id]
 	var img: Image = null
 	if _icon_tiles.has(id):
-		img = _tiles[_icon_tiles[id]]
+		img = _cube_icon(Registry.block_index(id))
 	else:
 		var def: Dictionary = Registry.items.get(id, {})
 		if def.has("texture"):

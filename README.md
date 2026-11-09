@@ -157,11 +157,11 @@ id so installing more mods doesn't move existing veins. Trees share the same spo
 spot gets one tree kind by `chance` (percent), or none. Core: coal (y ≤ 40), iron (y ≤ 8),
 gold (y ≤ −28), crystal (y ≤ −56), oak trees (30%).
 
-The time of day is your computer's local time (in multiplayer: the host's), so the sky
-follows real day and night (`DayCycle`, `src/world/day_cycle.gd`; `--time=0..1` or
-`--day-length=SECONDS` switch this off for testing): sky light dims to a moonlit
-level at night while lamps stay bright; the sky colours and sun follow the time, which is
-saved with the world and synced from the host in multiplayer.
+Time runs at real speed (a day lasts 24 hours; `DayCycle`, `src/world/day_cycle.gd`). A new
+world starts at your computer's local time; after that the time is saved with the world and
+resumes where you left off (in multiplayer: the host's, synced to everyone). Offline, pausing
+stops it. `--time=0..1` and `--day-length=SECONDS` override it for testing. Sky light dims to
+a moonlit level at night while lamps stay bright; the sky colours and sun follow the time.
 
 ## Saving
 Worlds live in `user://worlds/<name>/` (on Linux `~/.local/share/godot/app_userdata/GoCube/`):
@@ -194,6 +194,8 @@ fall back to their `"color"`.
 
 Other block keys: `"solid": false` (no collision), `"transparent": true` (doesn't hide
 neighbours or block light), `"fluid": "water"`, `"light": 0..15` (glows, e.g. `core:lamp`).
+`"random_rotation": true` turns the top and bottom texture by 0/90/180/270° per block
+position, so large flat areas (grass, sand, stone) don't show a repeating grid.
 
 ## Writing a mod
 Create `user://mods/<id>/mod.json` (see the header of `mod_loader.gd`), add JSON

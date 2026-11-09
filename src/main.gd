@@ -143,14 +143,10 @@ func _start_local() -> void:
 			ProjectSettings.globalize_path(_world.dir) if _world.is_persistent() else "<not saved>"])
 	if net_mode == "host":
 		print("Hosting on port %d (%s)" % [port, ", ".join(_lan_addresses())])
-	_start_day(float(_args.get("time", _world.meta.get("time", DayCycle.START_TIME))),
+	# Time runs at real speed (a day is 24 hours) and resumes from the save; a
+	# new world starts at the computer's local time. --time overrides it.
+	_start_day(float(_args.get("time", _world.meta.get("time", DayCycle.system_time()))),
 			float(_args.get("day-length", DayCycle.DEFAULT_DAY_LENGTH)))
-	# The game's time is the computer's local time, unless a test/launch option
-	# sets the time or day length.
-	_day.follow_system_clock = not (_args.has("time") or _args.has("day-length"))
-	if _day.follow_system_clock:
-		_day.time = DayCycle.system_time()
-		_day.apply()
 	_mark("world built")
 
 	_spawn_player(Vector3(0, 40, 0))
@@ -304,7 +300,7 @@ func spawn_drop(item: String, count: int, at: Vector3) -> void:
 			d.count += count
 			return
 	var drop := ItemDrop.new()
-	drop.setup(item, count, _world.atlas.icon(item))
+	drop.setup(item, count, _world.atlas)
 	drop.world = _world
 	drop.player = _player
 	drop.velocity = Vector3(randf_range(-1.5, 1.5), 3.0, randf_range(-1.5, 1.5))
@@ -416,11 +412,12 @@ func _save_and_quit() -> void:
 	await _quit()
 
 
-## Quits cleanly: stop sounds, give the audio thread a frame to let go of them.
+## Quits cleanly: stop sounds and give the audio thread time to let go of them
+## (it drops stopped sounds on its next mix; a couple of frames isn't always
+## enough with a real audio device, which leaves them "still in use" at exit).
 func _quit() -> void:
 	_sounds.stop_all()
-	await get_tree().process_frame
-	await get_tree().process_frame
+	await get_tree().create_timer(0.25, true, false, true).timeout
 	get_tree().quit()
 
 
@@ -531,6 +528,8 @@ func _process(_delta: float) -> void:
 		_sounds.set_underwater(_underwater.visible)
 	if _sounds:
 		_sounds.update_ambience(_day.day_amount())
+	if _day:
+		ItemDrop.set_daylight(_day.day_amount())
 	var status := "%d FPS · %s" % [Engine.get_frames_per_second(), _day.clock_text(Settings.clock_24h)]
 	if _player and not _player.autopilot:
 		status += " · %s · %s · E inventory" % ["creative" if _player.creative else "survival",

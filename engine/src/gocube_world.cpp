@@ -80,6 +80,7 @@ void GoCubeWorld::configure_blocks(const TypedArray<Dictionary> &blocks) {
 		b.fluid = d.get("fluid", false);
 		b.emit = static_cast<uint8_t>(std::clamp(int(d.get("light", 0)), 0, LIGHT_MAX));
 		b.fluid_level = static_cast<uint8_t>(std::clamp(int(d.get("fluid_level", 8)), 1, 8));
+		b.random_rotation = d.get("random_rotation", false);
 		const PackedInt32Array tiles = d.get("tiles", PackedInt32Array());
 		for (int f = 0; f < FACE_COUNT; f++) {
 			b.tiles[f] = f < tiles.size() ? tiles[f] : 0;
@@ -715,6 +716,9 @@ void GoCubeWorld::worker_loop() {
 			};
 			MeshOptions options;
 			options.smooth_lighting = _smooth_lighting.load();
+			options.origin_x = job.pos.x * CHUNK;
+			options.origin_y = job.pos.y * CHUNK;
+			options.origin_z = job.pos.z * CHUNK;
 			mesh_chunk(*job.self, nb, _blocks, _atlas, &light, options, r.opaque, r.fluid);
 			_mesh_us += now_us() - t0;
 			_mesh_count++;

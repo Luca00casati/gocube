@@ -112,6 +112,15 @@ inline BlockId sample(const ChunkData &c, const ChunkData *const nb[FACE_COUNT],
 	return n ? n->get(x, y, z) : solid_fallback;
 }
 
+// A stable quarter-turn count (0..3) for a world block position.
+static int block_rotation(int x, int y, int z) {
+	uint32_t h = uint32_t(x) * 0x8da6b343u ^ uint32_t(y) * 0xd8163841u ^ uint32_t(z) * 0xcb1ab31fu;
+	h ^= h >> 15;
+	h *= 0x2c1b3c6du;
+	h ^= h >> 12;
+	return int(h >> 30);
+}
+
 // Light for each of the 4 corners: {sky, block, occlusion}.
 struct CornerLight {
 	float sky[4], block[4], ao[4];
@@ -119,8 +128,9 @@ struct CornerLight {
 
 // top_height: where the face's upper corners sit (1 = full block; lower for
 // flowing fluids).
+// rotation: quarter turns of the texture within the face (0..3).
 void emit_face(Surface &s, const FaceDef &d, float bx, float by, float bz, const AtlasLayout &atlas, int tile,
-		const CornerLight &cl, float top_height = 1.0f) {
+		const CornerLight &cl, float top_height = 1.0f, int rotation = 0) {
 	const int base = static_cast<int>(s.positions.size() / 3);
 	const float tw = 1.0f / (atlas.cols * atlas.cell);
 	const float th = 1.0f / (atlas.rows * atlas.cell);
@@ -135,8 +145,14 @@ void emit_face(Surface &s, const FaceDef &d, float bx, float by, float bz, const
 		s.normals.push_back(static_cast<float>(d.dx));
 		s.normals.push_back(static_cast<float>(d.dy));
 		s.normals.push_back(static_cast<float>(d.dz));
-		s.uvs.push_back(u0 + d.st[c][0] * tw);
-		s.uvs.push_back(v0 + d.st[c][1] * th);
+		float su = d.st[c][0], sv = d.st[c][1];
+		for (int r = 0; r < rotation; r++) {
+			const float t = su;
+			su = 1.0f - sv;
+			sv = t;
+		}
+		s.uvs.push_back(u0 + su * tw);
+		s.uvs.push_back(v0 + sv * th);
 		s.colors.insert(s.colors.end(), { cl.sky[c], cl.block[c], cl.ao[c], 1.0f });
 	}
 	// Split the quad along the diagonal whose corners are more alike, so light
@@ -253,7 +269,10 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 								cl.ao[c] = 1.0f;
 							}
 						}
-						emit_face(opaque, d, x, y, z, atlas, info.tiles[f], cl);
+						const int rot = info.random_rotation && d.dy != 0
+								? block_rotation(options.origin_x + x, options.origin_y + y, options.origin_z + z)
+								: 0;
+						emit_face(opaque, d, x, y, z, atlas, info.tiles[f], cl, 1.0f, rot);
 					}
 				}
 			}
