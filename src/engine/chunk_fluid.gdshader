@@ -12,6 +12,9 @@ uniform vec3 block_light_color : source_color = vec3(1.0, 0.85, 0.62);
 uniform float min_light = 0.035;
 uniform vec3 underside_color : source_color = vec3(0.72, 0.88, 1.0);
 uniform float underside_alpha = 0.82;
+const int MAX_HAND_LIGHTS = 8;  // as in chunk.gdshader
+uniform vec4 hand_lights[MAX_HAND_LIGHTS];
+uniform int hand_light_count = 0;
 
 varying vec3 v_world;
 
@@ -32,6 +35,10 @@ float light_curve(float level01) {
 
 void fragment() {
 	vec3 light = max(vec3(light_curve(COLOR.r) * daylight), block_light_color * light_curve(COLOR.g));
+	for (int i = 0; i < hand_light_count; i++) {
+		float level = clamp(hand_lights[i].w - distance(v_world, hand_lights[i].xyz), 0.0, 15.0) / 15.0;
+		light = max(light, block_light_color * light_curve(level));
+	}
 	float r = ripples(v_world.xz);
 	vec4 base = use_atlas ? texture(albedo_texture, UV) : fluid_color;
 	vec3 color = base.rgb * (0.92 + 0.16 * r);

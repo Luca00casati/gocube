@@ -67,6 +67,7 @@ func _process(delta: float) -> void:
 	if item != _shown_item:
 		_shown_item = item
 		_show_item(item)
+		_light_timer = 0.0
 	# Keep swinging while mining.
 	if player.mining_progress > 0.0 and _swing <= 0.0:
 		_swing = SWING_TIME
@@ -113,5 +114,7 @@ func _update_light() -> void:
 	var eye: Vector3 = player.camera.global_position
 	var covered: bool = player.world.raycast(eye, Vector3.UP, 64.0).hit
 	_light = maxf(0.25, day * (0.55 if covered else 1.0))
+	if player.get_meta("hand_light", 0.0) > 0.0:
+		_light = 1.0  # holding a torch
 	for m in _mats:
 		m.set_shader_parameter("light", _light)

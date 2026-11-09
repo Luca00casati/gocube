@@ -412,6 +412,40 @@ func _smoke_puff(at: Vector3) -> void:
 
 
 ## The F3 screen: where you are, what you look at, and how the world is doing.
+## Light-giving blocks in hand (torches) light the world around players:
+## ours and those of other players in multiplayer (nearest first).
+const MAX_HAND_LIGHTS := 8
+
+
+func _update_hand_light() -> void:
+	if _world == null:
+		return
+	var level := 0.0
+	if _player and not _player.dead and not _player.autopilot:
+		level = float(Registry.blocks.get(_player.selected_item(), {}).get("light", 0))
+	var lights: Array = []
+	if level > 0.0:
+		var c := _cam.global_position
+		lights.append(Vector4(c.x, c.y, c.z, level))
+	if _session:
+		_session.held_light = int(level)
+		var others: Array = _session.held_lights()
+		if others.size() > MAX_HAND_LIGHTS - lights.size():
+			var c := _cam.global_position
+			others.sort_custom(func(a, b): return Vector3(a.x, a.y, a.z).distance_squared_to(c) \
+					< Vector3(b.x, b.y, b.z).distance_squared_to(c))
+		lights.append_array(others.slice(0, MAX_HAND_LIGHTS - lights.size()))
+	var packed := PackedVector4Array(lights)
+	packed.resize(MAX_HAND_LIGHTS)
+	for m in [_world.terrain_material, _world.fluid_material]:
+		if m:
+			m.set_shader_parameter("hand_light_count", lights.size())
+			if not lights.is_empty():
+				m.set_shader_parameter("hand_lights", packed)
+	if _player:
+		_player.set_meta("hand_light", level)
+
+
 func _debug_text() -> String:
 	if _player == null or _world.engine == null:
 		return ""
@@ -636,6 +670,7 @@ func _process(_delta: float) -> void:
 		ItemDrop.set_daylight(_day.day_amount())
 		if _player:
 			_player.set_meta("daylight", _day.daylight())
+	_update_hand_light()
 	var status := "%d FPS · %s" % [Engine.get_frames_per_second(), _day.clock_text(Settings.clock_24h)]
 	if _player and not _player.autopilot:
 		status += " · %s · %s · E inventory" % ["creative" if _player.creative else "survival",

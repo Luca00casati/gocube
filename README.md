@@ -100,7 +100,7 @@ make bread, and eating food (`"food"`) heals when you're hurt.
 **Building**: torches (coal + stick; light 13, on floors and walls), slabs and stairs
 (stone, cobblestone, planks), wooden doors (right click opens both halves), fences,
 ladders (climb with Space or by walking into them; no fall damage), glass (smelt sand).
-Torches, ladders, doors and plants pop off when what holds them goes.
+Torches, ladders, doors and plants pop off when what holds them goes. Holding a torch (any block with `"light"`) lights the world around you as you walk, and other players see your light (and the torch in your hand) in multiplayer.
 
 **Creative**: every block in the inventory, instant breaking, nothing is used up. Worlds from before game modes are creative.
 

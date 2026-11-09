@@ -39,6 +39,7 @@ func _ready() -> void:
 		game._world.block_entities.click(CHEST, 0, {"id": "core:coal", "count": 4})
 		var g: Dictionary = game._world.raycast(Vector3(8.5, World.TOP_Y, 8.5), Vector3.DOWN, 400)
 		game._mobs.spawn_at(Vector3(8.5, g.position.y + 1, 8.5))
+		game._player.inventory.slots[game._player.selected] = {"id": "core:torch", "count": 1}
 		print("HOST ready")
 		await _wait_for(func(): return not game._session._peers.is_empty(), 60)
 		await get_tree().create_timer(1.5).timeout
@@ -59,6 +60,8 @@ func _ready() -> void:
 		game._player._frozen = true
 		game._session.request_edit(target, Registry.block_index("core:planks"))
 		results["client edit via host"] = await _wait_for(func(): return w.get_block(target) == Registry.block_index("core:planks"), 5)
+		results["sees the host's torch light"] = await _wait_for(
+				func(): return game._session.held_lights().any(func(l): return l.w == 13.0), 5)
 		results["sees the host's creatures"] = await _wait_for(func(): return game._mobs.count() >= 1, 5)
 		# Breaking: the drop appears only once the host has confirmed it.
 		var drops: Node = game._drops_node

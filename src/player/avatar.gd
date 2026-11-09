@@ -4,6 +4,8 @@ extends Node3D
 
 var target_position := Vector3.ZERO
 var target_yaw := 0.0
+var light := 0            # level of the light they hold (a torch), 0 for none
+var _torch: Node3D
 
 
 func setup(player_name: String, peer_id: int) -> void:
@@ -35,6 +37,25 @@ func setup(player_name: String, peer_id: int) -> void:
 	eyes.position = Vector3(0, 0.05, -0.23)
 	add_child(eyes)
 
+	_torch = Node3D.new()  # shown while they hold a torch
+	_torch.position = Vector3(0.38, -0.75, -0.2)
+	_torch.rotation.x = -0.4
+	_torch.visible = false
+	add_child(_torch)
+	var stick_mat := StandardMaterial3D.new()
+	stick_mat.albedo_color = Color(0.45, 0.3, 0.16)
+	var flame_mat := StandardMaterial3D.new()
+	flame_mat.albedo_color = Color(1.0, 0.75, 0.25)
+	flame_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	for part in [[Vector3(0.07, 0.5, 0.07), Vector3.ZERO, stick_mat], [Vector3(0.11, 0.12, 0.11), Vector3(0, 0.3, 0), flame_mat]]:
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = part[0]
+		mi.mesh = bm
+		mi.position = part[1]
+		mi.material_override = part[2]
+		_torch.add_child(mi)
+
 	var tag := Label3D.new()
 	tag.text = player_name
 	tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -50,3 +71,4 @@ func _process(delta: float) -> void:
 	var t := 1.0 - exp(-15.0 * delta)
 	position = position.lerp(target_position, t)
 	rotation.y = lerp_angle(rotation.y, target_yaw, t)
+	_torch.visible = light > 0

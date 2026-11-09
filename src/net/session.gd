@@ -32,7 +32,7 @@ signal struck(damage: int, push: Vector3)
 const Avatar := preload("res://src/player/avatar.gd")
 const Player := preload("res://src/player/player.gd")
 
-const PROTOCOL := 1
+const PROTOCOL := 2
 const DEFAULT_PORT := 24680
 const MAX_PLAYERS := 8
 const STATE_INTERVAL := 0.05       # seconds between position updates (20 Hz)
@@ -46,6 +46,7 @@ var mode := Mode.OFFLINE
 var world: World
 ## The local player's eyes (camera); its position is what others see.
 var local_player: Node3D
+var held_light := 0         # light level of what the local player holds (a torch: 13); set by main
 var player_name := "Player"
 ## Time of day; the host's is authoritative.
 var day_cycle: DayCycle
@@ -234,13 +235,14 @@ func _on_peer_disconnected(id: int) -> void:
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
-func _client_state(pos: Vector3, yaw: float) -> void:
+func _client_state(pos: Vector3, yaw: float, light: int) -> void:
 	var id := multiplayer.get_remote_sender_id()
 	if not is_host() or not _peers.has(id) or not pos.is_finite():
 		return
 	var p: Dictionary = _peers[id]
 	p.position = pos
 	p.yaw = yaw
+	p.light = clampi(light, 0, 15)
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -438,9 +440,9 @@ func _chunk(chunk_pos: Vector3i, bytes: PackedByteArray) -> void:
 func _host_states() -> Dictionary:
 	var states := {}
 	if local_player:
-		states[1] = [local_player.global_position, local_player.global_rotation.y, player_name]
+		states[1] = [local_player.global_position, local_player.global_rotation.y, player_name, held_light]
 	for id in _peers:
-		states[id] = [_peers[id].position, _peers[id].yaw, _peers[id].name]
+		states[id] = [_peers[id].position, _peers[id].yaw, _peers[id].name, _peers[id].get("light", 0)]
 	return states
 
 
@@ -471,7 +473,17 @@ func _process(delta: float) -> void:
 		if not _peers.is_empty():
 			_players_state.rpc(states)
 	elif is_client() and _welcomed:
-		_client_state.rpc_id(1, local_player.global_position, local_player.global_rotation.y)
+		_client_state.rpc_id(1, local_player.global_position, local_player.global_rotation.y, held_light)
+
+
+## Other players carrying light: [Vector4(x, y, z, level)] for the terrain shader.
+func held_lights() -> Array:
+	var out := []
+	for id in _avatars:
+		var a = _avatars[id]
+		if a.light > 0:
+			out.append(Vector4(a.position.x, a.position.y, a.position.z, a.light))
+	return out
 
 
 func _update_avatars(states: Dictionary) -> void:
@@ -488,6 +500,7 @@ func _update_avatars(states: Dictionary) -> void:
 			_avatars[id] = avatar
 		avatar.target_position = states[id][0]
 		avatar.target_yaw = states[id][1]
+		avatar.light = states[id][3] if states[id].size() > 3 else 0
 	for id in _avatars.keys():
 		if not states.has(id):
 			_avatars[id].queue_free()
