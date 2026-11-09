@@ -161,7 +161,9 @@ Time runs at real speed (a day lasts 24 hours; `DayCycle`, `src/world/day_cycle.
 world starts at your computer's local time; after that the time is saved with the world and
 resumes where you left off (in multiplayer: the host's, synced to everyone). Offline, pausing
 stops it. `--time=0..1` and `--day-length=SECONDS` override it for testing. Sky light dims to
-a moonlit level at night while lamps stay bright; the sky colours and sun follow the time.
+a moonlit level at night while lamps stay bright. The sky (`src/world/sky.gdshader`) has a
+square pixel sun rising in the east, a pixel moon opposite it, stars that fade in at night
+and turn with the sky, and a drifting layer of blocky clouds tinted by the time of day.
 
 ## Saving
 Worlds live in `user://worlds/<name>/` (on Linux `~/.local/share/godot/app_userdata/GoCube/`):

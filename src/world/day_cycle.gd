@@ -26,12 +26,17 @@ var day_length := DEFAULT_DAY_LENGTH
 var follow_system_clock := false
 ## Materials with a `daylight` uniform (terrain, fluids).
 var materials: Array[ShaderMaterial] = []
-var sky_material: ProceduralSkyMaterial
+## The sky (src/world/sky.gdshader): gradient, sun, moon, stars, clouds.
+var sky_material: ShaderMaterial
+## Clouds drift in real time (cells per second), whatever the day length.
+const CLOUD_SPEED := Vector2(0.35, 0.12)
+var _cloud_offset := Vector2.ZERO
 var environment: Environment
 var sun: DirectionalLight3D
 
 
 func _process(delta: float) -> void:
+	_cloud_offset += CLOUD_SPEED * delta
 	if follow_system_clock:
 		time = system_time()
 	else:
@@ -84,15 +89,22 @@ func apply() -> void:
 		m.set_shader_parameter("daylight", light)
 	# Orange near the horizon around sunrise and sunset.
 	var dusk := clampf(1.0 - absf(sun_height()) / 0.3, 0.0, 1.0)
+	# Rises in the east (+x), overhead at noon, sets in the west.
+	var angle := (time - 0.25) * TAU
+	# The sun light's +z points at the sun: (cos a, sin a, 0), east in the morning.
+	var sun_basis := Basis.from_euler(Vector3(-angle, deg_to_rad(90.0), 0.0))
 	if sky_material:
-		sky_material.sky_top_color = NIGHT_TOP.lerp(DAY_TOP, day)
-		sky_material.sky_horizon_color = NIGHT_HORIZON.lerp(DAY_HORIZON, day).lerp(DUSK_HORIZON, dusk * 0.65)
-		sky_material.ground_horizon_color = sky_material.sky_horizon_color
-		sky_material.ground_bottom_color = NIGHT_GROUND.lerp(DAY_GROUND, day)
+		sky_material.set_shader_parameter("top_color", NIGHT_TOP.lerp(DAY_TOP, day))
+		sky_material.set_shader_parameter("horizon_color",
+				NIGHT_HORIZON.lerp(DAY_HORIZON, day).lerp(DUSK_HORIZON, dusk * 0.65))
+		sky_material.set_shader_parameter("ground_color", NIGHT_GROUND.lerp(DAY_GROUND, day))
+		sky_material.set_shader_parameter("sun_dir", sun_basis.z)  # a light shines along -z
+		sky_material.set_shader_parameter("day", day)
+		sky_material.set_shader_parameter("dusk", dusk)
+		sky_material.set_shader_parameter("sky_angle", angle)
+		sky_material.set_shader_parameter("cloud_offset", _cloud_offset)
 	if sun:
-		# Rises in the east (+x), overhead at noon, sets in the west.
-		var angle := (time - 0.25) * TAU
-		sun.rotation = Vector3(-angle, deg_to_rad(-90.0), 0.0)
+		sun.basis = sun_basis
 		sun.light_energy = day
 		sun.visible = day > 0.01
 	if environment:

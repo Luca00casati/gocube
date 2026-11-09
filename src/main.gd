@@ -564,7 +564,9 @@ func _add_environment() -> void:
 	env.environment = Environment.new()
 	env.environment.background_mode = Environment.BG_SKY
 	env.environment.sky = Sky.new()
-	env.environment.sky.sky_material = ProceduralSkyMaterial.new()
+	var sky := ShaderMaterial.new()
+	sky.shader = preload("res://src/world/sky.gdshader")
+	env.environment.sky.sky_material = sky
 	env.environment.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	# Default 256 px radiance map costs ~120 ms on the first frame on weak GPUs;
 	# blocks are fully rough, so a tiny one looks identical.
