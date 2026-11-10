@@ -84,8 +84,7 @@ func mobs() -> Array:
 
 
 func _process(_delta: float) -> void:
-	if day_amount.is_valid():  # (players' figures use the same materials)
-		BlockEater.set_daylight(day_amount.call())
+	pass  # (each creature lights itself from where it is: World.light_for)
 
 
 func _physics_process(delta: float) -> void:

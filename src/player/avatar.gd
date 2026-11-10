@@ -25,6 +25,7 @@ var follow := true
 var velocity := Vector3.ZERO
 var on_floor := true
 var atlas: BlockAtlas     # for the held item's model
+var world: World          # to light the figure by where it stands
 
 var figure: Figure
 var _held: MeshInstance3D
@@ -69,6 +70,7 @@ func setup(player_name: String, peer_id: int, block_atlas: BlockAtlas = null) ->
 	tag.pixel_size = 0.0015
 	tag.outline_size = 6
 	tag.position.y = 0.55
+	tag.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(tag)
 
 
@@ -111,6 +113,10 @@ func _process(delta: float) -> void:
 	# Asleep the eye is on the pillow: the head goes there, the body along the bed.
 	var lie := figure.lie_amount()
 	figure.position = Vector3(0, -EYE_HEIGHT, 0).lerp(Vector3(0, -0.3, -1.35), lie)
+	if world:  # (origin: the eyes; light at the chest)
+		var at := global_position + Vector3(0, -0.6, 0)
+		figure.set_light(world.light_for(at, DayCycle.NIGHT_CREATURE_LIGHT))
+		ItemDrop.light_model(_held, world, at)
 	if swings != _seen_swings:
 		_seen_swings = swings
 		figure.swing()

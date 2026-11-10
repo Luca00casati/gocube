@@ -66,6 +66,11 @@ static func system_time() -> float:
 
 
 ## +1 at noon, 0 at sunrise/sunset, -1 at midnight.
+## Sky light's colour and strength now: white by day, faint blue at night.
+func sky_color() -> Color:
+	return NIGHT_TINT.lerp(Color.WHITE, day_amount()) * daylight()
+
+
 ## How strongly the sun shines (0 at night, low at dawn and dusk): shade,
 ## shadows and cloud shadows scale with it.
 func sun_amount() -> float:

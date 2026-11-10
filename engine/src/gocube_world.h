@@ -98,6 +98,9 @@ public:
 	// The boxes a ray can hit in the block at `position` (what the player
 	// points at), relative to the block's corner; empty for air and fluids.
 	godot::Array pick_boxes(const godot::Vector3i &position) const;
+	// Sky and block light (0..1 each) in the block at a world position, as
+	// last lit for drawing; (1, 0) where nothing is known yet.
+	godot::Vector2 light_at(const godot::Vector3 &position) const;
 	void set_shadow_chunks(int chunks);
 	int get_shadow_chunks() const;
 	// The fluid surface's vertices in the chunk at chunk_pos, in world
@@ -131,6 +134,8 @@ private:
 		std::array<int8_t, CHUNK_AREA> local_tops{}; // topmost opaque local y per column, or -1
 		godot::RID mesh;
 		int fluid_surface = -1; // the mesh surface holding fluids (-1: none)
+		// Light of each block from the last mesh: sky << 4 | block (light_at).
+		std::shared_ptr<const std::vector<uint8_t>> light;
 		godot::RID instance;
 	};
 
@@ -154,6 +159,7 @@ private:
 		std::shared_ptr<const ChunkData> data;
 		std::array<int8_t, CHUNK_AREA> local_tops{};
 		Surface opaque, fluid;
+		std::shared_ptr<const std::vector<uint8_t>> light; // mesh jobs: see Chunk::light
 		uint32_t version = 0;
 		uint32_t serial = 0;
 		bool urgent = false;

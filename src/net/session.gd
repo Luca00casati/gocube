@@ -821,6 +821,7 @@ func _update_avatars(states: Dictionary) -> void:
 		if avatar == null:
 			avatar = Avatar.new()
 			avatar.setup(states[id][2], id, world.atlas)
+			avatar.world = world
 			avatar.position = states[id][0]
 			world.add_child(avatar)
 			_avatars[id] = avatar

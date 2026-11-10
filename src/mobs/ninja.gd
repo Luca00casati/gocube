@@ -98,6 +98,8 @@ func _process(delta: float) -> void:
 		_speed = lerpf(_speed, Vector2(position.x - _last.x, position.z - _last.z).length() / delta, smooth)
 		_vspeed = lerpf(_vspeed, (position.y - _last.y) / delta, smooth)
 	_last = position
+	if world:  # lit by where it stands: dark at night, bright by a torch
+		_figure.set_light(world.light_for(global_position + Vector3(0, 1.0, 0), DayCycle.NIGHT_CREATURE_LIGHT))
 	_figure.move_speed = _speed
 	_figure.on_floor = absf(_vspeed) < 1.5
 	attacking = maxf(0.0, attacking - delta)

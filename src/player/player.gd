@@ -153,6 +153,7 @@ func _ready() -> void:
 	_body = preload("res://src/player/avatar.gd").new()
 	_body.setup("", multiplayer.get_unique_id(), world.atlas if world else null)
 	_body.follow = false
+	_body.world = world
 	_body.position.y = EYE_HEIGHT
 	_body.visible = false
 	add_child(_body)

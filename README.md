@@ -206,7 +206,10 @@ creatures) and the engine's phase tests: [PROTOTYPES.md](PROTOTYPES.md),
   shaders (classic face shading × baked sky/block light; `daylight` uniform; the sun's
   share is added in the terrain shader's `light()` times Godot's shadow, so hills, trees and
   buildings cast shadows, plus drifting cloud shadows and a slow variation in the green of
-  grass and leaves, `"tint": true`).
+  grass and leaves, `"tint": true`). Water takes the same shade and shadows. Creatures,
+  players, dropped and held items and the first-person hand are lit by where they are
+  (`World.light_for`: sky, placed lights from the engine's `light_at`, torches players hold),
+  and players and creatures cast shadows.
 - `src/world/world.gd` — `World`: the engine plus the world's save folder and id table.
 - `src/ui/world_menu.gd` — title screen / world select (the main scene); `settings_screen.gd`,
   `inventory_screen.gd`, `hotbar.gd`.

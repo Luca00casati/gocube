@@ -9,7 +9,7 @@ render_mode unshaded, cull_back;
 uniform sampler2D tex : source_color, filter_nearest;
 uniform bool use_tex = false;
 uniform vec4 tint : source_color = vec4(1.0);
-uniform float light = 1.0;
+uniform vec3 light = vec3(1.0);  // World.light_for at the eyes (set by Hand)
 uniform int layer = 0; // 0 arm, 1 hand, 2 held item: higher is drawn in front
 
 varying vec3 local_normal;

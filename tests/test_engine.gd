@@ -142,3 +142,24 @@ func test_leaving_and_coming_back_quickly() -> void:
 	check(await wait_until(func(): return w.is_area_meshed(area)), "loaded again")
 	check_eq(w.get_block(spot), Registry.block_index("core:planks"), "the edit survived")
 	w.queue_free()
+
+
+## Things that aren't terrain (creatures, players, items, the hand) are lit by
+## where they are, like the terrain: dark at night, bright by a held torch or
+## a placed lamp.
+func test_light_for_creatures_and_items() -> void:
+	var w := await make_world(4242, "", 64, Vector3(0.5, 70, 0.5))
+	w.sky_light = Color(0.012, 0.014, 0.02)  # night
+	var open := Vector3(0.5, 71, 0.5)
+	var dark: Color = w.light_for(open)
+	check(dark.r < 0.05, "at night, out in the open: dark (%.3f)" % dark.r)
+	w.hand_lights = [Vector4(1.5, 71.5, 0.5, 13.0)]  # someone holding a torch a block away
+	var by_torch: Color = w.light_for(open)
+	check(by_torch.r > 0.4, "next to a held torch: bright (%.2f)" % by_torch.r)
+	check(by_torch.r > by_torch.b, "in its warm colour")
+	check(w.light_for(Vector3(20.5, 71, 0.5)).r < 0.05, "far from it: still dark")
+	w.hand_lights = []
+	w.set_block(Vector3i(5, 70, 5), Registry.block_index("core:lamp"))
+	var lit := await wait_until(func(): return w.light_for(Vector3(6.5, 70.5, 5.5)).r > 0.5, 5)
+	check(lit, "next to a placed lamp: bright")
+	check(w.light_for(open, 0.07).r >= 0.07, "never below the floor asked for")

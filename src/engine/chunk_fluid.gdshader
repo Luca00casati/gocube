@@ -1,6 +1,9 @@
 shader_type spatial;
-// Fluid surface for the native engine: flat colour, see-through, lit like terrain.
-render_mode unshaded, blend_mix, cull_disabled, depth_draw_opaque;
+// Fluid surface for the native engine: flat colour, see-through, lit like the
+// terrain (chunk.gdshader): everything but the sun is EMISSION, the sun's
+// share comes in light() times Godot's shadow, so water lies in the shade of
+// hills and clouds like the shore does.
+render_mode blend_mix, cull_disabled, depth_draw_opaque, ambient_light_disabled, specular_disabled;
 
 uniform vec4 fluid_color : source_color = vec4(0.25, 0.46, 0.84, 0.7);
 // The terrain atlas: each fluid's tile gives its colour and transparency
@@ -9,6 +12,9 @@ uniform sampler2D albedo_texture : source_color, filter_nearest;
 uniform bool use_atlas = false;
 uniform float daylight : hint_range(0.0, 1.0) = 1.0;
 uniform vec3 sky_tint : source_color = vec3(1.0);  // see chunk.gdshader
+uniform float sun_amount = 1.0;                    // see chunk.gdshader
+uniform vec2 cloud_offset = vec2(0.0);
+const float SHADE = 0.55;                          // as in chunk.gdshader
 uniform vec3 block_light_color : source_color = vec3(1.0, 0.85, 0.62);
 uniform float min_light = 0.02;
 uniform vec3 underside_color : source_color = vec3(0.72, 0.88, 1.0);
@@ -18,6 +24,7 @@ uniform vec4 hand_lights[MAX_HAND_LIGHTS];
 uniform int hand_light_count = 0;
 
 varying vec3 v_world;
+varying vec3 v_sun;  // what the sun adds where it reaches (fragment -> light)
 
 void vertex() {
 	v_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -30,26 +37,37 @@ float ripples(vec2 p) {
 	return 0.5 + 0.25 * a + 0.25 * b;
 }
 
-float light_curve(float level01) {
-	return level01 <= 0.0 ? 0.0 : pow(0.8, 15.0 - level01 * 15.0);
-}
+#include "res://src/engine/block_light.gdshaderinc"
 
 void fragment() {
-	vec3 light = max(light_curve(COLOR.r) * daylight * sky_tint, block_light_color * light_curve(COLOR.g));
+	vec3 sky = light_curve(COLOR.r) * daylight * sky_tint;
+	vec3 blk = block_light_color * light_curve(COLOR.g);
 	for (int i = 0; i < hand_light_count; i++) {
 		float level = clamp(hand_lights[i].w - distance(v_world, hand_lights[i].xyz), 0.0, 15.0) / 15.0;
-		light = max(light, block_light_color * light_curve(level));
+		blk = max(blk, block_light_color * light_curve(level));
 	}
+	blk = max(blk, vec3(min_light));
 	float r = ripples(v_world.xz);
 	vec4 base = use_atlas ? texture(albedo_texture, UV) : fluid_color;
 	vec3 color = base.rgb * (0.92 + 0.16 * r);
 	float alpha = base.a;
+	vec3 full = max(sky, blk);
+	vec3 shade = max(sky * (1.0 - SHADE * sun_amount), blk);
 	if (!FRONT_FACING && alpha < 0.99) {
 		// Seen from underneath (you're in the water): a bright, nearly opaque
 		// ceiling, so the surface is clearly visible from below.
 		color = mix(base.rgb, underside_color, 0.45 + 0.3 * r);
 		alpha = underside_alpha;
+		shade = full;  // (no sun or shadows on it)
 	}
-	ALBEDO = color * max(light, vec3(min_light));
+	ALBEDO = vec3(1.0);
+	EMISSION = color * shade;
+	v_sun = color * (full - shade) * (1.0 - CLOUD_SHADE * cloud_cover(v_world.xz, cloud_offset));
 	ALPHA = alpha;
+}
+
+void light() {
+	if (LIGHT_IS_DIRECTIONAL) {
+		DIFFUSE_LIGHT += v_sun * smoothstep(0.1, 0.7, ATTENUATION);  // as in chunk.gdshader
+	}
 }

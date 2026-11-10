@@ -51,10 +51,11 @@ func setup(item_id: String, amount: int, atlas: BlockAtlas) -> void:
 
 
 ## Follows the time of day like the terrain (0..1 daylight).
-static func set_daylight(amount: float) -> void:
-	var light := lerpf(DayCycle.NIGHT_CREATURE_LIGHT, 1.0, amount)
-	for m in _mats:
-		m.set_shader_parameter("light", light)
+## Lights a model (a drop, or an item a player holds) with the light at `at`.
+static func light_model(model: GeometryInstance3D, world: World, at: Vector3) -> void:
+	if model and world:
+		var c := world.light_for(at, DayCycle.NIGHT_CREATURE_LIGHT)
+		model.set_instance_shader_parameter("lit", Vector3(c.r, c.g, c.b))
 
 
 static func _material(tex: Texture2D) -> ShaderMaterial:
@@ -237,6 +238,7 @@ func _physics_process(delta: float) -> void:
 
 
 func _animate(delta: float) -> void:
+	light_model(_model, world, global_position + Vector3(0, 0.3, 0))
 	if _model:
 		_model.position.y = BOX.y + 0.06 + 0.06 * sin(_age * 2.5)
 		_model.rotation.y += delta * 1.2  # slowly spinning

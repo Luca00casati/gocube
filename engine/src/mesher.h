@@ -37,8 +37,10 @@ struct Surface {
 
 // neighbours: FACE_* order; nullptr means "outside the world" (above: air, below: solid).
 // light: per-face light is taken from the cell in front of each face; nullptr = full light.
+// hood: the 3x3x3 chunk neighbourhood (neighbourhood_index), or nullptr; fluid
+// surfaces use its diagonal chunks so their corners match across chunk corners.
 void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_COUNT],
-		const std::vector<BlockInfo> &blocks, const AtlasLayout &atlas, const LightRegion *light,
+		const ChunkData *const hood[27], const std::vector<BlockInfo> &blocks, const AtlasLayout &atlas, const LightRegion *light,
 		const MeshOptions &options, Surface &opaque, Surface &fluid);
 
 } // namespace gocube

@@ -321,6 +321,31 @@ func set_chunk(chunk_pos: Vector3i, bytes: PackedByteArray) -> void:
 	revision += 1
 
 
+## Light for things that aren't terrain (creatures, players, dropped and held
+## items, the first-person hand), worked out like the terrain shader does:
+## sky light (times `sky_light`: day, night, moonlight), placed lights, and
+## torches players hold (`hand_lights`). Both are set by the game each frame.
+var sky_light := Color.WHITE
+var hand_lights: Array = []  # Vector4(x, y, z, level)
+const BLOCK_LIGHT_COLOR := Color(1.0, 0.85, 0.62)
+
+
+## Each light level is 80% as bright as the one above; level 0 is dark.
+static func light_curve(level01: float) -> float:
+	return 0.0 if level01 <= 0.0 else pow(0.8, 15.0 - level01 * 15.0)
+
+
+## The light at `at` (never below `least`, so things stay faintly visible).
+func light_for(at: Vector3, least := 0.0) -> Color:
+	var l: Vector2 = engine.light_at(at) if engine else Vector2(1, 0)
+	var sky := sky_light * light_curve(l.x)
+	var block := light_curve(l.y)
+	for h in hand_lights:
+		block = maxf(block, light_curve(clampf(h.w - at.distance_to(Vector3(h.x, h.y, h.z)), 0.0, 15.0) / 15.0))
+	var blk := BLOCK_LIGHT_COLOR * block
+	return Color(maxf(maxf(sky.r, blk.r), least), maxf(maxf(sky.g, blk.g), least), maxf(maxf(sky.b, blk.b), least))
+
+
 ## The boxes a ray can hit in the block at `pos` (its shape: a slab's half,
 ## a torch's stick...), as AABBs relative to the block's corner.
 func pick_boxes(pos: Vector3i) -> Array:

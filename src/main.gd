@@ -487,6 +487,8 @@ func _update_hand_light() -> void:
 			others.sort_custom(func(a, b): return Vector3(a.x, a.y, a.z).distance_squared_to(c) \
 					< Vector3(b.x, b.y, b.z).distance_squared_to(c))
 		lights.append_array(others.slice(0, MAX_HAND_LIGHTS - lights.size()))
+	_world.hand_lights = lights  # creatures, players and items are lit by them too
+	_world.sky_light = _day.sky_color()
 	var packed := PackedVector4Array(lights)
 	packed.resize(MAX_HAND_LIGHTS)
 	for m in [_world.terrain_material, _world.fluid_material]:
@@ -494,8 +496,6 @@ func _update_hand_light() -> void:
 			m.set_shader_parameter("hand_light_count", lights.size())
 			if not lights.is_empty():
 				m.set_shader_parameter("hand_lights", packed)
-	if _player:
-		_player.set_meta("hand_light", level)
 
 
 func _debug_text() -> String:
@@ -819,10 +819,6 @@ func _process(_delta: float) -> void:
 		_sounds.set_underwater(_underwater.visible)
 	if _sounds:
 		_sounds.update_ambience(_day.day_amount())
-	if _day:
-		ItemDrop.set_daylight(_day.day_amount())
-		if _player:
-			_player.set_meta("daylight", _day.daylight())
 	_update_hand_light()
 	if _player and _session:  # how others see us
 		_session.local_pose = {"pitch": _player.look_pitch(), "item": _player.selected_item(),
@@ -868,7 +864,7 @@ func _add_environment() -> void:
 	sun.directional_shadow_max_distance = 40.0
 	sun.shadow_bias = 0.06
 	sun.shadow_normal_bias = 1.2
-	sun.shadow_blur = 1.0
+	sun.shadow_blur = 0.0
 	add_child(sun)
 
 	var env := WorldEnvironment.new()

@@ -570,6 +570,18 @@ PackedVector3Array GoCubeWorld::fluid_vertices(const Vector3i &chunk_pos) const 
 	return out;
 }
 
+Vector2 GoCubeWorld::light_at(const Vector3 &position) const {
+	const Vector3i p(int(std::floor(position.x)), int(std::floor(position.y)), int(std::floor(position.z)));
+	const Vector3i cp(floor_div(p.x, CHUNK), floor_div(p.y, CHUNK), floor_div(p.z, CHUNK));
+	auto it = _chunks.find(key(cp));
+	if (it == _chunks.end() || !it->second.light) {
+		return Vector2(1.0f, 0.0f); // not lit yet (or above the world): open sky
+	}
+	const int x = p.x - cp.x * CHUNK, y = p.y - cp.y * CHUNK, z = p.z - cp.z * CHUNK;
+	const uint8_t v = (*it->second.light)[(y * CHUNK + z) * CHUNK + x];
+	return Vector2((v >> 4) / float(LIGHT_MAX), (v & 15) / float(LIGHT_MAX));
+}
+
 Array GoCubeWorld::pick_boxes(const Vector3i &position) const {
 	Array out;
 	const int id = block_id_at(position.x, position.y, position.z);
@@ -983,7 +995,16 @@ void GoCubeWorld::worker_loop() {
 			options.origin_x = job.pos.x * CHUNK;
 			options.origin_y = job.pos.y * CHUNK;
 			options.origin_z = job.pos.z * CHUNK;
-			mesh_chunk(*job.self, nb, _blocks, _atlas, &light, options, r.opaque, r.fluid);
+			mesh_chunk(*job.self, nb, hood, _blocks, _atlas, &light, options, r.opaque, r.fluid);
+			auto packed = std::make_shared<std::vector<uint8_t>>(CHUNK * CHUNK * CHUNK);
+			for (int y = 0; y < CHUNK; y++) {
+				for (int z = 0; z < CHUNK; z++) {
+					for (int x = 0; x < CHUNK; x++) {
+						(*packed)[(y * CHUNK + z) * CHUNK + x] = uint8_t(light.sky_at(x, y, z) << 4 | light.block_at(x, y, z));
+					}
+				}
+			}
+			r.light = packed;
 			_mesh_us += now_us() - t0;
 			_mesh_count++;
 		}
@@ -1229,6 +1250,7 @@ void GoCubeWorld::upload(Result &r) {
 	}
 	free_chunk_render(c);
 	c.meshed = true;
+	c.light = r.light;
 	if (r.opaque.empty() && r.fluid.empty()) {
 		return;
 	}
@@ -1278,6 +1300,7 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("raycast", "origin", "direction", "max_distance"), &GoCubeWorld::raycast);
 	ClassDB::bind_method(D_METHOD("pick_boxes", "position"), &GoCubeWorld::pick_boxes);
 	ClassDB::bind_method(D_METHOD("fluid_vertices", "chunk_pos"), &GoCubeWorld::fluid_vertices);
+	ClassDB::bind_method(D_METHOD("light_at", "position"), &GoCubeWorld::light_at);
 	ClassDB::bind_method(D_METHOD("move_box", "position", "size", "motion", "step_height"), &GoCubeWorld::move_box);
 	ClassDB::bind_method(D_METHOD("is_box_free", "position", "size"), &GoCubeWorld::is_box_free);
 	ClassDB::bind_method(D_METHOD("set_save_directory", "dir"), &GoCubeWorld::set_save_directory);

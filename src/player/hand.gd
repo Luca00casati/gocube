@@ -35,7 +35,7 @@ var _swing := -1.0          # time into the swing (-1: none)
 var _swing_next := false    # another one asked for meanwhile: it follows
 var _bob := 0.0
 var _bob_amount := 0.0      # 0 standing .. 1 walking (smoothed, so the bob never snaps)
-var _light := 1.0
+var _light := Color.WHITE
 var _light_timer := 0.0
 
 
@@ -161,7 +161,7 @@ func _process(delta: float) -> void:
 	apply_pose(pose, bob)
 	_light_timer -= delta
 	if _light_timer <= 0.0:
-		_light_timer = 0.25
+		_light_timer = 0.05
 		_update_light()
 
 
@@ -192,13 +192,10 @@ func _show_item(item: String) -> void:
 	_update_light()
 
 
-## Daylight, dimmed when something is overhead (caves, indoors).
+## The light where the eyes are, like everything else (World.light_for): dark
+## at night and in caves, bright by a torch (your own one too).
 func _update_light() -> void:
-	var day: float = player.get_meta("daylight", 1.0)
-	var eye: Vector3 = player.camera.global_position
-	var covered: bool = player.world.raycast(eye, Vector3.UP, 64.0).hit
-	_light = maxf(0.25, day * (0.55 if covered else 1.0))
-	if player.get_meta("hand_light", 0.0) > 0.0:
-		_light = 1.0  # holding a torch
+	var c: Color = player.world.light_for(player.camera.global_position, DayCycle.NIGHT_CREATURE_LIGHT)
+	_light = c
 	for m in _mats:
-		m.set_shader_parameter("light", _light)
+		m.set_shader_parameter("light", Vector3(c.r, c.g, c.b))

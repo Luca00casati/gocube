@@ -79,3 +79,35 @@ func test_surface_is_connected() -> void:
 	var near: float = tops.get(Vector2i(8, 8), {0.0: true}).keys()[0]   # a corner of the source cell
 	var far: float = tops.get(Vector2i(20, 8), {0.0: true}).keys()[0]   # 6 blocks away
 	check(near > far + 0.3, "the surface slopes down from the source (%.2f -> %.2f)" % [near, far])
+
+
+## Where four chunks meet, water corners match too (the mesher sees the
+## diagonal chunks): the levels around the corner differ, so a chunk that
+## missed its diagonal neighbour would put the corner at another height.
+func test_surface_connected_across_chunk_corners() -> void:
+	var w := await make_world(4242, "", 64, Vector3(0.5, 70, 0.5))
+	var id := _ids()
+	var y := 70
+	for x in range(-7, 7):
+		for z in range(-7, 7):
+			var wall := x == -7 or x == 6 or z == -7 or z == 6
+			w.engine.set_block(Vector3i(x, y - 1, z), id.stone)
+			w.engine.set_block(Vector3i(x, y, z), id.stone if wall else 0)
+			w.engine.set_block(Vector3i(x, y + 1, z), 0)
+	w.set_block(Vector3i(0, y, 0), id.source)
+	await _settle(w, 10)
+	var c := World.chunk_of(Vector3i(0, y, 0))
+	var tops := {}
+	var ok := await wait_until(func():
+		tops.clear()
+		for d in [Vector3i(0, 0, 0), Vector3i(-1, 0, 0), Vector3i(0, 0, -1), Vector3i(-1, 0, -1)]:
+			for v in w.engine.fluid_vertices(c + d):
+				if v.y > y + 0.05 and v.y < y + 1.0:  # the top surface's corners
+					var key := Vector2i(roundi(v.x * 2.0), roundi(v.z * 2.0))
+					if not tops.has(key):
+						tops[key] = {}
+					tops[key][snappedf(v.y, 0.001)] = true
+		return tops.size() > 30, 5)
+	check(ok, "the water was drawn in all four chunks")
+	var split := tops.keys().filter(func(k): return tops[k].size() > 1)
+	check(split.is_empty(), "every corner has one height (%d split, e.g. %s)" % [split.size(), split.slice(0, 3)])

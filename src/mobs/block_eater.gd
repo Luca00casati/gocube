@@ -38,6 +38,7 @@ var _flee_from := Vector3.ZERO
 var _rng := RandomNumberGenerator.new()
 var _mover_step := 1.0
 var _legs: Array[Node3D] = []
+var _parts: Array[MeshInstance3D] = []  # every mesh of the model, to light it
 var _body: Node3D
 var _walk_phase := 0.0
 var _hurt_time := 0.0
@@ -90,11 +91,14 @@ static func _block_mat(block: String, face: int) -> ShaderMaterial:
 	return _mats[key]
 
 
-## Follows the time of day like the terrain (0..1 daylight).
-static func set_daylight(amount: float) -> void:
-	var light := lerpf(DayCycle.NIGHT_CREATURE_LIGHT, 1.0, amount)
-	for m in _mats.values():
-		m.set_shader_parameter("light", light)
+## Lights all its parts with the light where it is (see World.light_for).
+func _update_light() -> void:
+	if world == null:
+		return
+	var c := world.light_for(global_position + Vector3(0, 0.5, 0), DayCycle.NIGHT_CREATURE_LIGHT)
+	for mi in _parts:
+		if is_instance_valid(mi):
+			mi.set_instance_shader_parameter("lit", Vector3(c.r, c.g, c.b))
 
 
 func _part(parent: Node3D, size: Vector3, at: Vector3, mat: Material) -> MeshInstance3D:
@@ -105,6 +109,7 @@ func _part(parent: Node3D, size: Vector3, at: Vector3, mat: Material) -> MeshIns
 	mi.material_override = mat
 	mi.position = at
 	parent.add_child(mi)
+	_parts.append(mi)
 	return mi
 
 
@@ -201,6 +206,8 @@ func _process(delta: float) -> void:
 		_legs[i].rotation.x = swing * (1.0 if i % 3 == 0 else -1.0)
 	_body.position.y = absf(sin(_walk_phase)) * 0.04 if walking else 0.0
 	_hurt_time = maxf(0.0, _hurt_time - delta)
+	_parts = _parts.filter(func(mi): return is_instance_valid(mi) and not mi.is_queued_for_deletion())
+	_update_light()
 	var squash := 1.0 - 0.15 * sin(_hurt_time / 0.3 * PI) if _hurt_time > 0.0 else 1.0
 	_body.scale = Vector3(1.0 / squash, squash, 1.0 / squash)
 

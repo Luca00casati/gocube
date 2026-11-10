@@ -111,7 +111,7 @@ func add_box(parent: Node3D, size: Vector3, at: Vector3, mat: Material, rot := V
 	mi.material_override = mat
 	mi.position = at
 	mi.rotation = rot
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# Cast sun shadows (our own body is hidden in first person, so it casts none then).
 	parent.add_child(mi)
 	_meshes.append(mi)
 	return mi
@@ -133,6 +133,14 @@ func swing() -> void:
 
 func swinging() -> bool:
 	return _swing >= 0.0
+
+
+## Lights every part with `c` (the light where the figure stands, World.light_for).
+func set_light(c: Color) -> void:
+	var v := Vector3(c.r, c.g, c.b)
+	for mi in _meshes:
+		if is_instance_valid(mi):
+			mi.set_instance_shader_parameter("lit", v)
 
 
 ## Turns red for a moment (hurt).

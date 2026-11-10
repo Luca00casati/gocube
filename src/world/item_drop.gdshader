@@ -4,7 +4,7 @@ shader_type spatial;
 render_mode unshaded, cull_disabled;
 
 uniform sampler2D tex : source_color, filter_nearest;
-uniform float light = 1.0;  // set by ItemDrop.set_daylight
+instance uniform vec3 lit : source_color = vec3(1.0);  // the light where it is (World.light_for)
 
 varying vec3 local_normal;
 
@@ -17,5 +17,5 @@ void fragment() {
 	if (c.a < 0.5) discard;
 	vec3 n = abs(local_normal);
 	float shade = local_normal.y > 0.5 ? 1.0 : (local_normal.y < -0.5 ? 0.55 : (n.x > 0.5 ? 0.8 : 0.7));
-	ALBEDO = c.rgb * shade * light;
+	ALBEDO = c.rgb * shade * lit;
 }
