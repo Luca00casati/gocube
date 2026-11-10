@@ -15,6 +15,8 @@ const FORMAT_VERSION := 2
 const GENERATOR_VERSION := 3
 const DEFAULT_VIEW_DISTANCE := 128  # 256 halves FPS on an Intel HD 4600
 const CHUNK_SIZE := 32
+const CHUNK_Y_MIN := -3  # the engine's chunk layers (GoCubeWorld::CHUNK_Y_MIN/MAX)
+const CHUNK_Y_MAX := 3
 ## Highest block y in the world (the engine's vertical range is y -96..127);
 ## start downward raycasts here, above it nothing is loaded.
 const TOP_Y := 127

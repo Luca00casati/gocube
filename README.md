@@ -43,8 +43,11 @@ terrain themselves from the seed; only edits travel over the network.
   them or none, and when it refuses, the item comes back to the player's inventory.
 - Players report their own positions, but the host checks each move against the top
   speed for the game mode (sprinting plus knockback; sprint-flying in creative), with a
-  short burst allowed for lag. Too fast and the player is put back where the host last
-  accepted them; a jump to the world spawn (respawning) is fine. Walls aren't checked.
+  short burst allowed for lag, and follows the way there in tenth-of-a-block steps: a move
+  that goes through a block (even a door) is refused too. Either way the player is put back
+  where the host last accepted them; a jump to the world spawn or their bed (respawning) is
+  fine. Getting into and out of bed isn't checked for walls (the eyes drop to the pillow),
+  nor are moves where the host hasn't loaded the chunks (far from its own player).
 - Chest and furnace clicks are only taken from a player who opened that container and is
   near it, with a real item stack (known item, count within its stack size).
 - Every request a joining player sends has a rate limit (edits, hits, chunk requests, drops,
@@ -52,6 +55,12 @@ terrain themselves from the seed; only edits travel over the network.
   answered, so the player doesn't wait for it, and an edit request never answered is forgotten
   after 5 s. Names are cleaned (printable characters, at most 16), positions and facing must be
   finite numbers, and a player can only say hello once.
+- **Inventories are the players' own**: each game keeps its player's inventory and the host
+  doesn't check it. A modified client can place blocks it doesn't have or drop items it
+  never had (the host still checks the item exists, the stack size, reach and rates). This
+  is fine for playing with friends; don't host strangers you don't trust.
+  `test_malformed_requests` sends nonsense to every request the host takes and checks that
+  nothing changes.
 - Players see each other as jointed figures (skin, hair and clothes picked from the player's
   id) that hold what that player holds, walk and run at the speed they move, and show
   sneaking, jumping, swinging and sleeping; each player sends its head pitch, held item,

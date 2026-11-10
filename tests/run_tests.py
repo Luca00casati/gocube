@@ -40,6 +40,7 @@ def main() -> int:
     parser.add_argument("filter", nargs="?", default="", help="only test files whose name contains this")
     parser.add_argument("--godot", help="the Godot binary (default: $GODOT, godot4, godot)")
     parser.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 2)
+    parser.add_argument("--timeout", type=float, default=300.0, help="seconds one test file may take")
     args = parser.parse_args()
     godot = find_godot(args.godot)
 
@@ -65,22 +66,29 @@ def main() -> int:
         try:
             env = dict(os.environ, XDG_DATA_HOME=str(ROOT / ".godot" / "test_data" / str(slot)))
             t0 = time.monotonic()
-            proc = subprocess.run([godot, "--headless", "--path", str(ROOT), "-s", "res://tests/run_tests.gd",
-                                   "--", file], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                  text=True, errors="replace")
+            try:
+                proc = subprocess.run([godot, "--headless", "--path", str(ROOT), "-s", "res://tests/run_tests.gd",
+                                       "--", file], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                      text=True, errors="replace", timeout=args.timeout)
+                code, out = proc.returncode, proc.stdout
+            except subprocess.TimeoutExpired as e:  # (subprocess.run kills it)
+                code = "a timeout"
+                out = (e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else e.stdout or "") \
+                    + f"\nstopped after {args.timeout:.0f} s"
             times[file] = time.monotonic() - t0
         finally:
             slots.put(slot)
-        out = proc.stdout
         lines = [l for l in out.splitlines() if l.startswith(("PASS", "FAIL", "        - "))]
         found = SUMMARY.search(out)
         passed, failed = (int(found[1]), int(found[2])) if found else (0, 1)
         with print_lock:
             totals["passed"] += passed
             totals["failed"] += failed
-            if found is None or (proc.returncode != 0 and failed == 0):  # crashed or hung up
+            if found is None or (code != 0 and failed == 0):  # crashed or hung
                 failed_files.append(file)
-                lines.append(f"FAIL  {file}: Godot exited with {proc.returncode}; its last output:")
+                if found is not None:
+                    totals["failed"] += 1  # (without a summary it already counts as one)
+                lines.append(f"FAIL  {file}: Godot ended with {code}; its last output:")
                 lines += ["        " + l for l in out.splitlines()[-15:]]
             elif failed:
                 failed_files.append(file)

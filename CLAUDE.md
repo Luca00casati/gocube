@@ -24,4 +24,6 @@ host owns (drops, containers, creatures, beds, time) is only done when:
 4. `test_mp_processes` still passes (two real processes over the network).
 
 In a test, wait for the expected result before comparing worlds: the two worlds
-also match before the host has answered.
+also match before the host has answered. `Play.walk` goes in a straight
+line and the host puts back moves through blocks, so route walks around
+blocks a test placed.

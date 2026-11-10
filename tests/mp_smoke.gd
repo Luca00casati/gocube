@@ -10,7 +10,6 @@ const Play := preload("res://tests/mp_play.gd")
 const DEFAULT_PORT := 24711
 const LAMP_BEFORE := Vector3i(5, 20, 5)
 const ORE_AFTER := Vector3i(6, 20, 5)
-const CHEST := Vector3i(5, 22, 5)
 
 
 func _wait_for(cond: Callable, s: float) -> bool:
@@ -33,16 +32,27 @@ func _start(opts: Dictionary) -> Node:
 	return game
 
 
+var _walks_failed := []  # where a walk didn't get to (the host put us back)
+
+
 ## Moves the (frozen) player in steps at walking speed.
 func _walk(player: Node3D, to: Vector3) -> void:
-	await Play.walk(player, to)
+	if not await Play.walk(player, to):
+		_walks_failed.append(to)
 
 
-## Where the scripted play happens: next to the world spawn (the host player
-## stands at the spawn, outside the area).
+## Where the scripted play happens, cleared by the host: next to the world
+## spawn, where the host player stands (outside the area), around where the
+## client appears (the host's feet + (2, 0, 2): at x -5 in the area), so every
+## walk is on open ground (the host puts back moves through blocks).
 static func _play_area(w: World) -> Vector3i:
 	var sp: Array = w.meta.spawn
-	return Vector3i(Vector3(sp[0], sp[1], sp[2]).floor()) + Vector3i(9, 0, 0)
+	return Vector3i(Vector3(sp[0], sp[1], sp[2]).floor()) + Vector3i(7, 0, 2)
+
+
+## The host's chest, in the play area.
+static func _chest(w: World) -> Vector3i:
+	return _play_area(w) + Vector3i(4, 0, -2)
 
 
 ## The client plays a little, as a person would. Returns what worked.
@@ -85,6 +95,7 @@ func _play(game: Node) -> Dictionary:
 			and p.inventory.count_of("core:bed") == 1, 5)
 	await _wait_for(func(): return game._session._own_edits.is_empty(), 5)
 	print("AREA ", Play.area_hash(w, o))
+	r["every walk got there: %s" % [_walks_failed]] = _walks_failed.is_empty()
 	return r
 
 
@@ -97,12 +108,13 @@ func _ready() -> void:
 		var game := await _start({"world_name": world_name, "net_mode": "host", "port": port, "player_name": "Host"})
 		await _wait_for(func(): return game._loading == null, 30)
 		game._world.set_block(LAMP_BEFORE, Registry.block_index("core:lamp"))
-		game._world.set_block(CHEST, Registry.block_index("core:chest"))
-		game._world.block_entities.click(CHEST, 0, {"id": "core:coal", "count": 4})
 		var g: Dictionary = game._world.raycast(Vector3(8.5, World.TOP_Y, 8.5), Vector3.DOWN, 400)
 		game._mobs.spawn_at(Vector3(8.5, g.position.y + 1, 8.5))
 		game._player.inventory.slots[game._player.selected] = {"id": "core:torch", "count": 1}
 		Play.build_area(game._world, _play_area(game._world))
+		var chest := _chest(game._world)
+		game._world.set_block(chest, Registry.block_index("core:chest"))
+		game._world.block_entities.click(chest, 0, {"id": "core:coal", "count": 4})
 		print("HOST ready")
 		await _wait_for(func(): return not game._session._peers.is_empty(), 60)
 		await get_tree().create_timer(1.5).timeout
@@ -150,16 +162,17 @@ func _ready() -> void:
 		game._player.global_position = before + Vector3(200, 0, 0)
 		results["teleport put back by host"] = await _wait_for(func(): return put_back[0] \
 				and game._player.global_position.distance_to(before) < 2.0, 5)
-		await _walk(game._player, Vector3(CHEST) + Vector3(0.5, 0, 2.5))
+		var chest := _chest(w)
+		await _walk(game._player, Vector3(chest) + Vector3(0.5, 0, 2.5))
 		await get_tree().create_timer(0.3).timeout
 		var seen := {}
 		var held := [null]
 		game._session.container_updated.connect(func(_p, data): seen.merge(data, true))
 		game._session.container_held.connect(func(_p, h): held[0] = h)
-		game._session.open_container(CHEST)
+		game._session.open_container(chest)
 		var opened: bool = await _wait_for(func(): return seen.get("type") == "chest", 5)
 		results["chest contents from host"] = opened and seen.slots[0] == {"id": "core:coal", "count": 4}
-		game._session.container_click(CHEST, 1, {"id": "core:stick", "count": 2})
+		game._session.container_click(chest, 1, {"id": "core:stick", "count": 2})
 		results["chest click via host"] = await _wait_for(func(): return held[0] == {} \
 				and seen.slots[1] == {"id": "core:stick", "count": 2}, 5)
 		# An edit the host refuses (out of reach) is answered, not left pending.

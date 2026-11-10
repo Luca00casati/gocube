@@ -96,6 +96,11 @@ const MOVE_BURST := 0.75          # seconds of movement that may arrive at once 
 const MOVE_SLACK := 1.0           # extra blocks always allowed
 const RESPAWN_RADIUS := 2.0       # a jump to the world spawn (respawning) is fine
 const CORRECT_EVERY := 0.5        # seconds between corrections sent to one client
+## Host: walls. A move is followed in steps of WALL_STEP blocks with a thinner
+## body (WALL_GRACE off each side, top and bottom), so a corner cut between two
+## updates passes but no step may go through a block (even a door is thicker).
+const WALL_STEP := 0.1
+const WALL_GRACE := 0.15
 ## Host: how many requests of each kind a client may send per second, and in
 ## one burst (lag can bunch them up). Requests over the limit are ignored.
 const RATES := {
@@ -236,15 +241,19 @@ func _move_cap() -> Vector3:
 ## Host: whether a client may have moved from its last accepted position to
 ## `pos`. Each player has a movement budget per direction that refills at the
 ## top speed (up to MOVE_BURST seconds' worth, so late packets arriving
-## together pass) and is spent by moving. Respawning jumps to the world spawn.
-func _move_allowed(p: Dictionary, pos: Vector3) -> bool:
+## together pass) and is spent by moving; the way there mustn't go through
+## blocks. Respawning jumps to the world spawn (or the player's bed).
+## `flags`: the new Avatar.FLAG_*.
+func _move_allowed(p: Dictionary, pos: Vector3, flags: int = 0) -> bool:
 	var now := _now()
 	var budget: Vector3 = p.get("budget", Vector3.ZERO) + _move_speeds() * (now - float(p.get("time", now)))
 	budget = budget.min(_move_cap())
 	p.time = now
 	var d: Vector3 = pos - (p.position as Vector3)
 	var cost := Vector3(Vector2(d.x, d.z).length(), maxf(d.y, 0.0), maxf(-d.y, 0.0))
-	if cost.x <= budget.x and cost.y <= budget.y and cost.z <= budget.z:
+	if cost.x <= budget.x and cost.y <= budget.y and cost.z <= budget.z \
+			and ((int(p.get("flags", 0)) | flags) & Avatar.FLAG_SLEEP != 0  # into or out of bed: eyes low
+				or _way_clear(p.position, pos)):
 		p.budget = budget - cost
 		return true
 	var sp: Array = world.meta.get("spawn", [])
@@ -255,6 +264,32 @@ func _move_allowed(p: Dictionary, pos: Vector3) -> bool:
 		return true
 	p.budget = budget
 	return false
+
+
+## Host: whether a body can get from eye position `from` to `to` without going
+## through blocks. Where the host hasn't loaded the chunks it can't tell (yes),
+## and a body already in a block (one appeared there) may get out.
+func _way_clear(from: Vector3, to: Vector3) -> bool:
+	var feet := Vector3(0, Player.EYE_HEIGHT - WALL_GRACE, 0)
+	var body := Player.BODY - Vector3.ONE * WALL_GRACE * 2.0
+	var a := from - feet
+	var b := to - feet
+	var lo := a.min(b) - Vector3(Player.RADIUS, 1, Player.RADIUS)
+	var hi := a.max(b) + Vector3(Player.RADIUS, Player.HEIGHT + 1, Player.RADIUS)
+	var c0 := World.chunk_of(Vector3i(lo.floor()))
+	var c1 := World.chunk_of(Vector3i(hi.floor()))
+	for cx in range(c0.x, c1.x + 1):
+		for cy in range(maxi(c0.y, World.CHUNK_Y_MIN), mini(c1.y, World.CHUNK_Y_MAX) + 1):
+			for cz in range(c0.z, c1.z + 1):
+				if not world.engine.is_chunk_loaded(Vector3i(cx, cy, cz)):
+					return true
+	if not world.is_box_free(a, body):
+		return true
+	var steps := ceili(a.distance_to(b) / WALL_STEP)
+	for i in range(1, steps + 1):
+		if not world.is_box_free(a.lerp(b, float(i) / steps), body):
+			return false
+	return true
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -367,7 +402,7 @@ func _client_state(pos: Vector3, yaw: float, pitch: float, item: String, flags: 
 	if not is_host() or not _peers.has(id) or not pos.is_finite() or not is_finite(yaw) or not is_finite(pitch):
 		return
 	var p: Dictionary = _peers[id]
-	if not _move_allowed(p, pos):
+	if not _move_allowed(p, pos, flags):
 		if _now() - float(p.get("corrected", -INF)) >= CORRECT_EVERY:
 			p.corrected = _now()
 			_correct.rpc_id(id, p.position)

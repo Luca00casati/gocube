@@ -17,14 +17,20 @@ static func aim(p: Node3D, at: Vector3) -> void:
 	p.set_look(asin(dir.y), atan2(-dir.x, -dir.z))
 
 
-## Moves a frozen player there at walking speed, as the host expects.
-static func walk(p: Node3D, to: Vector3) -> void:
+## Moves a frozen player there in a straight line at walking speed, as the
+## host expects (the way must be clear: the host puts players back who walk
+## through blocks). False if it didn't get there (put back all the way).
+static func walk(p: Node3D, to: Vector3) -> bool:
 	var tree := p.get_tree()
+	var give_up := Time.get_ticks_msec() + int(p.global_position.distance_to(to) / 4.0 * 3000.0) + 2000
 	while p.global_position.distance_to(to) > 0.001:
+		if Time.get_ticks_msec() > give_up:
+			return false
 		p.global_position = p.global_position.move_toward(to, 4.0 * p.get_physics_process_delta_time())
 		await tree.physics_frame
 	for i in 5:
 		await tree.process_frame
+	return true
 
 
 ## A frozen survival player with an empty inventory, for scripted play.

@@ -64,6 +64,11 @@ func _build_platform() -> void:
 
 
 func _end() -> void:
+	# Both leave first: once its multiplayer is handed back, a session still
+	# playing would send as the offline peer (id 1: "RPC on yourself").
+	for game in [client, host]:
+		if is_instance_valid(game) and game._session:
+			game._session.leave()
 	for box in _containers:
 		tree.set_multiplayer(null, box.get_path())
 
@@ -107,7 +112,7 @@ func _aim(rel: Vector3) -> void:
 
 
 func _walk(to: Vector3) -> void:
-	await Play.walk(client._player, to)
+	check(await Play.walk(client._player, to), "walked to %s" % (to - Vector3(o)))
 
 
 func _give(item: String, count: int) -> void:
@@ -166,6 +171,7 @@ func test_two_players() -> void:
 	# Death and respawn at the bed: the host accepts where we come back.
 	var corrections := [0]
 	client._session.corrected.connect(func(_eye): corrections[0] += 1)
+	await _walk(Vector3(o) + Vector3(0.5, 0, 2.5))  # round the planks at (-2, 0, 0)
 	await _walk(Vector3(o) + Vector3(-5.5, 0, 2.5))
 	p.damage(1000)
 	check(p.dead and client._death_screen != null, "died")
@@ -257,10 +263,39 @@ func test_two_players() -> void:
 	client.spawn_drop("core:stick", 1, Vector3(o) + Vector3(-5.5, 0.5, 2.5))
 	check(await wait_until(func(): return host._drops_node.count() == 1 and client._drops_node.count() == 1, 5),
 			"the drop is on both sides")
+	await _walk(Vector3(o) + Vector3(0.5, 0, 2.5))  # round the planks and stone at x -2
 	await _walk(Vector3(o) + Vector3(-4.5, 0, 2.5))
 	check(await wait_until(func(): return p.inventory.count_of("core:stick") == 1, 5), "picked up")
 	check(await wait_until(func(): return host._drops_node.count() == 0 and client._drops_node.count() == 0, 5),
 			"gone for both")
+
+	# Walls: a move through blocks is put back (fast enough, but not through a
+	# wall); walking around the wall to the same spot is fine.
+	await _walk(Vector3(o) + Vector3(0.5, 0, 2.5))
+	await _walk(Vector3(o) + Vector3(0.5, 0, 0.5))
+	for y in 3:
+		for z in range(-1, 2):
+			host._world.set_block(o + Vector3i(2, y, z), Registry.block_index("core:stone"))
+	await _match("a wall")
+	await wait_until(func(): return false, 1.0)  # the host's movement budget is full again
+	var was: int = corrections[0]
+	var start := p.global_position
+	p.global_position = Vector3(o) + Vector3(3.5, 0, 0.5)  # through it in one update
+	check(await wait_until(func(): return corrections[0] > was, 5), "through the wall: put back")
+	check(await wait_until(func(): return p.global_position.distance_to(start) < 0.1, 5),
+			"back on our side of the wall")
+	was = corrections[0]
+	for to in [Vector3(0.5, 0, 2.5), Vector3(3.5, 0, 2.5), Vector3(3.5, 0, 0.5)]:
+		await _walk(Vector3(o) + to)  # around its end
+	check(await wait_until(func():
+			return (hs._peers[_peer_id()].position as Vector3).distance_to(p.camera.global_position) < 0.1, 3),
+			"around it: the host followed")
+	check_eq(corrections[0], was, "and didn't put us back")
+	for y in 3:
+		for z in range(-1, 2):
+			host._world.set_block(o + Vector3i(2, y, z), 0)
+	await _match("the wall gone")
+	corrections[0] = 0
 
 	# Death without a bed: back at the world spawn, the same one the host has.
 	await _walk(Vector3(o) + Vector3(0.5, 0, 0.5))
@@ -275,4 +310,81 @@ func test_two_players() -> void:
 			"the host accepted it")
 	check_eq(corrections[0], 0, "never put back")
 	check(not p.dead and p.health == p.MAX_HEALTH, "alive and well")
+	_end()
+
+
+## A modified client sending nonsense to every request the host takes: nothing
+## changes, nothing is made, nothing breaks, and the client can still play.
+func test_malformed_requests() -> void:
+	if not await _connect():
+		_end()
+		return
+	var hs: Session = host._session
+	var cs: Session = client._session
+	var chest := o + Vector3i(-4, 0, -2)
+	host._world.set_block(chest, Registry.block_index("core:chest"))
+	host._world.block_entities.click(chest, 0, {"id": "core:coal", "count": 4})
+	await _match("a chest")
+	await _walk(Vector3(o) + Vector3(-3.5, 0, -0.5))
+	cs.open_container(chest)  # opened properly, so only what follows is wrong
+	await wait_until(func(): return client._player != null and chest in hs._viewers \
+			and _peer_id() in hs._viewers[chest], 5)
+	var area := Play.area_blocks(host._world, o)
+	var chest_before: Dictionary = host._world.block_entities.entities[chest].duplicate(true)
+	var at: Vector3 = client._player.camera.global_position
+	var nan := Vector3(NAN, 0, 0)
+	var inf := Vector3(INF, INF, INF)
+	var stone := Registry.block_index("core:stone")
+	var cell := o + Vector3i(1, 0, 1)
+
+	cs._client_state.rpc_id(1, nan, 0.0, 0.0, "", 0, 0)
+	cs._client_state.rpc_id(1, inf, NAN, INF, "core:no_such_item", -1, -5)
+	cs._client_state.rpc_id(1, at + Vector3(500, 0, 0), 0.0, 0.0, "", 0xFFFF, 0)
+	for block in [-1, 1 << 30, Registry.block_ids.size(), Registry.block_index("core:water")]:
+		cs._request_edit.rpc_id(1, cell, block)
+	cs._request_edit.rpc_id(1, cell + Vector3i(0, 1000000, 0), stone)
+	cs._request_edit.rpc_id(1, Vector3i(1 << 30, 0, 0), stone)
+	for cells in [[], [[cell]], [[cell, stone, 1]], [["x", stone]], [[cell, "core:stone"]], [[cell, stone], [cell, stone]],
+			[[cell, 0]], range(50).map(func(i): return [cell + Vector3i(0, i, 0), stone]), [[cell, -3]], [null]]:
+		cs._request_place.rpc_id(1, 77, cells)
+	for stack in [["core:coal", 0], ["core:coal", -5], ["core:coal", 1 << 30], ["core:no_such_item", 1], ["", 1]]:
+		cs._request_drop.rpc_id(1, stack[0], stack[1], at)
+	cs._request_drop.rpc_id(1, "core:coal", 1, nan)
+	cs._request_drop.rpc_id(1, "core:coal", 1, at + Vector3(300, 0, 0))
+	for id in [-1, 0, 1 << 40]:
+		cs._request_pickup.rpc_id(1, id)
+		cs._hit_mob.rpc_id(1, id, "core:no_such_item")
+	for slot in [-1, 999, 1 << 40]:
+		cs._container_click.rpc_id(1, chest, slot, {"id": "core:coal", "count": 1})
+	for held in [{"id": "core:coal", "count": 1 << 30}, {"id": "core:coal", "count": "1"}, {"id": 5, "count": 1},
+			{"id": "core:coal", "count": 1, "extra": true}, {"count": 64}, {"id": "core:no_such_item", "count": 1}]:
+		cs._container_click.rpc_id(1, chest, 1, held)
+	cs._container_click.rpc_id(1, o + Vector3i(5, 0, 2), 0, {})  # not a container
+	cs._open_container.rpc_id(1, o + Vector3i(200, 0, 0))
+	cs._set_bed.rpc_id(1, cell)  # not a bed
+	cs._set_bed.rpc_id(1, Vector3i(1 << 30, 0, 0))
+	cs._request_chunk.rpc_id(1, Vector3i(1 << 20, 1 << 20, 1 << 20))
+	cs._hello.rpc_id(1, -1, ["nonsense"], "x".repeat(10000))  # a second hello
+	await frames(30)
+
+	var rates: Dictionary = hs._peers[_peer_id()].get("rates", {})
+	for kind in ["edit", "drop", "pickup", "hit", "container", "other", "chunk"]:
+		check(rates.has(kind), "the host got and checked the %s requests" % kind)
+	check_eq(Play.area_blocks(host._world, o), area, "no block changed on the host")
+	check_eq(host._drops_node.count(), 0, "no item was made")
+	check_eq(host._world.block_entities.entities[chest], chest_before, "the chest is as it was")
+	check_eq(hs._peers.size(), 1, "the client is still connected")
+	check(hs._peers[_peer_id()].get("bed") == null, "no bed was set")
+	check((hs._peers[_peer_id()].position as Vector3).is_finite(), "its position stayed a real one")
+	check(hs._peers[_peer_id()].position.distance_to(client._player.camera.global_position) < 0.5,
+			"where it really is")
+	check(hs._peers[_peer_id()].name == "Client", "its name didn't change")
+
+	# And the client still plays normally (once the flood's rate limits refill).
+	await wait_until(func(): return false, 3.0)
+	_give("core:planks", 1)
+	_aim(Vector3(-2.5, 0, -0.5))  # top of the floor, west of us
+	client._player._place()
+	await _until(func(): return _block(host, Vector3i(-3, 0, -1)) == "core:planks", "a normal placement afterwards")
+	check_eq(_block(host, Vector3i(-3, 0, -1)), "core:planks", "placed")
 	_end()
