@@ -38,6 +38,7 @@
     },
     "grass": {
       "hardness": 0.6,
+      "tint": true,
       "drops": "core:dirt",
       "till_drops": [
         [
@@ -89,6 +90,7 @@
       "fuel": 15
     },
     "leaves": {
+      "tint": true,
       "hardness": 0.2,
       "flammable": true,
       "color": "#356828",
@@ -625,6 +627,7 @@
       }
     },
     "birch_leaves": {
+      "tint": true,
       "hardness": 0.2,
       "sound": "core:grass",
       "color": "#5a9236",
@@ -656,6 +659,7 @@
       }
     },
     "spruce_leaves": {
+      "tint": true,
       "hardness": 0.2,
       "sound": "core:grass",
       "color": "#25492f",

@@ -83,3 +83,22 @@ func test_volume_buses() -> void:
 	check(AudioServer.is_bus_mute(bus), "0% mutes")
 	Settings.effects_volume = before
 	Settings.apply()
+
+
+## At night the haze closes in and goes dark, so you can't see far; by day it
+## sits out near the edge of the view.
+func test_night_is_dark_and_close() -> void:
+	var day := DayCycle.new()
+	day.environment = Environment.new()
+	day.fog_begin = 60.0
+	day.fog_end = 120.0
+	add(day)
+	day.time = 0.5  # noon
+	day.apply()
+	check_near(day.environment.fog_depth_end, 120.0, 0.5, "noon: haze far out")
+	check(day.haze_color().get_luminance() > 0.5, "noon: a light haze")
+	day.time = 0.0  # midnight
+	day.apply()
+	check(day.environment.fog_depth_end <= DayCycle.NIGHT_FOG_END + 0.5, "midnight: the dark closes in (%.0f)" % day.environment.fog_depth_end)
+	check(day.haze_color().get_luminance() < 0.03, "midnight: a nearly black haze")
+	check(day.daylight() <= 0.03, "midnight: the sky gives almost no light (%.2f)" % day.daylight())

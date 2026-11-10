@@ -98,6 +98,8 @@ public:
 	// The boxes a ray can hit in the block at `position` (what the player
 	// points at), relative to the block's corner; empty for air and fluids.
 	godot::Array pick_boxes(const godot::Vector3i &position) const;
+	void set_shadow_chunks(int chunks);
+	int get_shadow_chunks() const;
 	// The fluid surface's vertices in the chunk at chunk_pos, in world
 	// coordinates (for tests).
 	godot::PackedVector3Array fluid_vertices(const godot::Vector3i &chunk_pos) const;
@@ -167,6 +169,11 @@ private:
 	Generator _generator;
 	godot::Ref<godot::Material> _terrain_material, _fluid_material;
 	int _view_distance = 128;
+	// Only chunks within this many chunks (sideways) of the viewer cast sun
+	// shadows (-1: all): drawing every chunk into the shadow map is costly.
+	int _shadow_chunks = 1;
+	bool casts_shadow(const godot::Vector3i &chunk_pos) const;
+	void update_shadow_casters();
 	std::string _save_dir;
 	std::mutex _override_mutex; // workers read overrides while generating
 	std::unordered_map<int64_t, std::shared_ptr<const ChunkData>> _overrides;

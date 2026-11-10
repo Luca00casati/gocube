@@ -499,6 +499,19 @@ func left_click() -> void:
 		_break_target()
 
 
+## What a new survival player starts with: a torch, in hand.
+const STARTING_ITEMS := [{"id": "core:torch", "count": 1}]
+
+
+func give_starting_items() -> void:
+	if creative:
+		return
+	for i in STARTING_ITEMS.size():
+		inventory.slots[i] = STARTING_ITEMS[i].duplicate()
+	selected = 0
+	inventory.changed.emit()
+
+
 ## Swings the arm at nothing (others see it too).
 func swing_arm() -> void:
 	swings += 1

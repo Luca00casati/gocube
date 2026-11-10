@@ -92,7 +92,7 @@ static func _block_mat(block: String, face: int) -> ShaderMaterial:
 
 ## Follows the time of day like the terrain (0..1 daylight).
 static func set_daylight(amount: float) -> void:
-	var light := lerpf(DayCycle.NIGHT_LIGHT, 1.0, amount)
+	var light := lerpf(DayCycle.NIGHT_CREATURE_LIGHT, 1.0, amount)
 	for m in _mats.values():
 		m.set_shader_parameter("light", light)
 

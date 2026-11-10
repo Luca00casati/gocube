@@ -21,3 +21,14 @@ func test_saved_table_keeps_numbers_and_appends_new_blocks() -> void:
 	check(Registry.block_ids.size() > 4, "new blocks appended")
 	check(Registry.block_index("core:grass") >= 4, "new block after the saved ones")
 	Registry.assign_block_ids()  # restore defaults for later tests
+
+
+## Grass and leaves vary in green across the land: their blocks carry the
+## "tint" flag to the engine (it marks their faces for the terrain shader).
+func test_green_blocks_are_tinted() -> void:
+	Registry.assign_block_ids()
+	var atlas := BlockAtlas.new()  # builds the engine's block table
+	for id in ["core:grass", "core:leaves", "core:birch_leaves", "core:spruce_leaves"]:
+		check(atlas.block_table[Registry.block_index(id)].get("tint", false), id + " is tinted")
+	for id in ["core:dirt", "core:stone", "core:sand"]:
+		check(not atlas.block_table[Registry.block_index(id)].get("tint", false), id + " is not")

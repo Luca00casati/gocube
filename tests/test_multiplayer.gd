@@ -39,12 +39,15 @@ func _connect() -> bool:
 	if not await wait_until(func(): return host._loading == null and host._player != null, 30):
 		check(false, "the host's world loaded")
 		return false
+	check_eq(host._player.selected_item(), "core:torch", "a new world's player starts with a torch in hand")
 	host._player._frozen = true
 	client = _start("Client", {"net_mode": "client", "join_address": "127.0.0.1", "port": port,
 			"player_name": "Client"})
 	if not await wait_until(func(): return client._player != null and client._loading == null, 30):
 		check(false, "the client joined and loaded")
 		return false
+	check_eq(client._player.selected_item(), "core:torch", "a joining player starts with a torch in hand")
+	check_eq(client._player.inventory.count_of("core:torch"), 1, "just one")
 	Play.take_over(client._player)
 	await _build_platform()
 	return true

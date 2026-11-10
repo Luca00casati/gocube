@@ -52,7 +52,7 @@ func setup(item_id: String, amount: int, atlas: BlockAtlas) -> void:
 
 ## Follows the time of day like the terrain (0..1 daylight).
 static func set_daylight(amount: float) -> void:
-	var light := lerpf(DayCycle.NIGHT_LIGHT, 1.0, amount)
+	var light := lerpf(DayCycle.NIGHT_CREATURE_LIGHT, 1.0, amount)
 	for m in _mats:
 		m.set_shader_parameter("light", light)
 

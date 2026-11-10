@@ -97,6 +97,14 @@ func _ready() -> void:
 		Settings.apply())
 	_row(grid, _label("Smooth lighting"), smooth)
 
+	var shadow_box := CheckBox.new()
+	shadow_box.text = "The sun casts shadows (uses more GPU)"
+	shadow_box.button_pressed = Settings.shadows
+	shadow_box.toggled.connect(func(on):
+		Settings.shadows = on
+		Settings.apply())
+	_row(grid, _label("Sun shadows"), shadow_box)
+
 	for entry in [["Master volume", "master_volume"], ["Effects volume", "effects_volume"],
 			["Ambience volume", "ambience_volume"]]:
 		var slider := HSlider.new()

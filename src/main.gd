@@ -190,7 +190,10 @@ func _start_local() -> void:
 	_mark("world built")
 
 	_spawn_player(Vector3(0, 40, 0))
-	_restore_player(_world.meta.get("player", {}))
+	var saved: Dictionary = _world.meta.get("player", {})
+	_restore_player(saved)
+	if not saved.has("inventory"):
+		_player.give_starting_items()  # a new player: a torch in hand
 
 	if _world.is_persistent():
 		get_tree().auto_accept_quit = false  # save before closing, see _notification
@@ -238,6 +241,7 @@ func _on_welcomed(info: Dictionary) -> void:
 	_spawn_player(Vector3(s[0], s[1] - Player.EYE_HEIGHT, s[2]))
 	_player.edit_handler = _session.request_edit
 	_player.place_handler = _session.request_place
+	_player.give_starting_items()  # joining players start fresh: a torch in hand
 	_set_loading_text("Loading world…")
 	_loading_since = Time.get_ticks_msec()
 	print("Joined %s:%d" % [join_address, port])
@@ -247,8 +251,25 @@ func _on_welcomed(info: Dictionary) -> void:
 func _apply_settings() -> void:
 	if _world and _world.engine:
 		_world.engine.smooth_lighting = Settings.smooth_lighting
+		var sun := get_node_or_null("Sun") as DirectionalLight3D
+		if sun:
+			sun.shadow_enabled = Settings.shadows and not _args.has("no-shadows")
 		if not _args.has("view"):
 			_world.set_view_distance(Settings.view_distance)
+		_set_fog_range()
+
+
+## Haze from halfway out to the edge of what's loaded (it hides the edge too).
+func _set_fog_range() -> void:
+	var env: Environment = _day.environment
+	if env:
+		env.fog_mode = Environment.FOG_MODE_DEPTH
+		env.fog_density = 1.0
+		env.fog_sky_affect = 0.0
+		env.fog_depth_curve = 1.6
+		_day.fog_begin = _world.view_distance * 0.45  # by day; the night's is closer
+		_day.fog_end = _world.view_distance * 0.95
+		_day.apply()
 
 
 func _start_day(time: float, day_length: float) -> void:
@@ -837,10 +858,17 @@ static func _lan_addresses() -> PackedStringArray:
 
 func _add_environment() -> void:
 	var sun := DirectionalLight3D.new()
-	sun.shadow_enabled = _args.has("shadows") or _args.has("cheap-shadows")
-	if _args.has("cheap-shadows"):
-		sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
-		sun.directional_shadow_max_distance = 48.0
+	sun.name = "Sun"
+	# Shadows near the player (Settings → Sun shadows; --no-shadows turns them
+	# off): one map out to 40 blocks, cast by the chunks around the player
+	# (GoCubeWorld.shadow_chunks). Cheap enough for integrated GPUs: on an
+	# Intel Haswell ~54 FPS with them against 60 without (2 splits out to 80
+	# blocks, every chunk casting: 24).
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
+	sun.directional_shadow_max_distance = 40.0
+	sun.shadow_bias = 0.06
+	sun.shadow_normal_bias = 1.2
+	sun.shadow_blur = 1.0
 	add_child(sun)
 
 	var env := WorldEnvironment.new()

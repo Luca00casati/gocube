@@ -40,6 +40,7 @@ struct BlockInfo {
 	uint8_t emit = 0;     // block light it gives off (0..15)
 	uint8_t fluid_level = 8; // fluids: 8 = source (full), 1..7 = flowing (lower surface)
 	bool random_rotation = false; // top/bottom texture turned 0/90/180/270 degrees by position
+	bool tint = false;    // green parts vary in colour across the land (grass, leaves)
 	uint8_t shape = SHAPE_CUBE;
 	std::vector<Box> model;       // SHAPE_BOXES: what is drawn
 	std::vector<Box> collision;   // what movement bumps into (empty: nothing)

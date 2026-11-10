@@ -216,7 +216,7 @@ void corner_light(const LightRegion &light, int fx, int fy, int fz, int ua, int 
 	sky = s / (n * float(LIGHT_MAX));
 	blk = b / (n * float(LIGHT_MAX));
 	const int occluders = (side_u && side_v) ? 3 : int(side_u) + int(side_v) + int(diag);
-	ao = 1.0f - 0.18f * occluders;
+	ao = 1.0f - 0.24f * occluders;
 }
 
 } // namespace
@@ -440,6 +440,12 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 								? block_rotation(options.origin_x + x, options.origin_y + y, options.origin_z + z)
 								: 0;
 						emit_face(opaque, d, x, y, z, atlas, info.tiles[f], cl, 1.0f, rot);
+						if (info.tint) {
+							// Vertex colour alpha 0.5 marks faces whose green varies (see chunk.gdshader).
+							for (int c = 1; c <= 4; c++) {
+								opaque.colors[opaque.colors.size() - 4 * c + 3] = 0.5f;
+							}
+						}
 					}
 				}
 			}

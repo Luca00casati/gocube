@@ -81,6 +81,7 @@ void GoCubeWorld::configure_blocks(const TypedArray<Dictionary> &blocks) {
 		b.emit = static_cast<uint8_t>(std::clamp(int(d.get("light", 0)), 0, LIGHT_MAX));
 		b.fluid_level = static_cast<uint8_t>(std::clamp(int(d.get("fluid_level", 8)), 1, 8));
 		b.random_rotation = d.get("random_rotation", false);
+		b.tint = d.get("tint", false);
 		b.shape = static_cast<uint8_t>(std::clamp(int(d.get("shape", 0)), 0, int(SHAPE_FENCE)));
 		auto read_boxes = [](const PackedFloat32Array &a, std::vector<Box> &out) {
 			for (int64_t k = 0; k + 6 < a.size(); k += 7) {
@@ -269,6 +270,31 @@ void GoCubeWorld::set_view_distance(int blocks) {
 
 int GoCubeWorld::get_view_distance() const {
 	return _view_distance;
+}
+
+void GoCubeWorld::set_shadow_chunks(int chunks) {
+	_shadow_chunks = chunks;
+	update_shadow_casters();
+}
+
+int GoCubeWorld::get_shadow_chunks() const {
+	return _shadow_chunks;
+}
+
+bool GoCubeWorld::casts_shadow(const Vector3i &chunk_pos) const {
+	const Vector3i c = chunk_of(_viewer);
+	return _shadow_chunks < 0 || (std::abs(chunk_pos.x - c.x) <= _shadow_chunks && std::abs(chunk_pos.z - c.z) <= _shadow_chunks);
+}
+
+void GoCubeWorld::update_shadow_casters() {
+	RenderingServer *rs = RenderingServer::get_singleton();
+	for (auto &kv : _chunks) {
+		const Chunk &c = kv.second;
+		if (c.instance.is_valid()) {
+			rs->instance_geometry_set_cast_shadows_setting(c.instance, casts_shadow(pos_of(kv.first))
+					? RenderingServer::SHADOW_CASTING_SETTING_ON : RenderingServer::SHADOW_CASTING_SETTING_OFF);
+		}
+	}
 }
 
 void GoCubeWorld::set_viewer_position(const Vector3 &position) {
@@ -1019,6 +1045,7 @@ void GoCubeWorld::_process(double delta) {
 	if (center.x != _last_viewer_chunk.x || center.z != _last_viewer_chunk.z) {
 		_last_viewer_chunk = center;
 		update_desired(center);
+		update_shadow_casters();
 	}
 
 	// Collect finished work.
@@ -1228,6 +1255,8 @@ void GoCubeWorld::upload(Result &r) {
 		return;
 	}
 	c.instance = rs->instance_create2(c.mesh, world->get_scenario());
+	rs->instance_geometry_set_cast_shadows_setting(c.instance, casts_shadow(r.pos)
+			? RenderingServer::SHADOW_CASTING_SETTING_ON : RenderingServer::SHADOW_CASTING_SETTING_OFF);
 	rs->instance_set_transform(c.instance, get_global_transform() * Transform3D(Basis(), Vector3(r.pos * CHUNK)));
 }
 
@@ -1262,6 +1291,8 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_view_distance", "blocks"), &GoCubeWorld::set_view_distance);
 	ClassDB::bind_method(D_METHOD("get_view_distance"), &GoCubeWorld::get_view_distance);
 	ClassDB::bind_method(D_METHOD("set_viewer_position", "position"), &GoCubeWorld::set_viewer_position);
+	ClassDB::bind_method(D_METHOD("set_shadow_chunks", "chunks"), &GoCubeWorld::set_shadow_chunks);
+	ClassDB::bind_method(D_METHOD("get_shadow_chunks"), &GoCubeWorld::get_shadow_chunks);
 	ClassDB::bind_method(D_METHOD("get_viewer_position"), &GoCubeWorld::get_viewer_position);
 	ClassDB::bind_method(D_METHOD("set_worker_threads", "count"), &GoCubeWorld::set_worker_threads);
 	ClassDB::bind_method(D_METHOD("get_worker_threads"), &GoCubeWorld::get_worker_threads);
@@ -1274,6 +1305,7 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_upload_budget_ms"), &GoCubeWorld::get_upload_budget_ms);
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "view_distance"), "set_view_distance", "get_view_distance");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "viewer_position"), "set_viewer_position", "get_viewer_position");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "shadow_chunks"), "set_shadow_chunks", "get_shadow_chunks");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "upload_budget_ms"), "set_upload_budget_ms", "get_upload_budget_ms");
 }
 

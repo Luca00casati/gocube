@@ -8,8 +8,9 @@ uniform vec4 fluid_color : source_color = vec4(0.25, 0.46, 0.84, 0.7);
 uniform sampler2D albedo_texture : source_color, filter_nearest;
 uniform bool use_atlas = false;
 uniform float daylight : hint_range(0.0, 1.0) = 1.0;
+uniform vec3 sky_tint : source_color = vec3(1.0);  // see chunk.gdshader
 uniform vec3 block_light_color : source_color = vec3(1.0, 0.85, 0.62);
-uniform float min_light = 0.035;
+uniform float min_light = 0.02;
 uniform vec3 underside_color : source_color = vec3(0.72, 0.88, 1.0);
 uniform float underside_alpha = 0.82;
 const int MAX_HAND_LIGHTS = 8;  // as in chunk.gdshader
@@ -34,7 +35,7 @@ float light_curve(float level01) {
 }
 
 void fragment() {
-	vec3 light = max(vec3(light_curve(COLOR.r) * daylight), block_light_color * light_curve(COLOR.g));
+	vec3 light = max(light_curve(COLOR.r) * daylight * sky_tint, block_light_color * light_curve(COLOR.g));
 	for (int i = 0; i < hand_light_count; i++) {
 		float level = clamp(hand_lights[i].w - distance(v_world, hand_lights[i].xyz), 0.0, 15.0) / 15.0;
 		light = max(light, block_light_color * light_curve(level));

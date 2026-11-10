@@ -58,8 +58,8 @@ terrain themselves from the seed; only edits travel over the network.
 Launch options (after `--`): `--world=NAME` skip the menu and load or create that world,
 `--host` (with `--world`) host it, `--join=ADDR` join a game, `--port=N`, `--name=NAME`,
 `--seed=N` seed for a new world (random otherwise), `--time=0..1` time of day (0 midnight,
-0.25 sunrise, 0.5 noon, 0.75 sunset), `--day-length=SECONDS` (default 86400: real time), `--view=N` view distance (default 128), `--shadows` /
-`--cheap-shadows` (off by default: they cost ~40% FPS on integrated GPUs), `--bench`
+0.25 sunrise, 0.5 noon, 0.75 sunset), `--day-length=SECONDS` (default 86400: real time), `--view=N` view distance (default 128), `--no-shadows`
+(no sun shadows, whatever Settings says), `--bench`
 (fly forward 20 s and print FPS stats), `--profile-startup` (time each startup step and list slow frames),
 `--threads=N` chunk worker threads (default: cores − 1, at most 8; also `worker_threads` in
 settings.cfg: fewer leaves CPU for other programs but loads chunks slower). Try `--rendering-method gl_compatibility` on old GPUs.
@@ -73,8 +73,9 @@ a palette of every block and item), F5 view (first person / from behind / from i
 block you look at, chunk timings), Esc pause. Launch option `--mode=creative|survival` for new worlds. All keyboard keys can be
 rebound in **Settings…** (title screen or pause menu), along with view distance, mouse
 sensitivity, frame rate limit, vsync, **master / effects / ambience volume** (each with
-its own audio bus) and **smooth lighting** (light blended at block corners
-with soft corner shading, instead of the classic flat look). Settings are saved in
+its own audio bus), **smooth lighting** (light blended at block corners
+with soft corner shading, instead of the classic flat look; on by default) and **sun
+shadows** (on by default; about 10% of the frame rate on an integrated GPU). Settings are saved in
 `user://settings.cfg`.
 
 ## Survival and creative
@@ -202,7 +203,10 @@ creatures) and the engine's phase tests: [PROTOTYPES.md](PROTOTYPES.md),
 - `engine/src/` — the C++ voxel engine (`GoCubeWorld` node): `generator`, `mesher`, `light`,
   `storage`, `gocube_world` (streaming on worker threads, editing, raycast, box collision).
 - `src/engine/` — `BlockAtlas` (registry → texture atlas + engine block table) and the chunk
-  shaders (classic face shading × baked sky/block light; `daylight` uniform).
+  shaders (classic face shading × baked sky/block light; `daylight` uniform; the sun's
+  share is added in the terrain shader's `light()` times Godot's shadow, so hills, trees and
+  buildings cast shadows, plus drifting cloud shadows and a slow variation in the green of
+  grass and leaves, `"tint": true`).
 - `src/world/world.gd` — `World`: the engine plus the world's save folder and id table.
 - `src/ui/world_menu.gd` — title screen / world select (the main scene); `settings_screen.gd`,
   `inventory_screen.gd`, `hotbar.gd`.
@@ -268,7 +272,9 @@ Time runs at real speed (a day lasts 24 hours; `DayCycle`, `src/world/day_cycle.
 world starts at your computer's local time; after that the time is saved with the world and
 resumes where you left off (in multiplayer: the host's, synced to everyone). Offline, pausing
 stops it. `--time=0..1` and `--day-length=SECONDS` override it for testing. Sky light dims to
-a moonlit level at night while lamps stay bright. The sky (`src/world/sky.gdshader`) has a
+a faint blue moonlight at night while lamps stay bright, and the haze closes in to about 40
+blocks and turns nearly black, so you need a torch (new players start with one in hand).
+By day, distant land fades into a haze in the horizon's colour. The sky (`src/world/sky.gdshader`) has a
 square pixel sun rising in the east, a pixel moon opposite it, stars that fade in at night
 and turn with the sky, and a drifting layer of blocky clouds tinted by the time of day.
 

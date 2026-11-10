@@ -42,7 +42,8 @@ func _init() -> void:
 			_icon_tiles[id] = tiles[0]  # the side face shows best as a flat icon
 		var entry := {"solid": solid, "opaque": opaque, "fluid": fluid, "tiles": tiles,
 				"light": int(def.get("light", 0)), "fluid_level": int(def.get("level", 8)),
-				"random_rotation": bool(def.get("random_rotation", false))}
+				"random_rotation": bool(def.get("random_rotation", false)),
+				"tint": bool(def.get("tint", false))}
 		entry.merge(BlockShapes.engine_fields(def))
 		block_table.append(entry)
 	atlas = _build_atlas()

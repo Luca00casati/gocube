@@ -30,7 +30,8 @@ var view_distance := 128
 var mouse_sensitivity := 0.003
 var max_fps := 0
 var vsync := true
-var smooth_lighting := false
+var smooth_lighting := true  # corner shading (ambient occlusion) and soft light
+var shadows := true          # the sun casts shadows (costs some frame time)
 ## Threads generating and meshing chunks: 0 = automatic (cores - 1, at most 8).
 ## Only in settings.cfg (or --threads=N): fewer leaves CPU for other programs.
 var worker_threads := 0
@@ -51,6 +52,7 @@ func _ready() -> void:
 	max_fps = int(config.get_value("settings", "max_fps", max_fps))
 	vsync = bool(config.get_value("settings", "vsync", vsync))
 	smooth_lighting = bool(config.get_value("settings", "smooth_lighting", smooth_lighting))
+	shadows = bool(config.get_value("settings", "shadows", shadows))
 	clock_24h = bool(config.get_value("settings", "clock_24h", clock_24h))
 	worker_threads = clampi(int(config.get_value("settings", "worker_threads", worker_threads)), 0, 64)
 	master_volume = float(config.get_value("settings", "master_volume", master_volume))
@@ -87,6 +89,7 @@ func save() -> void:
 	config.set_value("settings", "max_fps", max_fps)
 	config.set_value("settings", "vsync", vsync)
 	config.set_value("settings", "smooth_lighting", smooth_lighting)
+	config.set_value("settings", "shadows", shadows)
 	config.set_value("settings", "clock_24h", clock_24h)
 	config.set_value("settings", "worker_threads", worker_threads)
 	config.set_value("settings", "master_volume", master_volume)

@@ -16,3 +16,8 @@ Settings="*res://src/core/settings.gd"
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/gocube_export/plugin.cfg")
+
+[rendering]
+
+lights_and_shadows/directional_shadow/size=2048
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=1
