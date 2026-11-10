@@ -117,13 +117,18 @@ func _ready() -> void:
 	_drops_node.picked_up.connect(func(_i, _n): _sounds.play("core:effects", "pickup", _cam.global_position, -8.0))
 	add_child(_drops_node)
 	_session.drops = _drops_node
-	_session.items_picked.connect(func(item: String, count: int):
+	_session.items_picked.connect(func(item: String, count: int, add: bool):
 		if _player == null:
 			return
 		_sounds.play("core:effects", "pickup", _cam.global_position, -8.0)
-		var left: int = _player.inventory.add(item, count)
-		if left > 0:  # it no longer fits: back on the ground
-			spawn_drop(item, left, _player.global_position + Vector3(0, 0.5, 0)))
+		if add:  # creative (in survival the host's copy of our inventory has it)
+			_player.inventory.add(item, count))
+	_session.inventory_synced.connect(func(data: Array):
+		if _player:
+			_player.inventory.apply_snapshot(data))
+	_session.health_synced.connect(func(h: int):
+		if _player:
+			_player.set_health(h))
 	_mobs = MobManager.new()
 	_mobs.name = "Mobs"
 	_mobs.world = _world
@@ -215,8 +220,7 @@ func _start_client() -> void:
 	_set_loading_text("Connecting to %s:%d…" % [join_address, port])
 	_session.ended.connect(_on_session_ended)
 	_session.welcomed.connect(_on_welcomed, CONNECT_ONE_SHOT)
-	_drops_node.remote = true  # the host owns dropped items
-	_drops_node.request_spawn = _session.request_drop
+	_drops_node.remote = true  # the host owns dropped items (and makes them all)
 	_drops_node.request_pickup = _session.request_pickup
 	_session.woken.connect(func():
 		if _player:
@@ -241,7 +245,11 @@ func _on_welcomed(info: Dictionary) -> void:
 	_spawn_player(Vector3(s[0], s[1] - Player.EYE_HEIGHT, s[2]))
 	_player.edit_handler = _session.request_edit
 	_player.place_handler = _session.request_place
-	_player.give_starting_items()  # joining players start fresh: a torch in hand
+	_player.give_starting_items()  # until the host's copy of our inventory arrives
+	if not _player.creative:  # the host keeps our inventory and health, and checks mining
+		_player.inventory.on_action = _session.inventory_action
+		_player.health_from_host = true
+		_player.mining_handler = _session.start_mining
 	_set_loading_text("Loading world…")
 	_loading_since = Time.get_ticks_msec()
 	print("Joined %s:%d" % [join_address, port])
@@ -377,6 +385,7 @@ func _open_inventory() -> void:
 	_inventory_screen.player = _player
 	_inventory_screen.atlas = _world.atlas
 	_inventory_screen.closed.connect(_close_inventory)
+	_inventory_screen.left_over.connect(_drop_left_over)
 	_hud.add_child(_inventory_screen)
 	_player.ui_open = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -394,6 +403,13 @@ func _on_remote_edit(pos: Vector3i, old_block: int, new_block: int) -> void:
 ## ItemDrops). Merges with the same item lying close by.
 func spawn_drop(item: String, count: int, at: Vector3) -> void:
 	_drops_node.spawn(item, count, at)
+
+
+## A screen closed with something on the mouse that no longer fits in the
+## inventory: on the ground (a client's host does that itself).
+func _drop_left_over(stack: Dictionary) -> void:
+	if not _world.remote:
+		spawn_drop(stack.id, stack.count, _player.global_position + Vector3(0, 0.5, 0))
 
 
 ## Host / single player: a chest or furnace was broken, or a block popped off.
@@ -417,6 +433,7 @@ func _open_container(pos: Vector3i) -> void:
 	_container_screen.player = _player
 	_container_screen.atlas = _world.atlas
 	_container_screen.backend = backend
+	_container_screen.left_over.connect(_drop_left_over)
 	_container_screen.closed.connect(func():
 		_container_screen.queue_free()
 		_container_screen = null
@@ -573,6 +590,7 @@ func _respawn() -> void:
 	# behind the loading screen (as when opening a world).
 	var wait := not _world.is_area_meshed(AABB(at - Vector3(8, 8, 8), Vector3(16, 16, 16)))
 	_player.respawn(at, wait)
+	_session.respawned()  # (a client: the host gives us our health back)
 	if wait and _loading == null:
 		_loading = _make_loading_screen()
 		_loading_since = Time.get_ticks_msec()
@@ -657,6 +675,7 @@ func save_game() -> void:
 	_saving = true
 	var t := Time.get_ticks_msec()
 	_world.meta.time = _day.time
+	_session.store_inventories()  # host: the joined players' inventories
 	await _world.save(_player_state())
 	_saving = false
 	print("World saved in %d ms" % (Time.get_ticks_msec() - t))
@@ -822,7 +841,7 @@ func _process(_delta: float) -> void:
 	_update_hand_light()
 	if _player and _session:  # how others see us
 		_session.local_pose = {"pitch": _player.look_pitch(), "item": _player.selected_item(),
-				"flags": _player.pose_flags(), "swings": _player.swings}
+				"flags": _player.pose_flags(), "swings": _player.swings, "selected": _player.selected}
 	if _player:  # from in front of us, the crosshair would point nowhere useful
 		_crosshair.visible = _player.view != Player.View.FRONT
 	var status := "%d FPS · %s" % [Engine.get_frames_per_second(), _day.clock_text(Settings.clock_24h)]

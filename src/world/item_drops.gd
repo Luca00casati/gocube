@@ -4,10 +4,10 @@ extends Node3D
 ##
 ## Single player and host: drops are simulated here (falling, merging, the
 ## local player picking them up). In multiplayer the host sends their state to
-## the clients (Session, ~10 times a second). A client only shows them: new
-## drops are asked of the host (request_spawn), and when the local player
-## reaches one the client asks the host for it (request_pickup); whoever asks
-## first gets it, so an item can't be picked up twice.
+## the clients (Session, ~10 times a second). A client only shows them: the
+## host makes every drop (what breaking gives, spills, creatures), and when the
+## local player reaches one the client asks the host for it (request_pickup);
+## whoever asks first gets it, so an item can't be picked up twice.
 
 signal picked_up(item: String, count: int)
 
@@ -18,7 +18,6 @@ const PEER_PICKUP_REACH := 4.5  # generous: the host sees players a little late
 var world: World
 var player: Node3D           # the local player (player.gd), picks up drops
 var remote := false          # multiplayer client: drops mirror the host's
-var request_spawn: Callable  # client: (item, count, at) -> asks the host to drop it
 var request_pickup: Callable # client: (drop id) -> asks the host for it
 
 var _next_id := 1
@@ -30,8 +29,7 @@ func spawn(item: String, count: int, at: Vector3) -> void:
 	if count <= 0 or item == "":
 		return
 	if remote:
-		request_spawn.call(item, count, at)
-		return
+		return  # the host makes drops
 	for d in _by_id.values():
 		if d.item == item and d.global_position.distance_to(at) < MERGE_DISTANCE and not d.is_queued_for_deletion():
 			d.count += count

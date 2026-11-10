@@ -78,7 +78,20 @@ def main() -> int:
             times[file] = time.monotonic() - t0
         finally:
             slots.put(slot)
-        lines = [l for l in out.splitlines() if l.startswith(("PASS", "FAIL", "        - "))]
+        # PASS/FAIL lines; under a FAIL, what the test printed (indented) while
+        # it ran, then its reasons ("        - ", printed right after it).
+        lines, printed, reasons = [], [], False
+        for l in out.splitlines():
+            if l.startswith(("PASS", "FAIL")):
+                lines.append(l)
+                if l.startswith("FAIL"):
+                    lines += printed
+                printed, reasons = [], l.startswith("FAIL")
+            elif reasons and l.startswith("        - "):
+                lines.append(l)
+            elif l.startswith("        "):
+                printed.append(l)
+                reasons = False
         found = SUMMARY.search(out)
         passed, failed = (int(found[1]), int(found[2])) if found else (0, 1)
         with print_lock:

@@ -10,6 +10,12 @@ const HOTBAR := 9
 const DEFAULT_MAX_STACK := 64
 
 var slots: Array[Dictionary] = []
+## What the mouse holds in an open inventory or container screen ({} or a stack).
+var cursor: Dictionary = {}
+## Multiplayer client in survival: called with each action ([kind, ...]) done
+## through the methods below, so the host can do the same to its copy (see
+## Session.inventory_action). Unset: nobody else needs to know.
+var on_action: Callable
 
 
 func _init() -> void:
@@ -126,6 +132,96 @@ func put_armor(slot: String, held: Dictionary) -> Dictionary:
 	armor[slot] = {"id": held.id, "count": 1} if not held.is_empty() else {}
 	changed.emit()
 	return was
+
+
+# --- Actions (the same on a client and on the host's copy) -------------------
+
+## Click on a slot in a screen: put down or pick up (see put).
+func click(slot: int) -> void:
+	if slot < 0 or slot >= SIZE:
+		return
+	cursor = put(slot, cursor)
+	_did(["click", slot])
+
+
+## Click on an armour slot in a screen (see put_armor).
+func click_armor(slot: String) -> void:
+	if slot not in ARMOR_SLOTS:
+		return
+	cursor = put_armor(slot, cursor)
+	_did(["armor", slot])
+
+
+## Crafts a hand recipe (Crafting.hand_recipes) by its id. False if it couldn't.
+func craft(recipe_id: String) -> bool:
+	var ok := false
+	for r in Crafting.hand_recipes():
+		if r.id == recipe_id:
+			ok = Crafting.craft(r, self)
+	_did(["craft", recipe_id])
+	return ok
+
+
+## A screen closed: what the mouse held goes back in. Returns what didn't fit
+## ({} or a stack), which the caller drops.
+func close_cursor() -> Dictionary:
+	var held := cursor
+	cursor = {}
+	var left := add(held.id, held.count) if not held.is_empty() else 0
+	_did(["close"])
+	return {} if left == 0 else {"id": held.id, "count": left}
+
+
+## Eats one of the food in a slot. False if it isn't food.
+func eat(slot: int) -> bool:
+	if slot < 0 or slot >= SIZE or not Registry.items.get(slots[slot].get("id", ""), {}).has("food"):
+		return false
+	take_one(slot)
+	_did(["eat", slot])
+	return true
+
+
+func _did(action: Array) -> void:
+	if on_action.is_valid():
+		on_action.call(action)
+
+
+## Does an action from a client's inventory (host side, on its copy; the
+## client did the same through the methods above). Returns what didn't fit
+## back after a "close" (to drop), else {}.
+func apply_action(action: Array) -> Dictionary:
+	if action.is_empty() or not action[0] is String:
+		return {}
+	match [action[0], action.size()]:
+		["click", 2]:
+			if action[1] is int:
+				click(action[1])
+		["armor", 2]:
+			if action[1] is String:
+				click_armor(action[1])
+		["craft", 2]:
+			if action[1] is String:
+				craft(action[1])
+		["close", 1]:
+			return close_cursor()
+		["eat", 2]:
+			if action[1] is int:
+				eat(action[1])
+	return {}
+
+
+## Everything a client is shown of its inventory: slots, armour, cursor.
+func snapshot() -> Array:
+	return [serialize(), cursor.duplicate()]
+
+
+func apply_snapshot(data: Array) -> void:
+	if data.size() != 2 or not data[0] is Array or not data[1] is Dictionary:
+		return
+	deserialize(data[0])
+	var c: Dictionary = data[1]
+	cursor = {"id": str(c.id), "count": int(c.count)} if c.has("id") and c.has("count") else {}
+	changed.emit()
 
 
 func serialize() -> Array:

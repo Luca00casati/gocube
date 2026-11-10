@@ -116,4 +116,4 @@ func test_host_and_client_processes() -> void:
 	if not _failures.is_empty():  # show what the processes said
 		print("        host output:\n          " + "\n          ".join(host.lines.slice(-15)))
 		if client:
-			print("        client output:\n          " + "\n          ".join(client.lines.slice(-15)))
+			print("        client output:\n          " + "\n          ".join(client.lines.slice(-40)))

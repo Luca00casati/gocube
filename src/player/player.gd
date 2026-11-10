@@ -70,14 +70,24 @@ const STRIDE := 1.7                # metres walked per footstep sound
 
 ## Benchmark mode: fly straight ahead without collisions, don't grab the mouse.
 @export var autopilot := false
-## Multiplayer client: called with (position: Vector3i, block: int) instead of
-## editing locally; the host applies the edit and sends it back.
+## Multiplayer client: called with (position: Vector3i, block: int, slot: int)
+## instead of editing locally; the host applies the edit and sends it back.
+## `slot` holds the tool used (the host decides what breaking drops).
 var edit_handler := Callable()
-## Multiplayer client: called with ([[position, block], ...], item) for a
-## placement (one or more blocks that go together, such as a bed's two
-## halves); `item` was used up for it ("" in creative) and comes back if the
-## host refuses.
+## Multiplayer client: called with ([[position, block], ...], item, slot) for
+## a placement (one or more blocks that go together, such as a bed's two
+## halves); `item` was used up from `slot` for it ("" in creative) and comes
+## back if the host refuses.
 var place_handler := Callable()
+## Multiplayer client in survival: called with (position: Vector3i) when we
+## start mining a block (the host checks the break took long enough).
+var mining_handler := Callable()
+## Multiplayer client in survival: the host keeps our health (falls, lava,
+## drowning, creatures, healing, eating) and sends it (set_health); nothing
+## here changes it.
+var health_from_host := false
+## Mines as if the left button were held (tests).
+var mine_held := false
 ## (origin, dir, max_distance) -> {"id", "distance"} or {}: the creature under the crosshair.
 var mob_picker := Callable()
 const ATTACK_REACH := 4.0
@@ -367,6 +377,10 @@ func _after_move(moved: Vector3, vertical_speed: float, sneak: bool, delta: floa
 
 	if creative:
 		return
+	var head_in_water := world.is_fluid(world.get_block(Vector3i(camera.global_position.floor())))
+	if health_from_host:  # the host hurts and heals us; breath is only shown
+		breath = maxf(0.0, breath - delta) if head_in_water else minf(MAX_BREATH, breath + delta * 3.0)
+		return
 	# Fluids that hurt ("damage": lava) burn every half second.
 	var body_def: Dictionary = Registry.blocks.get(Registry.block_ids[world.get_block(
 			Vector3i((global_position + Vector3(0, 0.4, 0)).floor()))], {})
@@ -377,7 +391,6 @@ func _after_move(moved: Vector3, vertical_speed: float, sneak: bool, delta: floa
 			damage(int(body_def.damage), "lava")
 	else:
 		_burn_timer = 0.5  # the first touch hurts at once
-	var head_in_water := world.is_fluid(world.get_block(Vector3i(camera.global_position.floor())))
 	if head_in_water:
 		breath = maxf(0.0, breath - delta)
 		if breath <= 0.0:
@@ -398,16 +411,34 @@ func _after_move(moved: Vector3, vertical_speed: float, sneak: bool, delta: floa
 
 ## source "mob": armour takes off 4% per point (up to 60%).
 func damage(amount: int, source := "") -> void:
-	if creative or dead or amount <= 0:
+	if creative or dead or amount <= 0 or health_from_host:
 		return
 	if source == "mob":
-		var reduced := float(amount) * (1.0 - minf(0.6, inventory.armor_points() * 0.04))
-		amount = maxi(1, roundi(reduced))
+		amount = armored(amount, inventory.armor_points())
 	health = maxi(0, health - amount)
 	_since_damage = 0.0
 	_regen_timer = 0.0
 	hurt.emit(amount)
 	if health == 0:
+		dead = true
+		velocity = Vector3.ZERO
+		died.emit()
+
+
+## `amount` of a creature's damage after `points` of armour.
+static func armored(amount: int, points: int) -> int:
+	return maxi(1, roundi(float(amount) * (1.0 - minf(0.6, points * 0.04))))
+
+
+## Multiplayer client: our health as the host has it (hurt, healed or dead).
+func set_health(h: int) -> void:
+	if creative or (dead and h == 0):
+		return
+	var was := health
+	health = clampi(h, 0, MAX_HEALTH)
+	if health < was:
+		hurt.emit(was - health)
+	if health == 0 and not dead:
 		dead = true
 		velocity = Vector3.ZERO
 		died.emit()
@@ -560,9 +591,8 @@ func _update_view() -> void:
 
 ## Survival mining: hold left click on the same block until it breaks.
 func _update_mining(hit: Dictionary, delta: float) -> void:
-	var holding := not creative and not ui_open and not _frozen \
-			and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
-			and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+	var holding := not creative and not ui_open and not dead and (mine_held or (not _frozen
+			and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)))
 	if not holding or not hit.hit:
 		mining_progress = 0.0
 		_mining_target = Vector3i(1 << 30, 0, 0)
@@ -570,9 +600,12 @@ func _update_mining(hit: Dictionary, delta: float) -> void:
 	if hit.position != _mining_target:
 		_mining_target = hit.position
 		mining_progress = 0.0
+		if mining_handler.is_valid():
+			mining_handler.call(hit.position)
 	mining_progress += delta / mine_seconds(Registry.block_ids[hit.block], selected_item())
 	if mining_progress >= 1.0:
 		mining_progress = 0.0
+		_mining_target = Vector3i(1 << 30, 0, 0)  # (still there next frame: mining it again starts over)
 		_break_target()
 
 
@@ -675,7 +708,7 @@ func _break_target() -> void:
 		return
 	var broken: String = Registry.block_ids[hit.block]
 	var at := Vector3(hit.position) + Vector3.ONE * 0.5
-	if not creative:
+	if not creative and not edit_handler.is_valid():  # (multiplayer: the host drops them)
 		pending_drops[hit.position] = drops_of(broken, selected_item())
 	_apply_edit(hit.position, Registry.block_index("core:air"))
 	var other = BlockShapes.other_part(broken, hit.position)
@@ -721,8 +754,9 @@ func _place() -> void:
 	# Food: eat it (when hurt).
 	if item_def.has("food"):
 		if not creative and health < MAX_HEALTH:
-			health = mini(MAX_HEALTH, health + int(item_def.food))
-			inventory.take_one(selected)
+			if not health_from_host:  # (else the host heals us when its copy eats it)
+				health = mini(MAX_HEALTH, health + int(item_def.food))
+			inventory.eat(selected)
 			ate.emit(item)
 		return
 	if not hit.hit:
@@ -733,7 +767,7 @@ func _place() -> void:
 		if target in ["core:grass", "core:dirt"] and world.get_block(hit.position + Vector3i.UP) == 0:
 			# Grass may turn up a seed: dropped once the change really happened
 			# (multiplayer: when the host confirms it, like breaking).
-			var found := till_drops_of(target)
+			var found := till_drops_of(target) if not edit_handler.is_valid() else []  # (host: its own)
 			if not found.is_empty():
 				pending_drops[hit.position] = found
 			_apply_edit(hit.position, Registry.block_index("core:farmland"))
@@ -786,7 +820,7 @@ func _place() -> void:
 ## sends it back). Inventory changes happen right away either way.
 func _apply_edit(pos: Vector3i, block: int) -> void:
 	if edit_handler.is_valid():
-		edit_handler.call(pos, block)
+		edit_handler.call(pos, block, selected)
 	else:
 		world.set_block(pos, block)
 
@@ -795,7 +829,7 @@ func _apply_edit(pos: Vector3i, block: int) -> void:
 ## here or (multiplayer) through the host, all or none.
 func _apply_placement(cells: Array, item: String) -> void:
 	if place_handler.is_valid():
-		place_handler.call(cells, "" if creative else item)
+		place_handler.call(cells, "" if creative else item, selected)
 	else:
 		for c in cells:
 			world.set_block(c[0], c[1])

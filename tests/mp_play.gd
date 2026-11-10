@@ -33,16 +33,38 @@ static func walk(p: Node3D, to: Vector3) -> bool:
 	return true
 
 
-## A frozen survival player with an empty inventory, for scripted play.
+## Holds the left button on what the player aims at until a block breaks
+## (survival mining takes the block's time; the host checks it). False if
+## nothing broke within `seconds`.
+static func mine(p: Node3D, seconds := 10.0) -> bool:
+	var broke := [false]
+	var on_break := func(_block, _at): broke[0] = true
+	p.block_broken.connect(on_break)
+	p.mine_held = true
+	var give_up := Time.get_ticks_msec() + int(seconds * 1000.0)
+	while not broke[0] and Time.get_ticks_msec() < give_up:
+		await p.get_tree().process_frame
+	p.mine_held = false
+	p.block_broken.disconnect(on_break)
+	return broke[0]
+
+
+## A frozen survival player, for scripted play (its inventory stays: in
+## multiplayer the host has a copy of it).
 static func take_over(p: Node3D) -> void:
 	p._frozen = true
 	p.creative = false
-	p.inventory = Inventory.new()
 	p.selected = 0
 
 
-static func give(p: Node3D, item: String, count: int) -> void:
-	p.inventory.slots[p.selected] = {"id": item, "count": count}
+## Takes the hotbar slot holding `item` in hand (as a person would with the
+## number keys). False if no hotbar slot has it.
+static func hold(p: Node3D, item: String) -> bool:
+	for i in Inventory.HOTBAR:
+		if p.inventory.slots[i].get("id", "") == item:
+			p.selected = i
+			return true
+	return false
 
 
 ## Host: a stone floor under the area around `o`, with air above it.

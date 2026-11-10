@@ -11,6 +11,15 @@ extends Node
 ##     (position, block) to everyone; a client that hasn't loaded that chunk
 ##     asks the host for the whole chunk instead
 ##   - player positions (clients -> host -> everyone) and avatars
+##   - survival inventories: the host keeps every joining player's (saved in
+##     its world by player name). A client does each inventory action at once
+##     and tells the host, which does the same to its copy where allowed and
+##     sends the result back (see inventory_action); breaking and tilling drop
+##     what the host decides, and placing takes the item from the host's copy
+##   - survival health and mining: the host keeps each joining player's health
+##     (falls, lava and drowning from where it says it is, creatures, healing,
+##     food) and sends it; a break happens no sooner than the block's mining
+##     time after the client said it started (start_mining)
 ##
 ## Mods are NOT sent over the network: both sides must have the same mods
 ## installed (mod scripts run unsandboxed, so never auto-download them).
@@ -25,8 +34,14 @@ signal own_edit_confirmed(position: Vector3i)
 signal own_edit_refused(position: Vector3i)
 ## Client: the host refused a placement: give back the item it used up.
 signal placement_refused(item: String)
-## Client: the host gave us a dropped item we asked for (put it in the inventory).
-signal items_picked(item: String, count: int)
+## Client: the host gave us a dropped item we asked for. `add`: put it in the
+## inventory ourselves (creative); otherwise the host's inventory has it.
+signal items_picked(item: String, count: int, add: bool)
+## Client in survival: the host's copy of our inventory (Inventory.snapshot),
+## once it has done every action we sent.
+signal inventory_synced(data: Array)
+## Client in survival: our health as the host has it.
+signal health_synced(health: int)
 ## Client: a container's contents / what we hold after clicking it.
 signal container_updated(position: Vector3i, data: Dictionary)
 signal container_held(position: Vector3i, held: Dictionary)
@@ -39,8 +54,9 @@ signal corrected(eye: Vector3)
 
 const Avatar := preload("res://src/player/avatar.gd")
 const Player := preload("res://src/player/player.gd")
+const Vitals := preload("res://src/net/vitals.gd")
 
-const PROTOCOL := 6
+const PROTOCOL := 7
 const DEFAULT_PORT := 24680
 const MAX_PLAYERS := 8
 const STATE_INTERVAL := 0.05       # seconds between position updates (20 Hz)
@@ -56,6 +72,8 @@ var world: World
 var local_player: Node3D
 var drops: ItemDrops               # dropped items (set by main)
 var _drop_timer := 0.0
+var _inventory_seq := 0      # client: inventory actions sent (the host answers with the last it did)
+var _host_owns_inventory := false  # client: survival (from the welcome)
 var held_light := 0         # light level of what the local player holds (a torch: 13); set by main
 ## How the local player looks to others (set by main every frame): head pitch,
 ## held item, Avatar.FLAG_* (sneaking, asleep, flying), swing counter.
@@ -107,11 +125,18 @@ const RATES := {
 	"edit": [20.0, 40.0],       # breaking and placing (creative mines fast; doors and beds are two)
 	"hit": [8.0, 12.0],
 	"chunk": [30.0, 120.0],
-	"drop": [10.0, 30.0],
 	"pickup": [20.0, 60.0],
 	"container": [20.0, 40.0],
 	"other": [4.0, 10.0],       # bed, sleeping
+	"inventory": [30.0, 60.0],  # clicks in the inventory, crafting, eating
+	"mine": [20.0, 40.0],       # starting to mine a block
 }
+## Host: a survival break happens no sooner than this share of the block's
+## mining time (Player.mine_seconds) after the client started mining it, less
+## MINE_LAG seconds (the two messages may travel at different speeds). One
+## that comes sooner (a stall here, or a cheat) waits until then.
+const MINE_SLACK := 0.8
+const MINE_LAG := 0.1
 const NAME_LENGTH := 16
 const MAX_MODS := 256             # longest mod list accepted in a hello
 
@@ -123,6 +148,9 @@ func host(port: int) -> Error:
 	var err := peer.create_server(port, MAX_PLAYERS - 1)
 	if err != OK:
 		return err
+	# Everything goes through the host: clients needn't hear of each other
+	# (nor a player being turned away of the others).
+	(multiplayer as SceneMultiplayer).server_relay = false
 	multiplayer.multiplayer_peer = peer
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	mode = Mode.HOST
@@ -204,6 +232,7 @@ func _on_server_disconnected() -> void:
 @rpc("authority", "call_remote", "reliable")
 func _welcome(info: Dictionary) -> void:
 	_welcomed = true
+	_host_owns_inventory = str(info.get("mode", "survival")) != "creative"
 	welcomed.emit(info)
 
 
@@ -213,9 +242,47 @@ func _rejected(reason: String) -> void:
 
 
 ## Clients ask the host to change a block; the host validates and applies it.
-func request_edit(pos: Vector3i, block: int) -> void:
+## `slot`: the inventory slot holding the tool used (what breaking drops).
+func request_edit(pos: Vector3i, block: int, slot: int = -1) -> void:
 	_own_edits[pos] = _now()
-	_request_edit.rpc_id(1, pos, block)
+	_request_edit.rpc_id(1, pos, block, slot)
+
+
+## Client in survival: we started mining the block at `pos` (the break comes
+## once it has taken long enough, see _mining_wait).
+func start_mining(pos: Vector3i) -> void:
+	_mining.rpc_id(1, pos)
+
+
+## Client: we came back to life (the death screen's button).
+func respawned() -> void:
+	if is_client():
+		_respawned.rpc_id(1)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _health(h: int) -> void:
+	health_synced.emit(h)
+
+
+## Client in survival: tell the host about an inventory action we did
+## (Inventory.on_action). Numbered, so we know when its copy has caught up.
+func inventory_action(action: Array) -> void:
+	_inventory_seq += 1
+	_inventory_action.rpc_id(1, _inventory_seq, action)
+
+
+func _next_inventory_seq() -> int:
+	_inventory_seq += 1
+	return _inventory_seq
+
+
+## Client: the host's copy of our inventory after action `done`. Shown only
+## when no action of ours is still on its way (it would be undone for a moment).
+@rpc("authority", "call_remote", "reliable")
+func _inventory(done: int, data: Array) -> void:
+	if done >= _inventory_seq:
+		inventory_synced.emit(data)
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")
@@ -325,6 +392,11 @@ func _hello(protocol: int, mods: Array, requested_name: String) -> void:
 	var pname := clean_name(requested_name)
 	if pname == "":
 		pname = "Player %d" % id
+	if _peers.values().any(func(p): return p.name == pname):
+		# Survival inventories are kept by name: one player per name.
+		_rejected.rpc_id(id, "Someone called %s is already playing here: pick another name." % pname)
+		get_tree().create_timer(1.0).timeout.connect(_kick.bind(id))
+		return
 	var spawn := local_player.global_position + Vector3(2, 0, 2)
 
 	# Reliable messages on one channel arrive in order, so the client has the
@@ -346,7 +418,99 @@ func _hello(protocol: int, mods: Array, requested_name: String) -> void:
 
 	_peers[id] = {"name": pname, "position": spawn, "yaw": 0.0,
 			"time": _now(), "budget": _move_cap()}
+	if world.meta.get("mode", "survival") != "creative":
+		# Survival: the host keeps the player's inventory (back from last time).
+		var inv := Inventory.new()
+		var saved = world.meta.get("players", {}).get(pname, {}).get("inventory")
+		if saved is Array:
+			inv.deserialize(saved)
+		else:
+			for i in Player.STARTING_ITEMS.size():
+				inv.slots[i] = Player.STARTING_ITEMS[i].duplicate()
+		_peers[id].inv = inv
+		_peers[id].done = 0
+		_peers[id].inv_changed = true  # sent with the next update
+		var vitals := Vitals.new()  # and its health (full after dying)
+		var health = world.meta.get("players", {}).get(pname, {}).get("health")
+		if health is int or health is float:
+			vitals.health = clampi(int(health), 1, Player.MAX_HEALTH)
+		_peers[id].vitals = vitals
 	print("%s joined (peer %d)" % [pname, id])
+
+
+## Host: keeps every joined player's inventory in the world's meta (saved
+## with it), by name. What the mouse holds goes back in first.
+func store_inventories() -> void:
+	for id in _peers:
+		_store_inventory(_peers[id])
+
+
+func _store_inventory(p: Dictionary) -> void:
+	var inv: Inventory = p.get("inv")
+	if inv == null:
+		return
+	var copy := Inventory.new()
+	copy.deserialize(inv.serialize())
+	if not inv.cursor.is_empty():
+		copy.add(inv.cursor.id, inv.cursor.count)
+	if not world.meta.has("players"):
+		world.meta.players = {}
+	world.meta.players[p.name] = {"inventory": copy.serialize()}
+	if p.has("vitals") and not p.vitals.dead:
+		world.meta.players[p.name].health = p.vitals.health
+
+
+## Host: a client's inventory action (Inventory.apply_action on our copy).
+## Every numbered request is counted as done, refused or not, so the client
+## knows when our copy has caught up with it.
+@rpc("any_peer", "call_remote", "reliable")
+func _inventory_action(seq: int, action: Array) -> void:
+	var id := multiplayer.get_remote_sender_id()
+	if not is_host() or not _peers.has(id):
+		return
+	_done(id, seq)
+	var inv: Inventory = _peers[id].get("inv")
+	if inv == null or not _allow(id, "inventory"):
+		return
+	var vitals: Vitals = _peers[id].vitals
+	if action.size() == 2 and action[0] is String and action[0] == "eat":
+		# Only when hurt (and alive), and the food heals here.
+		var food: Dictionary = Registry.items.get(inv.slots[action[1]].get("id", ""), {}) \
+				if action[1] is int and action[1] >= 0 and action[1] < Inventory.SIZE else {}
+		if not food.has("food") or vitals.dead or vitals.health >= Player.MAX_HEALTH:
+			return
+		vitals.heal(int(food.food))
+	var left := inv.apply_action(action)
+	if not left.is_empty() and drops and valid_stack(left):
+		drops.spawn(left.id, left.count, (_peers[id].position as Vector3) - Vector3(0, 1.0, 0))
+
+
+func _done(id: int, seq: int) -> void:
+	var p: Dictionary = _peers[id]
+	if p.has("inv"):
+		p.done = seq
+		p.inv_changed = true
+
+
+## Host: calls `method` (an rpc) on every player we accepted (not on one we
+## turned away and are about to drop, nor on one still saying hello).
+func _to_players(method: Callable, a = null, b = null) -> void:
+	for id in _peers:
+		if id not in multiplayer.get_peers():
+			continue
+		if a == null:
+			method.rpc_id(id)
+		elif b == null:
+			method.rpc_id(id, a)
+		else:
+			method.rpc_id(id, a, b)
+
+
+## Host: what a survival client holds (its selected slot in our copy).
+func _held_item(id: int) -> String:
+	var p: Dictionary = _peers[id]
+	var inv: Inventory = p.get("inv")
+	return inv.slots[int(p.get("selected", 0))].get("id", "") if inv else str(p.get("item", ""))
 
 
 ## A player name as shown to others: printable characters only, trimmed and
@@ -391,13 +555,15 @@ func _on_peer_disconnected(id: int) -> void:
 	if not _peers.has(id):
 		return
 	print("%s left" % _peers[id].name)
+	_store_inventory(_peers[id])
 	_peers.erase(id)
 	for pos in _viewers:
 		_viewers[pos].erase(id)
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
-func _client_state(pos: Vector3, yaw: float, pitch: float, item: String, flags: int, swings: int) -> void:
+func _client_state(pos: Vector3, yaw: float, pitch: float, item: String, flags: int, swings: int,
+		selected: int) -> void:
 	var id := multiplayer.get_remote_sender_id()
 	if not is_host() or not _peers.has(id) or not pos.is_finite() or not is_finite(yaw) or not is_finite(pitch):
 		return
@@ -410,35 +576,130 @@ func _client_state(pos: Vector3, yaw: float, pitch: float, item: String, flags: 
 	p.position = pos
 	p.yaw = wrapf(yaw, -PI, PI)
 	p.pitch = clampf(pitch, -PI / 2, PI / 2)
-	# Only a real item; its light comes from its definition, not from the client.
+	p.selected = clampi(selected, 0, Inventory.HOTBAR - 1)
+	# Only a real item (survival: the one in its hand in our copy); its light
+	# comes from its definition, not from the client.
 	p.item = item if valid_stack({"id": item, "count": 1}) else ""
+	if p.has("inv"):
+		p.item = _held_item(id)
 	p.light = clampi(int(Registry.blocks.get(p.item, {}).get("light", 0)), 0, 15)
 	p.flags = flags & 7
 	p.swings = swings
+	if p.has("vitals"):
+		p.vitals.moved(world, pos - Vector3(0, Player.EYE_HEIGHT, 0),
+				p.flags & (Avatar.FLAG_FLY | Avatar.FLAG_SLEEP) != 0)
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func _request_edit(pos: Vector3i, block: int) -> void:
-	var id := multiplayer.get_remote_sender_id()
+func _request_edit(pos: Vector3i, block: int, slot: int) -> void:
+	_edit_for(multiplayer.get_remote_sender_id(), pos, block, slot)
+
+
+## `mined`: a break that waited for its mining time (see _mining_wait).
+func _edit_for(id: int, pos: Vector3i, block: int, slot: int, mined := false) -> void:
 	if not is_host() or not _peers.has(id):
 		return
 	if not _edit_allowed(id, pos, block):
 		_edit_refused.rpc_id(id, pos)  # so it doesn't wait for an answer
 		return
 	var old := world.get_block(pos)
-	world.editor = id  # spilled container contents go to this player
+	var inv: Inventory = _peers[id].get("inv")
+	var drops_here := []
+	if inv:  # survival: only what needs no item, and the host decides the drops
+		var tool: String = inv.slots[slot].get("id", "") if slot >= 0 and slot < Inventory.SIZE else ""
+		var kind := _survival_edit(pos, old, block, tool)
+		if kind == "":
+			_edit_refused.rpc_id(id, pos)
+			return
+		if kind == "same":  # (the other half of a door or bed we broke along with it)
+			_block.rpc_id(id, pos, old)
+			return
+		if kind == "break" and not mined:
+			var wait := _mining_wait(id, pos, old, tool)
+			if wait < 0.0:  # it isn't mining that block
+				_edit_refused.rpc_id(id, pos)
+				return
+			if wait > 0.0:
+				get_tree().create_timer(wait).timeout.connect(_edit_for.bind(id, pos, block, slot, true))
+				return
+		if kind == "break":
+			drops_here = [Vector3(pos) + Vector3.ONE * 0.5, Player.drops_of(Registry.block_ids[old], tool)]
+		elif kind == "till":
+			drops_here = [Vector3(pos) + Vector3(0.5, 1.2, 0.5), Player.till_drops_of(Registry.block_ids[old])]
 	var ok := world.set_block(pos, block)  # -> block_changed -> sent to everyone
-	world.editor = 0
 	if ok:
 		remote_edit.emit(pos, old, block)
+		if inv and block == 0:  # a door or bed goes as a whole (and drops once)
+			var other = BlockShapes.other_part(Registry.block_ids[old], pos)
+			if other != null and BlockShapes.base_of(Registry.block_ids[world.get_block(other)]) \
+					== BlockShapes.base_of(Registry.block_ids[old]):
+				world.set_block(other, 0)
+		if drops and not drops_here.is_empty():
+			for item in drops_here[1]:
+				drops.spawn(item, 1, drops_here[0])
 	else:
 		_edit_refused.rpc_id(id, pos)  # its chunk isn't loaded here
+
+
+## Host: a survival client started mining the block at `pos`.
+@rpc("any_peer", "call_remote", "reliable")
+func _mining(pos: Vector3i) -> void:
+	var id := multiplayer.get_remote_sender_id()
+	if is_host() and _peers.has(id) and _allow(id, "mine"):
+		# (not before a break still waiting is done: one block at a time)
+		_peers[id].mining = [pos, maxf(_now(), float(_peers[id].get("mined_at", 0.0)))]
+
+
+## Host: how long peer `id`'s break of `pos` (block `old`, with `tool`) must
+## still wait to have taken the block's mining time, or -1 if it isn't mining
+## that block. Each start counts for one break.
+func _mining_wait(id: int, pos: Vector3i, old: int, tool: String) -> float:
+	var p: Dictionary = _peers[id]
+	var m = p.get("mining")
+	p.erase("mining")
+	if m == null or m[0] != pos:
+		return -1.0
+	var at := float(m[1]) + Player.mine_seconds(Registry.block_ids[old], tool) * MINE_SLACK - MINE_LAG
+	p.mined_at = maxf(at, _now())
+	return maxf(0.0, at - _now())
+
+
+## Host: whether a survival client is dead (until it respawns it does nothing).
+func _is_dead(id: int) -> bool:
+	return _peers.has(id) and _peers[id].has("vitals") and _peers[id].vitals.dead
+
+
+## Host: a client came back to life after dying here.
+@rpc("any_peer", "call_remote", "reliable")
+func _respawned() -> void:
+	var id := multiplayer.get_remote_sender_id()
+	if is_host() and _is_dead(id):
+		_peers[id].vitals.respawn()
+
+
+## Host: what a survival client's edit of `pos` from `old` to `block` with
+## `tool` in hand is: "break", "door", "till", "same" (nothing to change) or ""
+## (not allowed: anything else needs an item, see _request_place).
+func _survival_edit(pos: Vector3i, old: int, block: int, tool: String) -> String:
+	var old_id: String = Registry.block_ids[old]
+	var new_id: String = Registry.block_ids[block]
+	if block == old:
+		return "same"
+	if block == 0:
+		return "break" if not world.is_fluid(old) else ""
+	for t in BlockShapes.toggle_door(old_id, pos):
+		if t[0] == pos and t[1] == new_id:
+			return "door"
+	if new_id == "core:farmland" and old_id in ["core:grass", "core:dirt"] \
+			and Player.tool_kind(tool) == "hoe" and world.get_block(pos + Vector3i.UP) == 0:
+		return "till"
+	return ""
 
 
 ## Host: whether peer `id` may set the block at pos (within its request rate,
 ## a known placeable block, within reach, nobody inside it).
 func _edit_allowed(id: int, pos: Vector3i, block: int) -> bool:
-	if not _allow(id, "edit") or block < 0 or block >= Registry.block_ids.size():
+	if not _allow(id, "edit") or block < 0 or block >= Registry.block_ids.size() or _is_dead(id):
 		return false
 	var def = Registry.blocks.get(Registry.block_ids[block])
 	if block != Registry.block_index("core:air") and (def == null or not def.get("solid", true)):
@@ -454,21 +715,22 @@ func _edit_allowed(id: int, pos: Vector3i, block: int) -> bool:
 
 
 ## Client: ask the host to place blocks that go together ([[pos, block], ...]),
-## all or none. `item` was used up for them and comes back if it refuses.
-func request_place(cells: Array, item: String) -> void:
+## all or none. `item` was used up from `slot` for them and comes back if it refuses.
+func request_place(cells: Array, item: String, slot: int = -1) -> void:
 	var n := _next_placement
 	_next_placement += 1
 	_placements[n] = {"item": item, "cells": cells, "time": _now()}
 	for c in cells:
 		_own_edits[c[0]] = _now()
-	_request_place.rpc_id(1, n, cells)
+	_request_place.rpc_id(1, n, cells, slot, _next_inventory_seq())
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func _request_place(n: int, cells: Array) -> void:
+func _request_place(n: int, cells: Array, slot: int, seq: int) -> void:
 	var id := multiplayer.get_remote_sender_id()
 	if not is_host() or not _peers.has(id):
 		return
+	_done(id, seq)
 	var ok := cells.size() >= 1 and cells.size() <= MAX_PLACEMENT_CELLS
 	var seen := {}
 	for c in cells:
@@ -476,6 +738,15 @@ func _request_place(n: int, cells: Array) -> void:
 				and c[1] != Registry.block_index("core:air") and _edit_allowed(id, c[0], c[1])
 		if ok:
 			seen[c[0]] = true
+	# Survival: the blocks must come from the item in that slot (a bed's head
+	# and foot from one bed), which is used up.
+	var inv: Inventory = _peers[id].get("inv")
+	if ok and inv:
+		var item: String = inv.slots[slot].get("id", "") if slot >= 0 and slot < Inventory.SIZE else ""
+		var plants: String = str(Registry.items.get(item, {}).get("plants", ""))
+		ok = item != "" and cells.all(func(c):
+				var block: String = Registry.block_ids[c[1]]
+				return BlockShapes.base_of(block) == item or block == plants)
 	var done := []  # [pos, old block] of what was set, to undo if one fails
 	if ok:
 		world.editor = id
@@ -490,6 +761,8 @@ func _request_place(n: int, cells: Array) -> void:
 				world.set_block(d[0], d[1])
 		world.editor = 0
 	if ok:
+		if inv:
+			inv.take_one(slot)
 		for d in done:
 			remote_edit.emit(d[0], d[1], world.get_block(d[0]))
 	_placed.rpc_id(id, n, ok)
@@ -518,7 +791,7 @@ func _edit_refused(pos: Vector3i) -> void:
 
 func _on_block_changed(pos: Vector3i, block: int) -> void:
 	if is_host() and not _peers.is_empty():
-		_block.rpc(pos, block)
+		_to_players(_block, pos, block)
 
 
 ## Client: a block changed on the host.
@@ -553,13 +826,19 @@ func peer_positions() -> Array:
 
 ## Host: joined players ninjas may chase (the world's mode decides for all).
 func peer_targets() -> Array:
-	return _peers.keys().map(func(id): return {"position": _peers[id].position, "peer": id})
+	return _peers.keys().filter(func(id): return not _is_dead(id)) \
+			.map(func(id): return {"position": _peers[id].position, "peer": id})
 
 
-## Host: a creature hit a joined player.
+## Host: a creature hit a joined player (survival: we take the health off,
+## less its armour in our copy of its inventory).
 func strike_player(peer: int, damage: int, push: Vector3) -> void:
-	if _peers.has(peer):
-		_struck.rpc_id(peer, damage, push)
+	if not _peers.has(peer):
+		return
+	var p: Dictionary = _peers[peer]
+	if p.has("vitals"):
+		p.vitals.hurt(Player.armored(damage, (p.inv as Inventory).armor_points()))
+	_struck.rpc_id(peer, damage, push)
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -581,9 +860,11 @@ func hit_mob(id: int, item: String) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _hit_mob(id: int, item: String) -> void:
 	var peer := multiplayer.get_remote_sender_id()
-	if not is_host() or mobs == null or not _allow(peer, "hit"):
+	if not is_host() or mobs == null or not _allow(peer, "hit") or _is_dead(peer):
 		return
 	var from: Vector3 = _peers[peer].position
+	if _peers[peer].get("inv"):
+		item = _held_item(peer)  # survival: what it really holds
 	for mob in mobs.mobs():
 		if mob.id == id and mob.global_position.distance_to(from) <= MOB_REACH:
 			mobs.hit(id, from, peer, load("res://src/player/player.gd").attack_damage(item))
@@ -630,8 +911,8 @@ func night_skipped() -> void:
 	for p in _peers.values():
 		p.sleeping = false
 	if day_cycle:
-		_time.rpc(day_cycle.time)
-	_wake_up.rpc()
+		_to_players(_time, day_cycle.time)
+	_to_players(_wake_up)
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -639,23 +920,9 @@ func _wake_up() -> void:
 	woken.emit()
 
 
-# Dropped items: the host owns them all (ItemDrops) and sends their state to
-# everyone; clients ask to drop and to pick up.
-
-## Client: ask the host to drop items at a position (what we broke or threw).
-func request_drop(item: String, count: int, at: Vector3) -> void:
-	_request_drop.rpc_id(1, item, count, at)
-
-
-@rpc("any_peer", "call_remote", "reliable")
-func _request_drop(item: String, count: int, at: Vector3) -> void:
-	var id := multiplayer.get_remote_sender_id()
-	if not is_host() or drops == null or not _allow(id, "drop") or not at.is_finite() \
-			or not valid_stack({"id": item, "count": count}) \
-			or at.distance_to(_peers[id].position) > EDIT_REACH + 2.0:
-		return
-	drops.spawn(item, count, at)
-
+# Dropped items: the host owns them all (ItemDrops), makes every one of them
+# (what breaking drops, chests spilling, creatures) and sends their state to
+# everyone; clients ask to pick them up.
 
 ## Client: ask the host for a dropped item we reached.
 func request_pickup(drop_id: int) -> void:
@@ -665,16 +932,29 @@ func request_pickup(drop_id: int) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _request_pickup(drop_id: int) -> void:
 	var id := multiplayer.get_remote_sender_id()
-	if not is_host() or drops == null or not _allow(id, "pickup"):
+	if not is_host() or drops == null or not _allow(id, "pickup") or _is_dead(id):
 		return
+	var inv: Inventory = _peers[id].get("inv")
+	var d := drops.get_drop(drop_id)
+	if inv and (d == null or not inv.can_fit(d.item)):
+		return
+	var at: Vector3 = d.global_position if d else Vector3.ZERO
 	var got: Array = drops.take(drop_id, _peers[id].position)
-	if not got.is_empty():
-		_picked.rpc_id(id, got[0], got[1])
+	if got.is_empty():
+		return
+	var count: int = got[1]
+	if inv:  # survival: into the host's copy; what doesn't fit stays on the ground
+		var left := inv.add(got[0], count)
+		if left > 0:
+			drops.spawn(got[0], left, at)
+		count -= left
+		_peers[id].inv_changed = true
+	_picked.rpc_id(id, got[0], count)
 
 
 @rpc("authority", "call_remote", "reliable")
 func _picked(item: String, count: int) -> void:
-	items_picked.emit(item, count)
+	items_picked.emit(item, count, not _host_owns_inventory)
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")
@@ -688,7 +968,7 @@ func open_container(pos: Vector3i) -> void:
 
 
 func container_click(pos: Vector3i, slot: int, held: Dictionary) -> void:
-	_container_click.rpc_id(1, pos, slot, held)
+	_container_click.rpc_id(1, pos, slot, held, _next_inventory_seq())
 
 
 func close_container(pos: Vector3i) -> void:
@@ -732,15 +1012,26 @@ func _open_container(pos: Vector3i) -> void:
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func _container_click(pos: Vector3i, slot: int, held: Dictionary) -> void:
+func _container_click(pos: Vector3i, slot: int, held: Dictionary, seq: int) -> void:
 	var id := multiplayer.get_remote_sender_id()
+	if not is_host() or not _peers.has(id):
+		return
+	_done(id, seq)
+	# Survival: what the mouse holds is the host's (the inventory's cursor), not
+	# what the client says.
+	var inv: Inventory = _peers[id].get("inv")
+	if inv:
+		held = inv.cursor
 	# Only a player who opened this container (and is still near it) may click
 	# it, with a real item stack.
-	if not is_host() or not _allow(id, "container") or id not in _viewers.get(pos, []) \
+	if not _allow(id, "container") or id not in _viewers.get(pos, []) \
 			or not world.block_entities.has_entity(pos) or not _can_reach(id, pos) or not valid_stack(held):
 		_held.rpc_id(id, pos, held)  # refused: give it back
 		return
-	_held.rpc_id(id, pos, world.block_entities.click(pos, slot, held))
+	held = world.block_entities.click(pos, slot, held)
+	if inv:
+		inv.cursor = held
+	_held.rpc_id(id, pos, held)
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -812,17 +1103,31 @@ func _process(delta: float) -> void:
 		_time_sync_timer += delta
 		if _time_sync_timer >= TIME_SYNC_SECONDS:
 			_time_sync_timer = 0.0
-			_time.rpc(day_cycle.time)
+			_to_players(_time, day_cycle.time)
+	if is_host():
+		for id in _peers:  # survival: our copy of a client's inventory changed
+			var p: Dictionary = _peers[id]
+			if p.get("inv_changed", false):
+				p.inv_changed = false
+				_inventory.rpc_id(id, int(p.done), (p.inv as Inventory).snapshot())
+			var vitals: Vitals = p.get("vitals")
+			if vitals:  # and its health
+				var eye: Vector3 = p.position
+				vitals.tick(world, eye - Vector3(0, Player.EYE_HEIGHT, 0), eye,
+						int(p.get("flags", 0)) & Avatar.FLAG_SLEEP != 0, delta)
+				if vitals.changed:
+					vitals.changed = false
+					_health.rpc_id(id, vitals.health)
 	if is_host() and drops and not _peers.is_empty():
 		_drop_timer += delta
 		if _drop_timer >= DROP_INTERVAL:
 			_drop_timer = 0.0
-			_drops_state.rpc(drops.states())
+			_to_players(_drops_state, drops.states())
 	if is_host() and mobs and not _peers.is_empty():
 		_mob_timer += delta
 		if _mob_timer >= MOB_INTERVAL:
 			_mob_timer = 0.0
-			_mobs_state.rpc(mobs.states())
+			_to_players(_mobs_state, mobs.states())
 	_send_timer += delta
 	if _send_timer < STATE_INTERVAL or local_player == null:
 		return
@@ -831,10 +1136,11 @@ func _process(delta: float) -> void:
 		var states := _host_states()
 		_update_avatars(states)
 		if not _peers.is_empty():
-			_players_state.rpc(states)
+			_to_players(_players_state, states)
 	elif is_client() and _welcomed:
 		_client_state.rpc_id(1, local_player.global_position, local_player.global_rotation.y,
-				float(local_pose.pitch), str(local_pose.item), int(local_pose.flags), int(local_pose.swings))
+				float(local_pose.pitch), str(local_pose.item), int(local_pose.flags), int(local_pose.swings),
+				int(local_pose.get("selected", 0)))
 
 
 ## Other players carrying light: [Vector4(x, y, z, level)] for the terrain shader.

@@ -6,12 +6,13 @@ extends Control
 ## ingredients (in creative you always do).
 
 signal closed
+## Closing with something on the mouse that no longer fits: drop it.
+signal left_over(stack: Dictionary)
 
 const SLOT := 52
 
 var player: Node3D        # player.gd
 var atlas: BlockAtlas
-var _held: Dictionary = {}
 var _slot_buttons: Array[Button] = []
 var _recipe_rows: Array = []  # [recipe, Button]
 var _armor_buttons := {}
@@ -112,9 +113,9 @@ func _exit_tree() -> void:
 
 ## Puts whatever is held back into the inventory.
 func close() -> void:
-	if not _held.is_empty():
-		player.inventory.add(_held.id, _held.count)
-		_held = {}
+	var left: Dictionary = player.inventory.close_cursor()
+	if not left.is_empty():
+		left_over.emit(left)
 	closed.emit()
 
 
@@ -125,7 +126,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _process(_delta: float) -> void:
-	_held_icon.visible = not _held.is_empty()
+	_held_icon.visible = not player.inventory.cursor.is_empty()
 	_held_icon.global_position = get_global_mouse_position() + Vector2(4, 4)
 
 
@@ -188,7 +189,7 @@ func _make_palette() -> Control:
 		b.tooltip_text = str(id).get_slice(":", 1).capitalize()
 		ContainerScreen.style_slot(b)
 		b.pressed.connect(func():
-			_held = {"id": id, "count": 1}
+			player.inventory.cursor = {"id": id, "count": 1}
 			_refresh())
 		grid.add_child(b)
 	box.add_child(_label("Click one, then a slot · E or Esc to close"))
@@ -196,18 +197,18 @@ func _make_palette() -> Control:
 
 
 func _on_armor_slot(slot: String) -> void:
-	_held = player.inventory.put_armor(slot, _held)
+	player.inventory.click_armor(slot)
 	_refresh()
 
 
 func _on_slot(i: int) -> void:
-	if player.creative and _held.is_empty() and not player.inventory.slots[i].is_empty():
+	if player.creative and player.inventory.cursor.is_empty() and not player.inventory.slots[i].is_empty():
 		# Creative: rearrange freely, items never run out.
-		_held = player.inventory.slots[i].duplicate()
+		player.inventory.cursor = player.inventory.slots[i].duplicate()
 		player.inventory.slots[i] = {}
 		player.inventory.changed.emit()
 		return
-	_held = player.inventory.put(i, _held)
+	player.inventory.click(i)
 	_refresh()
 
 
@@ -215,7 +216,7 @@ func _on_craft(recipe: Dictionary) -> void:
 	if player.creative:
 		player.inventory.add(recipe.output, recipe.count)
 	else:
-		Crafting.craft(recipe, player.inventory)
+		player.inventory.craft(recipe.id)
 
 
 func _refresh() -> void:
@@ -231,7 +232,8 @@ func _refresh() -> void:
 		_armor_buttons[slot].icon = atlas.icon(worn.id) if not worn.is_empty() else null
 	for row in _recipe_rows:
 		row[1].disabled = not player.creative and not Crafting.can_craft(row[0], player.inventory)
-	_held_icon.texture = atlas.icon(_held.id) if not _held.is_empty() else null
+	var held: Dictionary = player.inventory.cursor
+	_held_icon.texture = atlas.icon(held.id) if not held.is_empty() else null
 
 
 static func _name(id: String) -> String:

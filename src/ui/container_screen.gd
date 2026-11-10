@@ -6,6 +6,8 @@ extends Control
 ## the world) or Remote (a multiplayer client, through the host).
 
 signal closed
+## Closing with something on the mouse that no longer fits: drop it.
+signal left_over(stack: Dictionary)
 
 const SLOT := 52
 
@@ -75,7 +77,6 @@ class Remote extends RefCounted:
 var player: Node3D        # player.gd
 var atlas: BlockAtlas
 var backend               # Local or Remote
-var _held: Dictionary = {}
 var _waiting := false     # a remote click is on its way
 var _container_buttons: Array[Button] = []
 var _inventory_buttons: Array[Button] = []
@@ -110,7 +111,7 @@ func _ready() -> void:
 
 	backend.updated.connect(_refresh)
 	backend.held_changed.connect(func(h):
-		_held = h
+		player.inventory.cursor = h
 		_waiting = false
 		_refresh())
 	player.inventory.changed.connect(_refresh)
@@ -172,9 +173,9 @@ func _build() -> void:
 
 
 func close() -> void:
-	if not _held.is_empty():
-		player.inventory.add(_held.id, _held.count)
-		_held = {}
+	var left: Dictionary = player.inventory.close_cursor()
+	if not left.is_empty():
+		left_over.emit(left)
 	backend.close()
 	closed.emit()
 
@@ -191,24 +192,24 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _process(_delta: float) -> void:
-	_held_icon.visible = not _held.is_empty()
+	_held_icon.visible = not player.inventory.cursor.is_empty()
 	_held_icon.global_position = get_global_mouse_position() + Vector2(4, 4)
 
 
 func _on_container_slot(slot: int) -> void:
 	if _waiting:
 		return
-	var held := _held
+	var held: Dictionary = player.inventory.cursor
 	if backend is Remote:
 		_waiting = true  # the host answers with what we hold afterwards
-		_held = {}
+		player.inventory.cursor = {}
 	backend.click(slot, held)
 
 
 func _on_inventory_slot(i: int) -> void:
 	if _waiting:
 		return
-	_held = player.inventory.put(i, _held)
+	player.inventory.click(i)
 	_refresh()
 
 
@@ -226,7 +227,8 @@ func _refresh() -> void:
 		var status := BlockEntities.furnace_status(e)
 		_burn.value = status.burn
 		_progress.value = status.progress
-	_held_icon.texture = atlas.icon(_held.id) if not _held.is_empty() else null
+	var held: Dictionary = player.inventory.cursor
+	_held_icon.texture = atlas.icon(held.id) if not held.is_empty() else null
 
 
 func _show(b: Button, s) -> void:

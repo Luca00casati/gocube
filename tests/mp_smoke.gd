@@ -50,6 +50,11 @@ static func _play_area(w: World) -> Vector3i:
 	return Vector3i(Vector3(sp[0], sp[1], sp[2]).floor()) + Vector3i(7, 0, 2)
 
 
+## What the host keeps for the client (as if it had played here before).
+const CLIENT_ITEMS := [{"id": "core:planks", "count": 4}, {"id": "core:wood_door", "count": 1},
+		{"id": "core:bed", "count": 3}]
+
+
 ## The host's chest, in the play area.
 static func _chest(w: World) -> Vector3i:
 	return _play_area(w) + Vector3i(4, 0, -2)
@@ -65,22 +70,24 @@ func _play(game: Node) -> Dictionary:
 	Play.take_over(p)
 	await get_tree().create_timer(2.5).timeout  # the edit flood above used up our requests
 	await _walk(p, Vector3(o) + Vector3(0.5, 0, 0.5))
-	Play.give(p, "core:planks", 1)
+	var planks: int = p.inventory.count_of("core:planks")
+	var beds: int = p.inventory.count_of("core:bed")
+	r["play: holding planks"] = Play.hold(p, "core:planks")
 	Play.aim(p, Vector3(o) + Vector3(-1.5, 0, 0.5))
 	p._place()
 	r["play: place a block"] = await _wait_for(func(): return at.call(Vector3i(-2, 0, 0)) == "core:planks", 5)
 	Play.aim(p, Vector3(o) + Vector3(-1.5, 0.5, 0.5))
-	p._break_target()
+	await Play.mine(p)
 	r["play: break it, get it back"] = await _wait_for(func(): return at.call(Vector3i(-2, 0, 0)) == "core:air" \
-			and p.inventory.count_of("core:planks") == 1, 5)
-	Play.give(p, "core:wood_door", 1)
+			and p.inventory.count_of("core:planks") == planks, 5)
+	r["play: holding a door"] = Play.hold(p, "core:wood_door")
 	Play.aim(p, Vector3(o) + Vector3(0.5, 0, -1.5))
 	p._place()
 	r["play: place a door"] = await _wait_for(func(): return at.call(Vector3i(0, 1, -2)).ends_with("_upper"), 5)
 	Play.aim(p, Vector3(o) + Vector3(0.5, 0.5, -1.5))
 	p._place()
 	r["play: open it"] = await _wait_for(func(): return at.call(Vector3i(0, 0, -2)).ends_with("_open"), 5)
-	Play.give(p, "core:bed", 1)
+	r["play: holding a bed"] = Play.hold(p, "core:bed")
 	Play.aim(p, Vector3(o) + Vector3(-1.3, 0, -1.7))
 	p._place()
 	r["play: place a bed"] = await _wait_for(func(): return at.call(Vector3i(-2, 0, -2)).begins_with("core:bed") \
@@ -90,9 +97,9 @@ func _play(game: Node) -> Dictionary:
 	r["play: sleep there (respawn point)"] = p.bed == o + Vector3i(-2, 0, -3)
 	await _walk(p, Vector3(o) + Vector3(-0.5, 0, -0.5))
 	Play.aim(p, Vector3(o) + Vector3(-1.5, 0.3, -1.5))  # the foot
-	p._break_target()
+	await Play.mine(p)
 	r["play: break the bed, one comes back"] = await _wait_for(func(): return at.call(Vector3i(-2, 0, -3)) == "core:air" \
-			and p.inventory.count_of("core:bed") == 1, 5)
+			and p.inventory.count_of("core:bed") == beds, 5)
 	await _wait_for(func(): return game._session._own_edits.is_empty(), 5)
 	print("AREA ", Play.area_hash(w, o))
 	r["every walk got there: %s" % [_walks_failed]] = _walks_failed.is_empty()
@@ -115,6 +122,11 @@ func _ready() -> void:
 		var chest := _chest(game._world)
 		game._world.set_block(chest, Registry.block_index("core:chest"))
 		game._world.block_entities.click(chest, 0, {"id": "core:coal", "count": 4})
+		# The client's inventory, as the host keeps it (from "last time").
+		var inv := Inventory.new()
+		for i in CLIENT_ITEMS.size():
+			inv.slots[i] = CLIENT_ITEMS[i].duplicate()
+		game._world.meta.players = {"Client": {"inventory": inv.serialize()}}
 		print("HOST ready")
 		await _wait_for(func(): return not game._session._peers.is_empty(), 60)
 		await get_tree().create_timer(1.5).timeout
@@ -133,82 +145,106 @@ func _ready() -> void:
 		"edit after join": ok and await _wait_for(func(): return w.get_block(ORE_AFTER) == Registry.block_index("core:gold_ore"), 10),
 	}
 	if ok:
-		var target := Vector3i(game._player.global_position.floor()) + Vector3i(2, 1, 0)
-		game._player._frozen = true
-		game._session.request_edit(target, Registry.block_index("core:planks"))
-		results["client edit via host"] = await _wait_for(func(): return w.get_block(target) == Registry.block_index("core:planks"), 5)
+		var p: Node3D = game._player
+		var inv: Inventory = p.inventory
+		var s: Session = game._session
+		Play.take_over(p)
+		results["the host kept our inventory"] = await _wait_for(func(): return inv.count_of("core:planks") == 4 \
+				and inv.count_of("core:bed") == 3 and inv.count_of("core:torch") == 0, 5)
+		# Placing takes the item from the host's copy of our inventory.
+		var target := Vector3i(p.global_position.floor()) + Vector3i(2, 1, 0)
+		var planks := Registry.block_index("core:planks")
+		inv.take_one(0)  # (what placing does here, then it asks the host)
+		s.request_place([[target, planks]], "core:planks", 0)
+		results["placing uses the host's item"] = await _wait_for(func(): return w.get_block(target) == planks, 5) \
+				and await _wait_for(func(): return s._inventory_seq > 0 and inv.count_of("core:planks") == 3, 5)
+		# Without the item, or by editing, nothing is placed.
+		var refused_places := []
+		s.placement_refused.connect(func(item): refused_places.append(item))
+		var refused_edits := []
+		s.own_edit_refused.connect(func(pos): refused_edits.append(pos))
+		var spot := target + Vector3i(0, 0, 1)
+		s.request_place([[spot, Registry.block_index("core:stone")]], "core:stone", 5)  # slot 5 is empty
+		var spot2 := spot + Vector3i(0, 0, 1)
+		s.request_edit(spot2, Registry.block_index("core:stone"))
+		results["no block without the item"] = await _wait_for(func(): return refused_places == ["core:stone"] \
+				and spot2 in refused_edits, 5) and w.get_block(spot) == 0 and w.get_block(spot2) == 0
 		results["sees the host's torch light"] = await _wait_for(
-				func(): return game._session.held_lights().any(func(l): return l.w == 13.0), 5)
+				func(): return s.held_lights().any(func(l): return l.w == 13.0), 5)
 		results["sees the host's creatures"] = await _wait_for(func(): return game._mobs.count() >= 1, 5)
-		# Breaking: the drop appears only once the host has confirmed it.
+		# Breaking: only once mined long enough; the host makes the drop.
 		var drops: Node = game._drops_node
-		game._player.pending_drops[target] = ["core:planks"]
-		game._player._apply_edit(target, 0)
-		var early := drops.get_child_count()
-		results["drop after host confirms"] = early == 0 and await _wait_for(
-				func(): return drops.count() == 1 and w.get_block(target) == 0, 5)
-		# Drops are the host's: we see its drop and picking it up goes through it.
-		var had: int = game._player.inventory.count_of("core:planks")
-		results["picked up shared drop"] = await _wait_for(func(): return drops.count() == 0 \
-				and game._player.inventory.count_of("core:planks") == had + 1, 5)
-		game._session.request_drop("core:coal", 2, game._player.global_position + Vector3(6, 1, 0))
-		results["host shares a dropped item"] = await _wait_for(func():
-				return drops._by_id.values().any(func(d): return d.item == "core:coal" and d.count == 2), 5)
-		# A chest through the host (stand next to it first: the host checks reach).
+		s.request_edit(target, 0, 0)  # at once, without mining it
+		results["no break without mining"] = await _wait_for(func(): return target in refused_edits, 5) \
+				and w.get_block(target) == planks
+		var appeared := [0]  # (counted as they come: it may be picked up within a frame)
+		drops.child_entered_tree.connect(func(_d): appeared[0] += 1)
+		Play.aim(p, Vector3(target) + Vector3(0.5, 0.5, 0.5))
+		var mined: bool = await Play.mine(p)
+		var early: int = appeared[0]
+		results["the host drops what we mine"] = mined and early == 0 and await _wait_for(
+				func(): return appeared[0] == 1 and w.get_block(target) == 0, 5)
+		# Picking it up goes through the host, into its copy of our inventory.
+		results["picked up into the host's copy"] = await _wait_for(func(): return drops.count() == 0 \
+				and inv.count_of("core:planks") == 4, 5)
 		# The host checks movement: a teleport is put back, walking is fine.
-		var before: Vector3 = game._player.global_position
+		var before: Vector3 = p.global_position
 		var put_back := [false]
-		game._session.corrected.connect(func(_eye): put_back[0] = true)
-		game._player.global_position = before + Vector3(200, 0, 0)
+		s.corrected.connect(func(_eye): put_back[0] = true)
+		p.global_position = before + Vector3(200, 0, 0)
 		results["teleport put back by host"] = await _wait_for(func(): return put_back[0] \
-				and game._player.global_position.distance_to(before) < 2.0, 5)
+				and p.global_position.distance_to(before) < 2.0, 5)
+		# A chest through the host (stand next to it first: the host checks
+		# reach): take the coal out of slot 0, put it in slot 1.
 		var chest := _chest(w)
-		await _walk(game._player, Vector3(chest) + Vector3(0.5, 0, 2.5))
+		await _walk(p, Vector3(chest) + Vector3(0.5, 0, 2.5))
 		await get_tree().create_timer(0.3).timeout
 		var seen := {}
 		var held := [null]
-		game._session.container_updated.connect(func(_p, data): seen.merge(data, true))
-		game._session.container_held.connect(func(_p, h): held[0] = h)
-		game._session.open_container(chest)
+		s.container_updated.connect(func(_p, data): seen.merge(data, true))
+		s.container_held.connect(func(_p, h): held[0] = h)
+		s.open_container(chest)
 		var opened: bool = await _wait_for(func(): return seen.get("type") == "chest", 5)
 		results["chest contents from host"] = opened and seen.slots[0] == {"id": "core:coal", "count": 4}
-		game._session.container_click(chest, 1, {"id": "core:stick", "count": 2})
-		results["chest click via host"] = await _wait_for(func(): return held[0] == {} \
-				and seen.slots[1] == {"id": "core:stick", "count": 2}, 5)
+		s.container_click(chest, 0, {})
+		results["took the coal"] = await _wait_for(func(): return held[0] == {"id": "core:coal", "count": 4}, 5)
+		held[0] = null
+		s.container_click(chest, 1, {"id": "core:diamond", "count": 64})  # (what we hold is the host's say)
+		results["put it back, as the host holds it"] = await _wait_for(func(): return held[0] == {} \
+				and seen.slots[1] == {"id": "core:coal", "count": 4} and seen.slots[0] == {}, 5)
 		# An edit the host refuses (out of reach) is answered, not left pending.
-		var refused := [false]
-		var far := Vector3i(game._player.global_position.floor()) + Vector3i(40, 0, 0)
-		game._session.own_edit_refused.connect(func(p): refused[0] = refused[0] or p == far)
-		game._session.request_edit(far, Registry.block_index("core:planks"))
-		results["refused edit answered"] = await _wait_for(func(): return refused[0] \
-				and not game._session._own_edits.has(far), 5)
+		var far := Vector3i(p.global_position.floor()) + Vector3i(40, 0, 0)
+		s.request_edit(far, 0)
+		results["refused edit answered"] = await _wait_for(func(): return far in refused_edits \
+				and not s._own_edits.has(far), 5)
 		# A refused placement gives the item back; a bed is placed whole or not at all.
-		var back := []
-		game._session.placement_refused.connect(func(item): back.append(item))
-		var had_beds: int = game._player.inventory.count_of("core:bed")
-		game._player._frozen = true
-		game._player.creative = false
-		game._session.request_place([[far, Registry.block_index("core:planks")]], "core:planks")
-		var foot := Vector3i(game._player.global_position.floor()) + Vector3i(2, 0, 2)
+		refused_places.clear()
+		var had_beds: int = inv.count_of("core:bed")
+		inv.take_one(0)
+		s.request_place([[far, planks]], "core:planks", 0)
+		var foot := Vector3i(p.global_position.floor()) + Vector3i(2, 0, 2)
 		var head := foot + Vector3i(0, 0, -1)
 		var reach_far := head + Vector3i(0, 0, -30)  # the head half out of reach
-		game._session.request_place([[foot, Registry.block_index("core:bed")],
-				[reach_far, Registry.block_index("core:bed_n_head")]], "core:bed")
-		results["refused placements give items back"] = await _wait_for(func(): return back == ["core:planks", "core:bed"], 5) \
-				and game._player.inventory.count_of("core:bed") == had_beds + 1
+		inv.take_one(2)
+		s.request_place([[foot, Registry.block_index("core:bed")],
+				[reach_far, Registry.block_index("core:bed_n_head")]], "core:bed", 2)
+		results["refused placements give items back"] = await _wait_for(func():
+				return refused_places == ["core:planks", "core:bed"] and inv.count_of("core:bed") == had_beds \
+				and inv.count_of("core:planks") == 4, 5)
 		results["half a bed is never placed"] = w.get_block(foot) != Registry.block_index("core:bed")
-		game._session.request_place([[foot, Registry.block_index("core:bed")],
-				[head, Registry.block_index("core:bed_n_head")]], "core:bed")
-		results["a whole bed is placed"] = await _wait_for(func(): return w.get_block(foot) == Registry.block_index("core:bed") \
-				and w.get_block(head) == Registry.block_index("core:bed_n_head"), 5)
+		inv.take_one(2)
+		s.request_place([[foot, Registry.block_index("core:bed")],
+				[head, Registry.block_index("core:bed_n_head")]], "core:bed", 2)
+		results["a whole bed is placed (one bed used)"] = await _wait_for(func():
+				return w.get_block(foot) == Registry.block_index("core:bed") \
+				and w.get_block(head) == Registry.block_index("core:bed_n_head") and inv.count_of("core:bed") == had_beds - 1, 5)
 		# Flooding: the host applies only a burst of edits, refusing the rest.
-		var base := Vector3i(game._player.global_position.floor()) + Vector3i(-2, 3, -2)
-		var refusals := [0]
-		game._session.own_edit_refused.connect(func(_p): refusals[0] += 1)
+		var base := Vector3i(p.global_position.floor()) + Vector3i(-2, 3, -2)
+		refused_edits.clear()
 		for i in 100:
-			game._session.request_edit(base + Vector3i(i % 4, i / 16, (i / 4) % 4), Registry.block_index("core:planks"))
-		results["edit flood limited"] = await _wait_for(func(): return game._session._own_edits.is_empty(), 5) \
-				and refusals[0] >= 50
+			s.request_edit(base + Vector3i(i % 4, i / 16, (i / 4) % 4), 0)
+		results["edit flood limited"] = await _wait_for(func(): return s._own_edits.is_empty(), 5) \
+				and refused_edits.size() >= 50
 		results.merge(await _play(game))
 	var failed := results.keys().filter(func(k): return not results[k])
 	for k in results:

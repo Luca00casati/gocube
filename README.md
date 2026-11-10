@@ -38,7 +38,8 @@ terrain themselves from the seed; only edits travel over the network.
   that each edit is sent as (position, block). A player who hasn't loaded that chunk
   asks the host for the whole chunk.
 - Block edits from joining players are requests: the host checks reach (16 blocks), the
-  block id and that nobody is inside the block, then applies them. Placing is one request
+  block id and that nobody is inside the block, then applies them (survival: see inventories
+  below). Placing is one request
   for all the blocks that go together (a bed's or door's two halves): the host places all of
   them or none, and when it refuses, the item comes back to the player's inventory.
 - Players report their own positions, but the host checks each move against the top
@@ -50,17 +51,37 @@ terrain themselves from the seed; only edits travel over the network.
   nor are moves where the host hasn't loaded the chunks (far from its own player).
 - Chest and furnace clicks are only taken from a player who opened that container and is
   near it, with a real item stack (known item, count within its stack size).
-- Every request a joining player sends has a rate limit (edits, hits, chunk requests, drops,
-  pickups, containers, beds; `RATES` in `session.gd`); extra ones are ignored. A refused edit is
+- Every request a joining player sends has a rate limit (edits, hits, chunk requests,
+  pickups, containers, inventory actions, mining, beds; `RATES` in `session.gd`); extra ones are ignored. A refused edit is
   answered, so the player doesn't wait for it, and an edit request never answered is forgotten
   after 5 s. Names are cleaned (printable characters, at most 16), positions and facing must be
   finite numbers, and a player can only say hello once.
-- **Inventories are the players' own**: each game keeps its player's inventory and the host
-  doesn't check it. A modified client can place blocks it doesn't have or drop items it
-  never had (the host still checks the item exists, the stack size, reach and rates). This
-  is fine for playing with friends; don't host strangers you don't trust.
-  `test_malformed_requests` sends nonsense to every request the host takes and checks that
-  nothing changes.
+- **The host keeps every joining player's inventory** (survival). The player's game acts at
+  once and tells the host each thing it did (moving items, crafting, eating, armour, chests),
+  numbered; the host does the same to its copy where that's allowed, and sends its copy back,
+  which the player's game takes once the host has caught up with everything it sent. Placing
+  takes the item from the host's copy (a modified game can't place what it doesn't have);
+  without an item a player can only break blocks, open doors and till with a hoe. The host
+  decides what breaking and tilling drop (with the tool in the slot the player names) and
+  makes every item lying around: players can't drop items of their own making. What the mouse
+  holds in a chest is the host's too. Inventories are kept by player name in the host's world
+  (saved with it), so a player gets theirs back when they join again; one player per name at
+  a time. Names aren't passwords: someone joining with your name gets your inventory, so
+  play with people you know. In creative, players' games are trusted (anything can be placed,
+  breaking is instant). `test_malformed_requests` sends nonsense to every request the host
+  takes and checks that nothing changes, including the host's copy of the inventory.
+- **Mining takes as long on the host** (survival). The player's game tells the host when it
+  starts mining a block; a break counts only for that block, and no sooner than its mining
+  time with the tool the player holds (less a little for the network). One that arrives
+  sooner, from a modified game or because the host stalled, waits until then; a break without
+  a start is refused. A new start doesn't count before a waiting break is done, so mining
+  several blocks at once gains nothing.
+- **The host keeps every joining player's health** (survival), by the same rules as single
+  player: falls (from the positions it accepted), lava, drowning, creatures (armour from its
+  copy of the inventory), healing, and food (eating only heals when hurt). The player's game
+  shows the host's health and dies when the host says so; until the player respawns the host
+  takes no edits, hits or pickups from them, and creatures leave them alone. Health is kept
+  by name with the inventory.
 - Players see each other as jointed figures (skin, hair and clothes picked from the player's
   id) that hold what that player holds, walk and run at the speed they move, and show
   sneaking, jumping, swinging and sleeping; each player sends its head pitch, held item,
