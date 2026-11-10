@@ -1,10 +1,11 @@
 # GoCube: notes for Claude
 
 ## Tests
-    godot4 --headless -s res://tests/run_tests.gd [-- filter]
+    python3 tests/run_tests.py [filter]     # parallel: one Godot per test file
 
-Everything is in GDScript, including `test_mp_processes` (host and client as two
-real Godot processes, about 20 s).
+The tests are all GDScript (the Python runner only starts Godot processes),
+including `test_mp_processes` (host and client as two real Godot processes,
+about 20 s).
 
 ## Multiplayer: check the client path before calling a feature done
 Single player is the host path; most multiplayer bugs come from the client path

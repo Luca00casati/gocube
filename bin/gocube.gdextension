@@ -7,3 +7,5 @@ compatibility_minimum = "4.5"
 
 linux.debug.x86_64 = "res://bin/libgocube.linux.template_debug.x86_64.so"
 linux.release.x86_64 = "res://bin/libgocube.linux.template_release.x86_64.so"
+windows.debug.x86_64 = "res://bin/libgocube.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://bin/libgocube.windows.template_release.x86_64.dll"

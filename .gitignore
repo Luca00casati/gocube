@@ -1,11 +1,14 @@
 # Godot 4: commit *.import and *.uid files; only the cache is ignored.
 .godot/
-# Export output
+# The packaged game (tools/package.py); export/ held exports from before
+dist/
 export/
 # Python
 __pycache__/
 
 # Native engine build output
 engine/build/
-engine/build-release/
+.sconsign*.dblite
 bin/*.so
+bin/*.dll
+.scons-cache/

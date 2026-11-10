@@ -9,11 +9,16 @@ built against [godot-cpp](https://github.com/godotengine/godot-cpp) (a submodule
 to `godot-4.5-stable`). Build it once after cloning, and after changing `engine/src/`:
 
     git submodule update --init
-    cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release
-    cmake --build engine/build -j4        # -> bin/libgocube.linux.template_debug.x86_64.so
+    scons -C engine -j4         # -> bin/libgocube.linux.template_debug.x86_64.so
 
-Then `godot4 -e --path .` opens the editor (Linux only so far: other platforms need their
-library entries in `bin/gocube.gdextension`).
+It builds with [SCons](https://scons.org) like Godot and godot-cpp do (`pip install scons`,
+or your distribution's package); `target=template_release` builds the release library.
+Then `godot4 -e --path .` opens the editor. The Windows library is cross-compiled from Linux
+with MinGW (`apt install g++-mingw-w64-x86-64`; it needs only Windows' own DLLs):
+
+    scons -C engine platform=windows use_mingw=yes -j4   # -> bin/libgocube.windows.template_debug.x86_64.dll
+
+macOS isn't supported yet (its library has to be built on a Mac).
 
 The game opens on a world menu (play / host / create with optional seed / delete to
 trash / join a game). In game, Esc opens the pause menu.
@@ -162,23 +167,39 @@ Items can set `"max_stack"`, `"texture"` (their icon), `"fuel"`, and for tools `
 (`"pickaxe"`, `"axe"`, …) and `"speed"`. Blocks with `"block_entity": "chest"` or `"furnace"`
 get storage.
 
-## Exporting
-`export_presets.cfg` has a Linux preset using Godot's official export templates (install
-them from the editor: Editor → Manage Export Templates). Exports need the engine's
-release library:
+## Shipping
+GoCube ships with Godot itself, not as an export: the regular Godot binary next to the
+project folder, and a launcher that starts the game (no export templates, no `.pck`).
 
-    cmake -S engine -B engine/build-release -DCMAKE_BUILD_TYPE=Release -DGODOTCPP_TARGET=template_release
-    cmake --build engine/build-release -j4   # -> bin/libgocube.linux.template_release.x86_64.so
-    godot4 --headless --export-release "Linux" export/linux/gocube.x86_64
+    python3 tools/package.py dist/linux                       # Linux
+    python3 tools/package.py dist/windows --platform=windows  # Windows
+
+`dist/.../GoCube/` holds the launcher (`gocube`, or `GoCube.cmd` on Windows; options pass
+through, e.g. `./gocube -- --world=MyWorld`), the official Godot (`godot` / `godot.exe`) and
+`game/`. The official Godot (`GODOT_VERSION` in the script, 4.7.2-stable) is downloaded from
+Godot's GitHub releases, checked against its published SHA-512 sums and kept in
+`~/.cache/gocube/godot/` (`--godot=PATH` ships a binary you already have instead).
+`game/` has `project.godot`, `src/`, `mods/`, the licenses, the engine library and the few
+files Godot needs from `.godot/` to run without importing (class names, the GDExtension list,
+resource ids). The game's files ship as they are, so players can read and change the core mod
+like their own. It runs from a read-only folder (Godot keeps its shader cache in the player's
+data folder). Godot's binary runs the game as a debug build, so the engine library shipped is
+the debug one (`bin/libgocube.<platform>.template_debug.x86_64.*`, as the builds above make).
+CI (Linux) builds both libraries, runs the tests and packages every push (the
+`GoCube-linux-x86_64` and `GoCube-windows-x86_64` artifacts). The Windows package is built
+and its layout tested, but nothing here runs it: try it on Windows before a release.
 
 `mods/` has a `.gdignore`: Godot doesn't import the built-in mods' textures and sounds (no
 `.import` files, no copies in `.godot/imported/`), and the game reads them straight from the
-files, as it does for players' mods. Since Godot also leaves ignored folders out of exports, the
-`addons/gocube_export` editor plugin (enabled in `project.godot`) adds every file under `mods/`
-to the export unchanged. The preset also includes `*.json` and the license files.
+files, as it does for players' mods.
 
 ## Tests
-    godot4 --headless -s res://tests/run_tests.gd [-- filter]
+    python3 tests/run_tests.py [filter] [--godot=GODOT] [-j N]
+
+The tests are GDScript; the Python runner starts one headless Godot per test file, several at
+once (slowest first), each with its own user data folder (`.godot/test_data/<n>`), so they
+never touch your worlds or settings. `godot4 --headless -s res://tests/run_tests.gd [-- filter]`
+runs them one after another in a single Godot (what each of those processes does).
 A test fails on a failed check, a file that doesn't compile, or any error logged while it
 runs (a test that checks something is refused declares the error with `expect_error`). Test
 worlds are named `_test…` and, like any other `user://_test…` folder, are deleted for good
@@ -218,6 +239,7 @@ creatures) and the engine's phase tests: [PROTOTYPES.md](PROTOTYPES.md),
 - `mods/core/` — the base game, written as an ordinary mod.
 - `tools/gen_textures.py` — regenerates the core 32×32 block textures (`python3 tools/gen_textures.py`).
 - `tools/gen_sounds.py` — regenerates the core sounds (needs numpy).
+- `tools/package.py` — builds the game for players (see Shipping).
 - `src/audio/sounds.gd` — plays sound sets; `src/world/fluid_sim.gd` — flowing water.
 
 ## World generation and time

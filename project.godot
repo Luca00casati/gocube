@@ -13,10 +13,6 @@ Registry="*res://src/core/registry.gd"
 ModLoader="*res://src/core/mod_loader.gd"
 Settings="*res://src/core/settings.gd"
 
-[editor_plugins]
-
-enabled=PackedStringArray("res://addons/gocube_export/plugin.cfg")
-
 [rendering]
 
 lights_and_shadows/directional_shadow/size=2048

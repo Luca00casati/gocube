@@ -16,18 +16,21 @@ jobs:
         with:
           submodules: true
 
-      - name: Cache engine build (godot-cpp takes ~8 minutes to compile)
+      - name: Cache the engine build (godot-cpp takes ~8 minutes to compile)
         uses: actions/cache@v4
         with:
-          path: engine/build
-          key: engine-${{ runner.os }}-${{ hashFiles('engine/CMakeLists.txt', '.gitmodules') }}-${{ hashFiles('engine/godot-cpp/gdextension/extension_api.json') }}-${{ hashFiles('engine/src/**') }}
+          path: .scons-cache
+          key: scons-${{ hashFiles('.gitmodules', 'engine/SConstruct') }}-${{ hashFiles('engine/src/**') }}
           restore-keys: |
-            engine-${{ runner.os }}-${{ hashFiles('engine/CMakeLists.txt', '.gitmodules') }}-${{ hashFiles('engine/godot-cpp/gdextension/extension_api.json') }}-
+            scons-${{ hashFiles('.gitmodules', 'engine/SConstruct') }}-
 
-      - name: Build the engine (GDExtension)
+      - name: Build the engine for Linux and Windows (SCons; Windows cross-compiled with MinGW)
+        env:
+          SCONS_CACHE: ${{ github.workspace }}/.scons-cache
         run: |
-          cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release
-          cmake --build engine/build -j"$(nproc)"
+          sudo apt-get update -q && sudo apt-get install -yq scons g++-mingw-w64-x86-64
+          scons -C engine -j"$(nproc)"
+          scons -C engine platform=windows use_mingw=yes -j"$(nproc)"
 
       - name: Download Godot ${{ env.GODOT_VERSION }} (checksum-verified)
         run: |
@@ -49,5 +52,24 @@ jobs:
           done
           exit 1
 
-      - name: Tests (multiplayer across two processes included)
-        run: ./godot --headless -s res://tests/run_tests.gd
+      - name: Tests (multiplayer across two processes and the packages included)
+        run: python3 tests/run_tests.py --godot=./godot
+
+      - name: Package the game (official Godot + the project folder; Windows' Godot is downloaded and checked)
+        run: |
+          python3 tools/package.py dist/linux --godot=godot
+          python3 tools/package.py dist/windows --platform=windows
+          tar -C dist/linux -czf GoCube-linux-x86_64.tar.gz GoCube
+          (cd dist/windows && zip -qr ../../GoCube-windows-x86_64.zip GoCube)
+
+      - name: Upload the Linux package
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoCube-linux-x86_64
+          path: GoCube-linux-x86_64.tar.gz
+
+      - name: Upload the Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoCube-windows-x86_64
+          path: GoCube-windows-x86_64.zip

@@ -4,11 +4,34 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <vector>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 namespace gocube {
 
 namespace {
+
+// Paths come from Godot as UTF-8; on Windows they must become wide paths, or
+// folders with non-ASCII names (a user called Ëlla) can't be opened.
+std::filesystem::path native_path(const std::string &utf8) {
+	return std::filesystem::u8path(utf8);
+}
+
+// Replaces `to` with `from` in one step. std::rename can't on Windows when
+// `to` exists (every save after the first).
+bool replace_file(const std::string &from, const std::string &to) {
+#ifdef _WIN32
+	return MoveFileExW(native_path(from).c_str(), native_path(to).c_str(),
+			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+	return std::rename(from.c_str(), to.c_str()) == 0;
+#endif
+}
 
 // File layout (little-endian):
 //   "GCC1"                     magic + format version
@@ -97,38 +120,35 @@ bool decode_chunk(const uint8_t *data, size_t size, ChunkData &chunk) {
 bool save_chunk_file(const std::string &path, const ChunkData &chunk) {
 	const std::vector<uint8_t> bytes = encode_chunk(chunk);
 	const std::string tmp = path + ".tmp";
-	FILE *f = std::fopen(tmp.c_str(), "wb");
-	if (!f) {
-		return false;
+	{
+		std::ofstream f(native_path(tmp), std::ios::binary | std::ios::trunc);
+		if (!f) {
+			return false;
+		}
+		f.write(reinterpret_cast<const char *>(bytes.data()), std::streamsize(bytes.size()));
+		f.close();
+		if (!f) {
+			std::error_code ec;
+			std::filesystem::remove(native_path(tmp), ec);
+			return false;
+		}
 	}
-	bool ok = std::fwrite(bytes.data(), 1, bytes.size(), f) == bytes.size();
-	ok = (std::fclose(f) == 0) && ok;
-	if (!ok) {
-		std::remove(tmp.c_str());
-		return false;
-	}
-	return std::rename(tmp.c_str(), path.c_str()) == 0;
+	return replace_file(tmp, path);
 }
 
 bool load_chunk_file(const std::string &path, ChunkData &chunk) {
-	FILE *f = std::fopen(path.c_str(), "rb");
+	std::ifstream f(native_path(path), std::ios::binary);
 	if (!f) {
 		return false;
 	}
-	std::vector<uint8_t> bytes;
-	uint8_t buf[65536];
-	size_t n;
-	while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
-		bytes.insert(bytes.end(), buf, buf + n);
-	}
-	std::fclose(f);
+	std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 	return decode_chunk(bytes.data(), bytes.size(), chunk);
 }
 
 std::vector<std::array<int, 3>> list_chunk_files(const std::string &dir) {
 	std::vector<std::array<int, 3>> out;
 	std::error_code ec;
-	for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
+	for (const auto &entry : std::filesystem::directory_iterator(native_path(dir), ec)) {
 		int x, y, z;
 		const std::string name = entry.path().filename().string();
 		char tail = 0;
