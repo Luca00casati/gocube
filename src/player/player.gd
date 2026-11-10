@@ -470,7 +470,7 @@ func _process(delta: float) -> void:
 	if mining_progress > 0.0:  # the arm keeps swinging while mining
 		_mine_swing -= delta
 		if _mine_swing <= 0.0:
-			_mine_swing = 0.3
+			_mine_swing = Figure.SWING_TIME  # one whole strike each
 			swings += 1
 	else:
 		_mine_swing = 0.0

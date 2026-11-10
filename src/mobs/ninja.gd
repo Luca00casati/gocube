@@ -42,6 +42,7 @@ var _vspeed := 0.0
 var _was_attacking := false
 var _time := 0.0
 var _on_floor := false
+var _blocked := false        # walked into something this step (legs stop)
 
 
 func _ready() -> void:
@@ -87,10 +88,15 @@ func _process(delta: float) -> void:
 		var t := 1.0 - exp(-12.0 * delta)
 		position = position.lerp(target_position, t)
 		rotation.y = lerp_angle(rotation.y, target_yaw, t)
-	# Speed from how far it actually moved (the same on the host and on clients).
-	if _last != Vector3.INF and delta > 0.0:
-		_speed = lerpf(_speed, Vector2(position.x - _last.x, position.z - _last.z).length() / delta, 1.0 - exp(-10.0 * delta))
-		_vspeed = lerpf(_vspeed, (position.y - _last.y) / delta, 1.0 - exp(-10.0 * delta))
+	# Speed: its own velocity where it is simulated (it moves in physics steps,
+	# which don't line up with frames); on clients, from how far it glided.
+	var smooth := 1.0 - exp(-10.0 * delta)
+	if world and not world.remote:
+		_speed = lerpf(_speed, Vector2(velocity.x, velocity.z).length() if not _blocked else 0.0, smooth)
+		_vspeed = 0.0 if _on_floor else velocity.y
+	elif _last != Vector3.INF and delta > 0.0:
+		_speed = lerpf(_speed, Vector2(position.x - _last.x, position.z - _last.z).length() / delta, smooth)
+		_vspeed = lerpf(_vspeed, (position.y - _last.y) / delta, smooth)
 	_last = position
 	_figure.move_speed = _speed
 	_figure.on_floor = absf(_vspeed) < 1.5
@@ -147,6 +153,7 @@ func simulate(delta: float, targets: Array = []) -> Dictionary:
 	elif r.on_floor:
 		velocity.y = 0.0
 	_on_floor = r.on_floor
+	_blocked = speed > 0.0 and Vector2(r.position.x - global_position.x, r.position.z - global_position.z).length() < speed * delta * 0.3
 	global_position = r.position
 	walking = speed > 0.0
 	rotation.y = lerp_angle(rotation.y, _heading, 1.0 - exp(-12.0 * delta))

@@ -1,13 +1,26 @@
 class_name Hand
 extends Node3D
 ## First-person arm and held item, attached to the camera. Drawn in front of
-## the world, the item in front of the hand in front of the arm (LAYER_*). Swings when you hit,
+## the world, the item in front of the arm; the sleeve covers the wrist and
+## the hand comes out of its cuff (LAYER_*). Swings when you hit,
 ## place or mine; bobs while walking; lit by the time of day (and dimmer
 ## underground).
 
 const SHADER := preload("res://src/player/hand.gdshader")
-const REST := Vector3(0.36, -0.34, -0.52)
-const SWING_TIME := 0.25
+const REST := Vector3(0.36, -0.34, -0.52)   # where the hand rests (camera space)
+## The arm turns about the shoulder, off the bottom right of the screen, so
+## the sleeve always stays behind the hand.
+const SHOULDER := Vector3(0.52, -0.62, 0.02)
+## A swing: a small wind-up, a quick arc down towards the crosshair that
+## speeds up into the blow, then an easy return. Times are fractions of
+## SWING_TIME; poses are [rotation about the shoulder, push (camera space),
+## tilt of the held item (it chops forward; the arm stays put)].
+const SWING_TIME := 0.3
+const SWING_WIND := 0.25
+const SWING_HIT := 0.5
+const SWING_REST := [Vector3.ZERO, Vector3.ZERO, Vector3.ZERO]
+const SWING_UP := [Vector3(0.1, -0.05, 0.0), Vector3(0.0, 0.015, 0.03), Vector3(0.35, 0.0, 0.0)]
+const SWING_DOWN := [Vector3(0.12, 0.32, 0.1), Vector3(-0.02, 0.06, -0.06), Vector3(-0.8, 0.0, 0.0)]
 
 var player: Node3D        # player.gd
 var atlas: BlockAtlas
@@ -16,40 +29,50 @@ var _item: MeshInstance3D
 var _shown_item := "?"
 var _mats: Array[ShaderMaterial] = []       # all, for the light
 var _item_mats: Array[ShaderMaterial] = []  # the held item's (replaced when it changes)
-var _swing := 0.0
+var _grip: Node3D           # the hand and item, placed relative to the shoulder
+var _tilt: Node3D           # the held item tips on this (the arm doesn't)
+var _swing := -1.0          # time into the swing (-1: none)
+var _swing_next := false    # another one asked for meanwhile: it follows
 var _bob := 0.0
+var _bob_amount := 0.0      # 0 standing .. 1 walking (smoothed, so the bob never snaps)
 var _light := 1.0
 var _light_timer := 0.0
 
 
 func _ready() -> void:
-	position = REST
+	position = SHOULDER
+	_grip = Node3D.new()
+	_grip.position = REST - SHOULDER
+	add_child(_grip)
 	_arm = MeshInstance3D.new()
 	var arm_mesh := BoxMesh.new()
-	arm_mesh.size = Vector3(0.11, 0.11, 0.42)
+	arm_mesh.size = Vector3(0.135, 0.135, 0.42)  # wider than the hand: a cuff around the wrist
 	_arm.mesh = arm_mesh
 	_arm.material_override = _mat(null, Color(0.34, 0.46, 0.72), LAYER_ARM)  # sleeve
 	_arm.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_arm.position = Vector3(0.0, -0.02, 0.12)
 	_arm.rotation = Vector3(0.15, -0.12, 0.0)
-	add_child(_arm)
+	_grip.add_child(_arm)
 	var fist := MeshInstance3D.new()
 	var fist_mesh := BoxMesh.new()
-	fist_mesh.size = Vector3(0.12, 0.12, 0.12)
+	fist_mesh.size = Vector3(0.1, 0.1, 0.12)
 	fist.mesh = fist_mesh
 	fist.material_override = _mat(null, Color(0.86, 0.68, 0.54), LAYER_HAND)  # hand
 	fist.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	fist.position = Vector3(0, 0, -0.24)
+	fist.position = Vector3(0, 0, -0.22)  # the wrist inside the sleeve
 	_arm.add_child(fist)
 	_item = MeshInstance3D.new()
 	_item.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(_item)
+	_tilt = Node3D.new()
+	_grip.add_child(_tilt)
+	_tilt.add_child(_item)
 
 
-## Drawing order, front last: the held item in front of the hand, the hand in
-## front of the arm (see hand.gdshader).
+## Drawing order: the hand and sleeve share a layer, so real depth decides
+## between them (the sleeve covers the wrist, the hand comes out of it); the
+## held item is drawn in front of both (see hand.gdshader).
+const LAYER_HAND := 0
 const LAYER_ARM := 0
-const LAYER_HAND := 1
 const LAYER_ITEM := 2
 
 
@@ -65,10 +88,49 @@ func _mat(tex: Texture2D, tint: Color, layer: int) -> ShaderMaterial:
 	return m
 
 
-## A quick swing (hitting, placing, using).
+## A swing (hitting, placing, using, mining). One asked for during another
+## plays right after it, whole.
 func swing() -> void:
-	if _swing <= 0.0:
-		_swing = SWING_TIME
+	if _swing < 0.0:
+		_swing = 0.0
+	else:
+		_swing_next = true
+
+
+## Places the arm and item for a swing pose (plus the walking bob).
+func apply_pose(pose: Array, bob := Vector3.ZERO) -> void:
+	position = SHOULDER + bob + pose[1]
+	rotation = pose[0]
+	_tilt.rotation = pose[2]
+
+
+## Where the fist is, in camera space (for tests).
+func fist_position() -> Vector3:
+	var fist: Node3D = _arm.get_child(0)
+	return transform * (_grip.transform * (_arm.transform * fist.position))
+
+
+## The swing's [rotation, push, tilt] at `t` (0..1 of SWING_TIME).
+static func swing_pose(t: float) -> Array:
+	var ease := func(x: float) -> float:
+		x = clampf(x, 0.0, 1.0)
+		return x * x * (3.0 - 2.0 * x)
+	var a: Array
+	var b: Array
+	var u: float
+	if t < SWING_WIND:
+		a = SWING_REST
+		b = SWING_UP
+		u = ease.call(t / SWING_WIND)
+	elif t < SWING_HIT:
+		a = SWING_UP
+		b = SWING_DOWN
+		u = pow((t - SWING_WIND) / (SWING_HIT - SWING_WIND), 2.0)  # speeds up into the blow
+	else:
+		a = SWING_DOWN
+		b = SWING_REST
+		u = ease.call((t - SWING_HIT) / (1.0 - SWING_HIT))
+	return [(a[0] as Vector3).lerp(b[0], u), (a[1] as Vector3).lerp(b[1], u), (a[2] as Vector3).lerp(b[2], u)]
 
 
 func _process(delta: float) -> void:
@@ -80,18 +142,23 @@ func _process(delta: float) -> void:
 		_shown_item = item
 		_show_item(item)
 		_light_timer = 0.0
-	# Keep swinging while mining.
-	if player.mining_progress > 0.0 and _swing <= 0.0:
-		_swing = SWING_TIME
-	var t := 0.0
-	if _swing > 0.0:
-		_swing = maxf(0.0, _swing - delta)
-		t = sin((1.0 - _swing / SWING_TIME) * PI)
+	# Keep swinging while mining, one whole swing after another.
+	if player.mining_progress > 0.0 and _swing < 0.0:
+		_swing = 0.0
+	var pose := SWING_REST
+	if _swing >= 0.0:
+		_swing += delta
+		if _swing >= SWING_TIME:
+			_swing = 0.0 if _swing_next else -1.0
+			_swing_next = false
+		if _swing >= 0.0:
+			pose = swing_pose(_swing / SWING_TIME)
+	# Walking bob, faded in and out (never snapping when you stop).
 	var moving: bool = player.on_floor and Vector2(player.velocity.x, player.velocity.z).length() > 0.5
-	_bob += delta * (9.0 if moving else 0.0)
-	var bob := Vector3(cos(_bob * 0.5) * 0.012, -absf(sin(_bob * 0.5)) * 0.02, 0) if moving else Vector3.ZERO
-	position = REST + bob + Vector3(-0.08 * t, 0.06 * t, -0.12 * t)
-	rotation = Vector3(-0.9 * t, 0.25 * t, 0.0)
+	_bob_amount = lerpf(_bob_amount, 1.0 if moving else 0.0, 1.0 - exp(-8.0 * delta))
+	_bob += delta * 9.0 * _bob_amount
+	var bob := Vector3(cos(_bob * 0.5) * 0.012, -absf(sin(_bob * 0.5)) * 0.02, 0) * _bob_amount
+	apply_pose(pose, bob)
 	_light_timer -= delta
 	if _light_timer <= 0.0:
 		_light_timer = 0.25

@@ -20,7 +20,15 @@ const UPPER_ARM := 0.3
 const FOREARM := 0.32
 const STRIDE := 1.5            # metres per full walk cycle (two steps)
 const RUN_SPEED := 5.0         # at this speed the stride is fully stretched
-const SWING_TIME := 0.32
+const SWING_TIME := 0.4        # one strike: wind up, chop, come back
+## Phases of a strike (fractions of SWING_TIME): winding up ends at WIND, the
+## chop lands at HIT, then the arm eases back to where it was.
+const SWING_WIND := 0.4
+const SWING_HIT := 0.62
+## The arm at the top of the wind-up and where the chop lands:
+## [shoulder (up/forward), out to the side (+) or across (-), elbow bend].
+const SWING_TOP := [2.5, 0.4, 1.25]
+const SWING_LAND := [0.3, -0.45, 0.5]
 
 var move_speed := 0.0
 var vertical_speed := 0.0
@@ -41,7 +49,8 @@ var _amount := 0.0      # 0 standing .. 1 running, smoothed
 var _air := 0.0         # 0 on the ground .. 1 in the air, smoothed
 var _sneak := 0.0
 var _lie := 0.0
-var _swing := 0.0       # time left of the strike
+var _swing := -1.0      # time into the strike (-1: none)
+var _swing_next := false  # another strike asked for while one plays: it follows
 var _flash := 0.0
 var _meshes: Array[MeshInstance3D] = []
 
@@ -113,10 +122,17 @@ func lie_amount() -> float:
 	return _lie
 
 
-## A strike with the right arm (hitting, mining, placing, using).
+## A strike with the right arm (hitting, mining, placing, using). One asked
+## for during another plays right after it, so strikes never cut each other off.
 func swing() -> void:
-	if _swing < SWING_TIME * 0.4:  # let most of one finish before the next
-		_swing = SWING_TIME
+	if _swing < 0.0:
+		_swing = 0.0
+	else:
+		_swing_next = true
+
+
+func swinging() -> bool:
+	return _swing >= 0.0
 
 
 ## Turns red for a moment (hurt).
@@ -136,7 +152,11 @@ func _process(delta: float) -> void:
 		_phase = fmod(_phase + move_speed * delta / STRIDE * TAU, TAU)
 	elif _amount < 0.05:
 		_phase = lerpf(_phase, 0.0, k.call(6.0))
-	_swing = maxf(0.0, _swing - delta)
+	if _swing >= 0.0:
+		_swing += delta
+		if _swing >= SWING_TIME:
+			_swing = 0.0 if _swing_next else -1.0
+			_swing_next = false
 	_flash = maxf(0.0, _flash - delta * 3.0)
 	_pose(k)
 	for mi in _meshes:
@@ -174,20 +194,40 @@ func _pose(k: Callable) -> void:
 		var elbow: float = 0.15 + 0.9 * run * (1.0 - ninja_run) + 0.2 * _sneak
 		arms[side] = [x, z, elbow]
 
-	# The right arm strikes: up and back, then hard down and forward.
-	if _swing > 0.0:
-		var t := 1.0 - _swing / SWING_TIME
-		var up := sin(minf(t / 0.35, 1.0) * PI * 0.5)
-		var down := clampf((t - 0.35) / 0.65, 0.0, 1.0)
-		var raise := lerpf(2.3 * up, -0.2, down * down * (3.0 - 2.0 * down))
-		var right: Array = arms[1]
-		arms[1] = [raise, right[1] * 0.3, 0.3 + 0.4 * (1.0 - down)]
+	# The right arm strikes like an axe blow: it winds up (the elbow comes up
+	# beside the head with the forearm back behind it: never a straight raised
+	# arm, and the hand never by the face), chops down and across the body,
+	# speeding up, then eases back. The pose is worked out directly from the
+	# time into the strike, so it moves smoothly however fast frames come.
+	var twist_swing := 0.0
+	if _swing >= 0.0:
+		var t := _swing / SWING_TIME
+		var rest: Array = arms[1]
+		var pose: Array
+		if t < SWING_WIND:
+			var u := _ease(t / SWING_WIND)
+			pose = [lerpf(rest[0], SWING_TOP[0], u), lerpf(rest[1], SWING_TOP[1], u),
+					# the elbow bends first, so a raised arm is always bent
+					lerpf(rest[2], SWING_TOP[2], minf(1.0, u * 2.0))]
+			twist_swing = -0.2 * u
+		elif t < SWING_HIT:
+			var u := (t - SWING_WIND) / (SWING_HIT - SWING_WIND)
+			var fall := u * u  # speeds up into the blow
+			pose = [lerpf(SWING_TOP[0], SWING_LAND[0], fall), lerpf(SWING_TOP[1], SWING_LAND[1], fall),
+					# and straightens last
+					lerpf(SWING_TOP[2], SWING_LAND[2], fall * fall)]
+			twist_swing = lerpf(-0.2, 0.35, fall)
+		else:
+			var u := _ease((t - SWING_HIT) / (1.0 - SWING_HIT))
+			pose = [lerpf(SWING_LAND[0], rest[0], u), lerpf(SWING_LAND[1], rest[1], u),
+					lerpf(SWING_LAND[2], rest[2], u)]
+			twist_swing = lerpf(0.35, 0.0, u)
+		arms[1] = pose
 
 	var lean := 0.12 * walk + 0.2 * run + 0.45 * ninja_run + 0.5 * _sneak
 	var bob := -absf(c) * 0.04 * walk - 0.05 * run - 0.16 * _sneak
 	var twist := s * 0.12 * walk  # shoulders turn with the stride
-	if _swing > 0.0:
-		twist += sin((1.0 - _swing / SWING_TIME) * PI) * 0.35
+	twist += twist_swing
 
 	var r := 18.0
 	_rot(joints.hips, Vector3(0, -twist * 0.4, 0), k, r)
@@ -199,12 +239,22 @@ func _pose(k: Callable) -> void:
 		var n := "l" if side < 0 else "r"
 		_rot(joints["leg_" + n], Vector3(legs[side][0], 0, 0), k, r)
 		_rot(joints["knee_" + n], Vector3(-legs[side][1], 0, 0), k, r)
-		_rot(joints["arm_" + n], Vector3(arms[side][0], 0, arms[side][1]), k, 30.0 if side > 0 and _swing > 0.0 else r)
-		_rot(joints["elbow_" + n], Vector3(arms[side][2], 0, 0), k, r)
+		if side > 0 and _swing >= 0.0:  # the strike sets the arm exactly
+			joints.arm_r.rotation = Vector3(arms[1][0], 0, arms[1][1])
+			joints.elbow_r.rotation = Vector3(arms[1][2], 0, 0)
+		else:
+			_rot(joints["arm_" + n], Vector3(arms[side][0], 0, arms[side][1]), k, r)
+			_rot(joints["elbow_" + n], Vector3(arms[side][2], 0, 0), k, r)
 
 	# Asleep: lying on the back, head towards +Z (the owner moves the figure
 	# so the head ends up on the pillow, see lie_amount).
 	rotation.x = PI / 2 * _lie
+
+
+## Smooth start and end (0..1 -> 0..1).
+static func _ease(x: float) -> float:
+	x = clampf(x, 0.0, 1.0)
+	return x * x * (3.0 - 2.0 * x)
 
 
 func _rot(j: Node3D, target: Vector3, k: Callable, rate: float) -> void:

@@ -109,10 +109,15 @@ func test_figure_animates() -> void:
 	await frames(60)
 	f.swing()
 	var raised := 0.0
-	for i in 20:
+	var straight_up := false
+	for i in 30:
 		await tree.process_frame
 		raised = maxf(raised, f.joints.arm_r.rotation.x)
+		# Never a straight arm held up and forward (it would look like a salute).
+		if f.joints.arm_r.rotation.x > 1.0 and f.joints.elbow_r.rotation.x < 0.8:
+			straight_up = true
 	check(raised > 1.5, "a swing raises the right arm (%.2f)" % raised)
+	check(not straight_up, "with the elbow bent whenever the arm is up")
 	f.sneaking = true
 	await frames(40)
 	check(f.joints.torso.rotation.x < -0.3 and f.joints.hips.position.y < Figure.HIP_Y - 0.1, "sneaking: bent forward and lower")
@@ -205,3 +210,61 @@ func test_no_wall_boost_under_water() -> void:
 	_key(KEY_W, false)
 	_key(KEY_SPACE, false)
 	check(fastest <= Player.SWIM_UP_SPEED + 0.01, "swims up at swimming speed (%.1f)" % fastest)
+
+
+## Strikes asked for faster than they last (mining) play one after another,
+## each one whole (wind up, land, back), and the arm never jumps.
+func test_swings_are_smooth_and_whole() -> void:
+	var f := Figure.new()
+	f.build({"skin": Color.BISQUE, "shirt": Color.BLUE})
+	add(f)
+	f.process_mode = Node.PROCESS_MODE_DISABLED  # stepped by hand below, at 60 fps
+	var step := 1.0 / 60.0
+	var t := 0.0
+	var next := 0.0
+	var last := 0.0
+	var biggest := 0.0
+	var landed := 0   # strikes that came down to the landing pose
+	var low := true
+	for i in 240:
+		if t >= next:
+			next += 0.3
+			f.swing()
+		f._process(step)
+		t += step
+		var x: float = f.joints.arm_r.rotation.x
+		biggest = maxf(biggest, absf(x - last))
+		last = x
+		if x > 2.0 and low:
+			low = false
+		elif x < 0.5 and not low:
+			low = true
+			landed += 1
+	check(biggest < 0.7, "no jumps from one frame to the next (biggest %.2f rad)" % biggest)
+	check(landed >= 9, "every strike lands before the next one (%d in 4 s)" % landed)
+
+
+## First person: a swing stays on screen (the fist never leaves it), starts
+## and ends at rest, and moves without jumps from frame to frame.
+func test_first_person_swing() -> void:
+	var hand := Hand.new()
+	add(hand)
+	var half := tan(deg_to_rad(75.0) / 2.0)  # the camera's default field of view
+	var rest := hand.fist_position()
+	var last := rest
+	var biggest := 0.0
+	var off_screen := []
+	var frames_in_swing := int(round(Hand.SWING_TIME * 60.0))  # at 60 fps
+	for i in frames_in_swing + 1:
+		var t := float(i) / frames_in_swing
+		hand.apply_pose(Hand.swing_pose(t))
+		var f := hand.fist_position()
+		if absf(f.y / -f.z) > half * 0.95 or absf(f.x / -f.z) > half * 16.0 / 9.0 * 0.95:
+			off_screen.append(snappedf(t, 0.01))
+		biggest = maxf(biggest, f.distance_to(last))
+		last = f
+	check(off_screen.is_empty(), "the fist stays on screen (left it at t = %s)" % [off_screen])
+	check(hand.fist_position().distance_to(rest) < 0.001, "and ends where it started")
+	check(biggest < 0.12, "no jumps (biggest step in a frame %.3f m)" % biggest)
+	var down: Vector3 = (Hand.swing_pose(Hand.SWING_HIT)[2] as Vector3)
+	check(down.x < -0.5, "the item chops forward at the hit")
