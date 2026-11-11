@@ -51,8 +51,11 @@ terrain themselves from the seed; only edits travel over the network.
   short burst allowed for lag, and follows the way there in tenth-of-a-block steps: a move
   that goes through a block (even a door) is refused too. Either way the player is put back
   where the host last accepted them; a jump to the world spawn or their bed (respawning) is
-  fine. Getting into and out of bed isn't checked for walls (the eyes drop to the pillow),
-  nor are moves where the host hasn't loaded the chunks (far from its own player).
+  fine. Getting into and out of bed isn't checked for walls (the eyes drop to the pillow).
+  The host keeps the chunks around every player loaded (block data only, no meshes), so it
+  checks moves, edits and falls wherever they are; a move into chunks it doesn't have yet is
+  refused. A player a block appeared on may get out, but only within 1.5 blocks of where they
+  got stuck, and once out the rest of the way must be clear (no tunnelling on through walls).
 - Chest and furnace clicks are only taken from a player who opened that container and is
   near it, with a real item stack (known item, count within its stack size).
 - Every request a joining player sends has a rate limit (edits, hits, chunk requests,
@@ -411,7 +414,10 @@ To share it, zip the mod folder (or its contents, with `mod.json` at the top of 
 Players drop the `.zip` into `user://mods/` (Linux:
 `~/.local/share/godot/app_userdata/GoCube/mods/`); the game unpacks it to
 `user://mods/.unzipped/` and unpacks it again only when the zip changes. Files that would land
-outside the mod's folder are refused. Godot `.pck` packs are not loaded
+outside the mod's folder are refused. The zip's table of contents is checked before anything
+is unpacked: at most 2000 files, 64 MB per file, 256 MB in all, and no file packed 1000 times
+or tighter (zip bombs); it is unpacked into a hidden folder that takes the mod's place only
+once everything is there. Godot `.pck` packs are not loaded
 (they could carry any code): zip the mod folder instead.
 
 **Settings → Mods** lists every mod found: where it comes from (built-in, folder or zip), its

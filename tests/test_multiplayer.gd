@@ -637,3 +637,60 @@ func test_server_mods_are_offered_and_downloaded() -> void:
 	_end()
 	ModLoader._remove_dir(cache)
 	ModLoader._remove_dir("user://_test_srvmods")
+
+
+## The host's movement check (what a modified client could try): no way
+## through walls, also not for a player a block appeared on (it may only get
+## out, within ESCAPE_DISTANCE of where it got stuck), and none through
+## chunks the host hasn't loaded. The host keeps chunks loaded around every
+## player, so that never holds up an honest one.
+func test_moves_through_walls_are_refused() -> void:
+	if not await _connect():
+		_end()
+		return
+	var hs: Session = host._session
+	var w: World = host._world
+	var stone := Registry.block_index("core:stone")
+	var eye := func(rel: Vector3) -> Vector3: return Vector3(o) + rel + Vector3(0.5, Player.EYE_HEIGHT, 0.5)
+	# A wall 2 blocks thick at x = 2..3 (z -2..2), the client's spot is x = 0.
+	for x in [2, 3]:
+		for y in 4:
+			for z in range(-2, 3):
+				w.set_block(o + Vector3i(x, y, z), stone)
+	var peer := func(at: Vector3) -> Dictionary:
+		return {"position": at, "time": Session._now(), "budget": hs._move_cap()}
+
+	var p: Dictionary = peer.call(eye.call(Vector3.ZERO))
+	check(not hs._move_allowed(p, eye.call(Vector3(5, 0, 0))), "not through a wall")
+	check(hs._move_allowed(p, eye.call(Vector3(1, 0, 0))), "up to it is fine")
+
+	# A block appears on the player (both cells of its body).
+	w.set_block(o, stone)
+	w.set_block(o + Vector3i(0, 1, 0), stone)
+	p = peer.call(eye.call(Vector3.ZERO))
+	check(not hs._move_allowed(p, eye.call(Vector3(5, 0, 0))), "stuck in a block: still not through the wall")
+	check(hs._move_allowed(p, eye.call(Vector3(0.3, 0, 0))), "a small move while still stuck")
+	check(p.has("stuck_at"), "remembered where it got stuck")
+	for i in 6:  # creeping on inside blocks, a bit at a time
+		hs._move_allowed(p, (p.position as Vector3) + Vector3(0.3, 0, 0))
+	check((p.position as Vector3).distance_to(eye.call(Vector3.ZERO)) <= Session.ESCAPE_DISTANCE + 0.01,
+			"can't creep farther than %.1f blocks while stuck (at %s)" % [Session.ESCAPE_DISTANCE, p.position - eye.call(Vector3.ZERO)])
+	p = peer.call(eye.call(Vector3.ZERO))
+	check(hs._move_allowed(p, eye.call(Vector3(-1, 0, 0))), "getting out is fine")
+	check(not p.has("stuck_at"), "and then it's out")
+	w.set_block(o, 0)
+	w.set_block(o + Vector3i(0, 1, 0), 0)
+
+	# Chunks the host hasn't loaded: no.
+	var far := Vector3(40000.5, 120, 40000.5)
+	p = peer.call(far)
+	check(not w.engine.is_chunk_loaded(World.chunk_of(Vector3i(far.floor()))), "(far away isn't loaded)")
+	check(not hs._move_allowed(p, far + Vector3(2, 0, 0)), "moves where the host has no blocks are refused")
+	# A player out there: the host loads the chunks around it.
+	hs._peers[_peer_id()].position = far
+	check(await wait_until(func(): return w.engine.is_chunk_loaded(World.chunk_of(Vector3i(far.floor()))) \
+			and w.engine.is_chunk_loaded(World.chunk_of(Vector3i((far + Vector3(40, 0, 0)).floor()))), 20),
+			"the host loads the chunks around a player far from it")
+	p = peer.call(far)
+	check(hs._move_allowed(p, far + Vector3(2, 0, 0)), "and then checks its moves there")
+	_end()

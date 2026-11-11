@@ -304,6 +304,25 @@ void GoCubeWorld::set_viewer_position(const Vector3 &position) {
 	_viewer = position;
 }
 
+void GoCubeWorld::set_extra_viewers(const PackedVector3Array &positions) {
+	std::vector<Vector3i> centers;
+	for (int i = 0; i < positions.size(); i++) {
+		const Vector3 &p = positions[i];
+		if (!std::isfinite(p.x) || !std::isfinite(p.z) || std::abs(p.x) > 1e7 || std::abs(p.z) > 1e7) {
+			continue;
+		}
+		Vector3i c = chunk_of(p);
+		c.y = 0;
+		if (std::find(centers.begin(), centers.end(), c) == centers.end()) {
+			centers.push_back(c);
+		}
+	}
+	if (centers != _extra_centers) {
+		_extra_centers = std::move(centers);
+		_extra_changed = true;
+	}
+}
+
 Vector3 GoCubeWorld::get_viewer_position() const {
 	return _viewer;
 }
@@ -1187,8 +1206,9 @@ void GoCubeWorld::_process(double delta) {
 	}
 	const int64_t frame_start = now_us();
 	const Vector3i center = chunk_of(_viewer);
-	if (center.x != _last_viewer_chunk.x || center.z != _last_viewer_chunk.z) {
+	if (center.x != _last_viewer_chunk.x || center.z != _last_viewer_chunk.z || _extra_changed) {
 		_last_viewer_chunk = center;
+		_extra_changed = false;
 		update_desired(center);
 		update_shadow_casters();
 	}
@@ -1267,7 +1287,15 @@ void GoCubeWorld::update_desired(const Vector3i &center) {
 		auto field = [](int64_t v) { return int((v & 0x100000) ? (v | ~int64_t(0x1FFFFF)) : v); };
 		const int cx = field((k >> 42) & 0x1FFFFF), cz = field(k & 0x1FFFFF);
 		const int dx = cx - center.x, dz = cz - center.z;
-		if (dx * dx + dz * dz > (r + 1) * (r + 1)) {
+		bool near_extra = false;
+		for (const Vector3i &e : _extra_centers) {
+			const int ex = cx - e.x, ez = cz - e.z;
+			if (ex * ex + ez * ez <= (EXTRA_VIEWER_CHUNKS + 1) * (EXTRA_VIEWER_CHUNKS + 1)) {
+				near_extra = true;
+				break;
+			}
+		}
+		if (!near_extra && dx * dx + dz * dz > (r + 1) * (r + 1)) {
 			save_chunk(pos_of(it->first), it->second);
 			free_chunk_render(it->second);
 			_mesh_candidates.erase(it->first);
@@ -1302,6 +1330,32 @@ void GoCubeWorld::update_desired(const Vector3i &center) {
 				job.serial = c.serial;
 				job.priority = float(dx * dx + dz * dz) + std::abs(cy) * 0.5f;
 				push_job(std::move(job));
+			}
+		}
+	}
+	// And around the extra viewers (block data only: meshing stays within view).
+	const int er = EXTRA_VIEWER_CHUNKS;
+	for (const Vector3i &e : _extra_centers) {
+		for (int dz = -er; dz <= er; dz++) {
+			for (int dx = -er; dx <= er; dx++) {
+				if (dx * dx + dz * dz > er * er) {
+					continue;
+				}
+				for (int cy = CHUNK_Y_MIN; cy <= CHUNK_Y_MAX; cy++) {
+					const Vector3i p(e.x + dx, cy, e.z + dz);
+					const int64_t k = key(p);
+					if (_chunks.count(k)) {
+						continue;
+					}
+					Chunk &c = _chunks.emplace(k, Chunk()).first->second;
+					c.serial = _next_serial++;
+					Job job;
+					job.kind = JOB_GENERATE;
+					job.pos = p;
+					job.serial = c.serial;
+					job.priority = float(dx * dx + dz * dz) + std::abs(cy) * 0.5f;
+					push_job(std::move(job));
+				}
 			}
 		}
 	}
@@ -1427,6 +1481,7 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_atlas_layout", "cols", "rows", "cell", "face_offset"), &GoCubeWorld::set_atlas_layout);
 	ClassDB::bind_method(D_METHOD("set_materials", "terrain", "fluid", "cutout"), &GoCubeWorld::set_materials, DEFVAL(Ref<Material>()));
 	ClassDB::bind_method(D_METHOD("is_chunk_loaded", "chunk_pos"), &GoCubeWorld::is_chunk_loaded);
+	ClassDB::bind_method(D_METHOD("set_extra_viewers", "positions"), &GoCubeWorld::set_extra_viewers);
 	ClassDB::bind_method(D_METHOD("tree_blocks", "kind", "ground"), &GoCubeWorld::tree_blocks);
 	ClassDB::bind_method(D_METHOD("configure_generator", "seed", "ids", "ores", "trees"), &GoCubeWorld::configure_generator);
 	ClassDB::bind_method(D_METHOD("configure_biomes", "biomes"), &GoCubeWorld::configure_biomes);

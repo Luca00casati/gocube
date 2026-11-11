@@ -64,6 +64,11 @@ public:
 	void set_view_distance(int blocks);
 	int get_view_distance() const;
 	void set_viewer_position(const godot::Vector3 &position);
+	// Other places whose chunks stay loaded (block data only, no meshes), within
+	// EXTRA_VIEWER_CHUNKS: on a host, the other players, so it can check their
+	// moves and edits wherever they are.
+	void set_extra_viewers(const godot::PackedVector3Array &positions);
+	static constexpr int EXTRA_VIEWER_CHUNKS = 2;
 	godot::Vector3 get_viewer_position() const;
 	// Smooth (per-corner) lighting; changing it rebuilds every chunk's mesh.
 	// Generation/meshing threads; 0 = automatic. Set before start().
@@ -211,6 +216,8 @@ private:
 	// Main thread state.
 	godot::Vector3 _viewer;
 	godot::Vector3i _last_viewer_chunk{ 1 << 20, 0, 0 };
+	std::vector<godot::Vector3i> _extra_centers;  // chunk columns (y unused)
+	bool _extra_changed = false;
 	std::unordered_map<int64_t, Chunk> _chunks;
 	uint32_t _next_serial = 1; // for Chunk::serial
 	std::unordered_set<int64_t> _mesh_candidates;

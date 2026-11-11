@@ -434,7 +434,7 @@ func _move_allowed(p: Dictionary, pos: Vector3, flags: int = 0) -> bool:
 	var cost := Vector3(Vector2(d.x, d.z).length(), maxf(d.y, 0.0), maxf(-d.y, 0.0))
 	if cost.x <= budget.x and cost.y <= budget.y and cost.z <= budget.z \
 			and ((int(p.get("flags", 0)) | flags) & Avatar.FLAG_SLEEP != 0  # into or out of bed: eyes low
-				or _way_clear(p.position, pos)):
+				or _way_clear(p.position, pos, p)):
 		p.budget = budget - cost
 		return true
 	var sp: Array = world.meta.get("spawn", [])
@@ -448,9 +448,16 @@ func _move_allowed(p: Dictionary, pos: Vector3, flags: int = 0) -> bool:
 
 
 ## Host: whether a body can get from eye position `from` to `to` without going
-## through blocks. Where the host hasn't loaded the chunks it can't tell (yes),
-## and a body already in a block (one appeared there) may get out.
-func _way_clear(from: Vector3, to: Vector3) -> bool:
+## through blocks. Where the host hasn't loaded the chunks it can't tell, so
+## no (it keeps chunks loaded around every player, so that's only for a moment
+## after a long jump). A body in a block (one appeared there) may get out, but
+## only within ESCAPE_DISTANCE of where it got stuck (`p.stuck_at`, kept until
+## it is out), and once out the rest of the way must be clear: being stuck
+## doesn't let it tunnel on through walls.
+const ESCAPE_DISTANCE := 1.5
+
+
+func _way_clear(from: Vector3, to: Vector3, p: Dictionary = {}) -> bool:
 	var feet := Vector3(0, Player.EYE_HEIGHT - WALL_GRACE, 0)
 	var body := Player.BODY - Vector3.ONE * WALL_GRACE * 2.0
 	var a := from - feet
@@ -463,13 +470,27 @@ func _way_clear(from: Vector3, to: Vector3) -> bool:
 		for cy in range(maxi(c0.y, World.CHUNK_Y_MIN), mini(c1.y, World.CHUNK_Y_MAX) + 1):
 			for cz in range(c0.z, c1.z + 1):
 				if not world.engine.is_chunk_loaded(Vector3i(cx, cy, cz)):
-					return true
-	if not world.is_box_free(a, body):
-		return true
+					return false
+	var stuck_at = p.get("stuck_at")
+	if world.is_box_free(a, body):
+		stuck_at = null
+	elif stuck_at == null:
+		stuck_at = from  # it just got stuck here
+	var escaping: bool = stuck_at != null
 	var steps := ceili(a.distance_to(b) / WALL_STEP)
 	for i in range(1, steps + 1):
-		if not world.is_box_free(a.lerp(b, float(i) / steps), body):
+		var at := a.lerp(b, float(i) / steps)
+		var free := world.is_box_free(at, body)
+		if escaping and free:
+			escaping = false  # out: from here on the way must be clear
+		elif escaping and (at + feet).distance_to(stuck_at) > ESCAPE_DISTANCE:
 			return false
+		elif not escaping and not free:
+			return false
+	if escaping:
+		p.stuck_at = stuck_at  # still in a block
+	else:
+		p.erase("stuck_at")
 	return true
 
 
@@ -1294,6 +1315,10 @@ func _process_step(delta: float) -> void:
 		if _time_sync_timer >= TIME_SYNC_SECONDS:
 			_time_sync_timer = 0.0
 			_to_players(_time, day_cycle.time)
+	if is_host() and world and world.engine:
+		# Chunks stay loaded around every player (block data only), so their
+		# moves, edits and health are checked against real blocks.
+		world.engine.set_extra_viewers(PackedVector3Array(_peers.values().map(func(p): return p.position)))
 	if is_host():
 		for id in _peers:  # survival: our copy of a client's inventory changed
 			var p: Dictionary = _peers[id]

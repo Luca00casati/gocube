@@ -153,3 +153,57 @@ func test_mods_screen_and_server_cache() -> void:
 	ModLoader.server_mods = []
 	ModLoader.problems.erase("_test_broken")
 	screen.queue_free()
+
+
+## Mod zips are external input: their table of contents is checked before
+## anything is unpacked (zip bombs, too many files, broken zips), and a zip
+## that fails leaves what was unpacked before as it was.
+func test_zip_limits() -> void:
+	var dir := "user://_test_ziplimits"
+	DirAccess.make_dir_recursive_absolute(dir)
+	var manifest := '{"id": "zl", "content": ["c.json"]}'
+	_zip(dir.path_join("good.zip"), {"mod.json": manifest, "c.json": "{}"})
+	check_eq(ModLoader.unzip_mod(dir.path_join("good.zip"), dir.path_join("out")), "", "a normal zip")
+	var listing = ModLoader.zip_listing(dir.path_join("good.zip"))
+	check(listing is Dictionary and listing.has("mod.json") and listing["mod.json"][1] == manifest.length(),
+			"its table of contents gives each file's unpacked size")
+
+	var zeros := PackedByteArray()
+	zeros.resize(ModLoader.ZIP_MAX_FILE + 1)
+	var z := ZIPPacker.new()
+	z.open(dir.path_join("bomb.zip"))
+	z.start_file("mod.json")
+	z.write_file(manifest.to_utf8_buffer())
+	z.close_file()
+	z.start_file("huge.bin")
+	z.write_file(zeros)
+	z.close_file()
+	z.close()
+	check(FileAccess.get_size(dir.path_join("bomb.zip")) < 1 << 20, "(a small zip)")
+	var problem := ModLoader.unzip_mod(dir.path_join("bomb.zip"), dir.path_join("out"))
+	check(problem.contains("more than"), "that unpacks to more than a file may be is refused: %s" % problem)
+	zeros.resize(4 << 20)
+	z = ZIPPacker.new()
+	z.open(dir.path_join("tight.zip"))
+	z.start_file("mod.json")
+	z.write_file(manifest.to_utf8_buffer())
+	z.close_file()
+	z.start_file("tight.bin")
+	z.write_file(zeros)
+	z.close_file()
+	z.close()
+	check(ModLoader.unzip_mod(dir.path_join("tight.zip"), dir.path_join("out")) != "", "a file packed 1000 times or more is refused")
+
+	var files := {"mod.json": manifest}
+	for i in ModLoader.ZIP_MAX_FILES + 1:
+		files["f%d.txt" % i] = "x"
+	_zip(dir.path_join("many.zip"), files)
+	check(ModLoader.unzip_mod(dir.path_join("many.zip"), dir.path_join("out")).contains("files"), "too many files")
+	var f := FileAccess.open(dir.path_join("junk.zip"), FileAccess.WRITE)
+	f.store_buffer("PK not really a zip, just some bytes".repeat(10).to_utf8_buffer())
+	f.close()
+	check(ModLoader.unzip_mod(dir.path_join("junk.zip"), dir.path_join("out")) != "", "a broken zip")
+	check(FileAccess.file_exists(dir.path_join("out/mod.json")) and FileAccess.file_exists(dir.path_join("out/c.json")),
+			"after all those, the good zip's files are still there")
+	check(not DirAccess.dir_exists_absolute(dir.path_join(".out.unpacking")), "and nothing half unpacked is left")
+	ModLoader._remove_dir(dir)

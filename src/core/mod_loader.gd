@@ -139,18 +139,51 @@ func _scan_zips(dir: String, found: Dictionary) -> void:
 		_add_found(out, found)
 
 
+## Limits for a mod zip (a small zip can unpack to gigabytes, a "zip bomb").
+const ZIP_MAX_FILES := 2000
+const ZIP_MAX_FILE := 64 << 20
+const ZIP_MAX_TOTAL := 256 << 20
+const ZIP_MAX_RATIO := 1000  # unpacked / packed, for files over 1 MB
+
+
 ## Unpacks a mod zip into `out` (replacing what was there) unless `out` already
 ## holds this version of it. The zip has mod.json at its top or in its single
-## top folder. Returns "" or what went wrong.
+## top folder. Its table of contents is read and checked first (number of
+## files, sizes, how much they unpack to: Godot makes room for that much when
+## it reads a file), then it is unpacked into a folder beside `out` that takes
+## its place only once everything is there. Returns "" or what went wrong.
 func unzip_mod(zip_path: String, out: String) -> String:
 	var stamp := str(FileAccess.get_modified_time(zip_path)) + ":" + str(FileAccess.get_size(zip_path))
 	var stamp_file := out.path_join(".from_zip")
 	if FileAccess.file_exists(stamp_file) and FileAccess.get_file_as_string(stamp_file) == stamp:
 		return ""
+	var listing = zip_listing(zip_path)
+	if listing is String:
+		return listing
+	var total := 0
+	for name in listing:
+		var packed: int = listing[name][0]
+		var size: int = listing[name][1]
+		total += size
+		if size > ZIP_MAX_FILE:
+			return "'%s' unpacks to more than %d MB" % [name, ZIP_MAX_FILE >> 20]
+		if size > (1 << 20) and size > maxi(packed, 1) * ZIP_MAX_RATIO:
+			return "'%s' is packed suspiciously tight (a zip bomb?)" % name
+	if listing.size() > ZIP_MAX_FILES:
+		return "it has more than %d files" % ZIP_MAX_FILES
+	if total > ZIP_MAX_TOTAL:
+		return "it unpacks to more than %d MB" % (ZIP_MAX_TOTAL >> 20)
 	var reader := ZIPReader.new()
 	if reader.open(zip_path) != OK:
 		return "can't open it as a zip"
 	var files := reader.get_files()
+	var names := PackedStringArray(listing.keys())
+	names.sort()
+	var sorted_files := files.duplicate()
+	sorted_files.sort()
+	if sorted_files != names:
+		reader.close()
+		return "its table of contents doesn't match its files"
 	var prefix := ""
 	if not "mod.json" in files:
 		var tops := {}
@@ -160,29 +193,86 @@ func unzip_mod(zip_path: String, out: String) -> String:
 			reader.close()
 			return "no mod.json at its top or in its one top folder"
 		prefix = tops.keys()[0] + "/"
-	_remove_dir(out)
-	DirAccess.make_dir_recursive_absolute(out)
+	for f in files:
+		var rel: String = f.substr(prefix.length())
+		if f.begins_with(prefix) and not f.ends_with("/") and (rel.is_absolute_path() or rel.begins_with("/")
+				or ".." in rel.split("/") or ":" in rel or "\\" in rel):
+			reader.close()
+			return "'%s' points outside the mod" % f
+	var tmp := out.get_base_dir().path_join(".%s.unpacking" % out.get_file())  # (hidden: never taken for a mod)
+	_remove_dir(tmp)
+	DirAccess.make_dir_recursive_absolute(tmp)
 	for f in files:
 		if not f.begins_with(prefix) or f.ends_with("/"):
 			continue
-		var rel: String = f.substr(prefix.length())
-		if rel.is_absolute_path() or rel.begins_with("/") or ".." in rel.split("/") or ":" in rel or "\\" in rel:
-			reader.close()
-			_remove_dir(out)
-			return "'%s' points outside the mod" % f
-		var target := out.path_join(rel)
+		var target := tmp.path_join(f.substr(prefix.length()))
 		DirAccess.make_dir_recursive_absolute(target.get_base_dir())
+		var data := reader.read_file(f)
 		var w := FileAccess.open(target, FileAccess.WRITE)
-		if w == null:
+		if w == null or data.size() != int(listing[f][1]):
 			reader.close()
-			return "can't write " + target
-		w.store_buffer(reader.read_file(f))
+			_remove_dir(tmp)
+			return "can't unpack '%s'" % f
+		w.store_buffer(data)
 		w.close()
 	reader.close()
-	var s := FileAccess.open(stamp_file, FileAccess.WRITE)
+	var s := FileAccess.open(tmp.path_join(".from_zip"), FileAccess.WRITE)
 	s.store_string(stamp)
 	s.close()
+	_remove_dir(out)
+	if DirAccess.rename_absolute(tmp, out) != OK:
+		_remove_dir(tmp)
+		return "can't move it into " + out
 	return ""
+
+
+## {file name: [packed size, unpacked size]} from a zip's table of contents
+## (its central directory), or a String saying what's wrong with it.
+static func zip_listing(path: String):
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return "can't open it"
+	var size := f.get_length()
+	if size < 22:
+		return "it isn't a zip"
+	var tail_len := mini(size, 22 + 65535)  # the end record, after a comment of up to 64 KB
+	f.seek(size - tail_len)
+	var tail := f.get_buffer(tail_len)
+	var end := -1
+	for i in range(tail_len - 22, -1, -1):
+		if tail[i] == 0x50 and tail[i + 1] == 0x4b and tail[i + 2] == 0x05 and tail[i + 3] == 0x06:
+			end = i
+			break
+	if end == -1:
+		return "it isn't a zip"
+	var count := tail.decode_u16(end + 10)
+	var dir_size := tail.decode_u32(end + 12)
+	var dir_at := tail.decode_u32(end + 16)
+	if count == 0xFFFF or dir_at == 0xFFFFFFFF or dir_size == 0xFFFFFFFF:
+		return "it's a ZIP64 archive (not supported)"
+	if dir_at + dir_size > size or count > ZIP_MAX_FILES:
+		return "its table of contents is broken" if count <= ZIP_MAX_FILES else "it has more than %d files" % ZIP_MAX_FILES
+	f.seek(dir_at)
+	var dir := f.get_buffer(dir_size)
+	var out := {}
+	var at := 0
+	for n in count:
+		if at + 46 > dir.size() or dir.decode_u32(at) != 0x02014b50:
+			return "its table of contents is broken"
+		var packed := dir.decode_u32(at + 20)
+		var unpacked := dir.decode_u32(at + 24)
+		var name_len := dir.decode_u16(at + 28)
+		var next := at + 46 + name_len + dir.decode_u16(at + 30) + dir.decode_u16(at + 32)
+		if next > dir.size():
+			return "its table of contents is broken"
+		if packed == 0xFFFFFFFF or unpacked == 0xFFFFFFFF:
+			return "it's a ZIP64 archive (not supported)"
+		var name := dir.slice(at + 46, at + 46 + name_len).get_string_from_utf8()
+		if out.has(name):
+			return "it has '%s' twice" % name
+		out[name] = [packed, unpacked]
+		at = next
+	return out
 
 
 static func _remove_dir(path: String) -> void:
