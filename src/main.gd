@@ -222,6 +222,10 @@ func _start_client() -> void:
 	_set_loading_text("Connecting to %s:%d…" % [join_address, port])
 	_session.ended.connect(_on_session_ended)
 	_session.welcomed.connect(_on_welcomed, CONNECT_ONE_SHOT)
+	_session.mods_offered.connect(_on_mods_offered)
+	_session.mods_progress.connect(func(done: int, total: int):
+		_set_loading_text("Downloading the server's mods… %d / %d KB" % [done >> 10, maxi(done, total) >> 10]))
+	_session.mods_ready.connect(_restart_with_server_mods)
 	_drops_node.remote = true  # the host owns dropped items (and makes them all)
 	_drops_node.request_pickup = _session.request_pickup
 	_session.woken.connect(func():
@@ -234,6 +238,50 @@ func _start_client() -> void:
 	var err := _session.join(join_address, port)
 	if err != OK:
 		_leave_to_menu.call_deferred("Couldn't connect: %s" % error_string(err))
+
+
+## The host plays with other mods: ask whether to get them (download what's
+## missing, then restart with exactly the host's mods).
+var mods_dialog: ConfirmationDialog
+var restart_args: Array = []  # with --no-restart (tests): what a restart would have used
+
+func _on_mods_offered(missing: Dictionary) -> void:
+	_set_loading_text("The server plays with other mods")
+	var text := "This server plays with other mods than yours.\n\n"
+	if missing.is_empty():
+		text += "You have them all already."
+	else:
+		text += "To download:\n"
+		for entry in missing:
+			text += "    %s  (%s)\n" % [entry.get_slice("#", 0), String.humanize_size(missing[entry])]
+		text += "\nMods are sandboxed: they can add content but can't reach your files or the network."
+	text += "\n\nThe game will restart with the server's mods for this game only;\nyour own mods come back when you leave."
+	mods_dialog = ConfirmationDialog.new()
+	mods_dialog.title = "Server mods"
+	mods_dialog.dialog_text = text
+	mods_dialog.ok_button_text = "Download and restart" if not missing.is_empty() else "Restart"
+	mods_dialog.confirmed.connect(accept_server_mods)
+	mods_dialog.canceled.connect(func(): _leave_to_menu("You didn't take the server's mods."))
+	add_child(mods_dialog)
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	mods_dialog.popup_centered()
+
+
+func accept_server_mods() -> void:
+	_set_loading_text("Downloading the server's mods…")
+	_session.download_mods()
+
+
+func _restart_with_server_mods(entries: Array) -> void:
+	var args := ModLoader.plain_user_args()
+	args += ["--join=" + join_address, "--port=%d" % port, "--name=" + player_name,
+			"--server-mods=" + ModLoader.encode_list(entries)]
+	if _args.has("no-restart"):
+		restart_args = args
+		return
+	_set_loading_text("Restarting with the server's mods…")
+	_session.leave()
+	ModLoader.restart(args)
 
 
 func _on_welcomed(info: Dictionary) -> void:

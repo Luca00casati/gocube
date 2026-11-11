@@ -27,6 +27,12 @@ extends Node
 ## Mods listed in Settings.disabled_mods are found but not loaded (the Mods
 ## part of the settings screen; takes effect the next time the game starts).
 ##
+## Joining a server with other mods: the player downloads the ones they lack
+## into SERVER_DIR/<id>_<fingerprint>/ (Session) and the game restarts with
+## `--server-mods=<list>` (see restart_with_server_mods), which loads exactly
+## the server's mods (from the player's own copies or that cache) and nothing
+## else, for that game only.
+##
 ## Mods are sandboxed: an entry script is checked by ModSandbox before it is
 ## compiled and only gets a GoCubeModApi (register_* and get_block/get_item);
 ## mod files (textures, sounds) are read as plain PNG/WAV data, never through
@@ -37,6 +43,8 @@ signal mods_loaded
 const BUILTIN_DIR := "res://mods"
 const USER_DIR := "user://mods"
 const UNZIP_DIR := "user://mods/.unzipped"
+## Mods downloaded from servers, by "<id>_<fingerprint>" (never loaded otherwise).
+const SERVER_DIR := "user://mods/.server"
 const CORE_ID := "core"
 ## Version of the modding API (registry, content files, mod.json). Raise it when
 ## something changes in a way that breaks existing mods.
@@ -49,6 +57,9 @@ var mods: Array[Dictionary] = []
 var available: Array[Dictionary] = []
 ## Instances of mod entry scripts, keyed by mod id.
 var instances: Dictionary = {}
+## Playing with a server's mods (launched with --server-mods): its mod list
+## ("id@version#fingerprint" each); empty otherwise.
+var server_mods: Array = []
 
 var _id_regex := RegEx.create_from_string("^[a-z0-9_]+$")
 var _loading: Dictionary = {}  # manifest of the mod currently being loaded
@@ -67,6 +78,10 @@ func load_all() -> void:
 	_scan(BUILTIN_DIR, found)
 	_scan(USER_DIR, found)
 	_scan_zips(USER_DIR, found)
+	var wanted = server_mods_option()
+	if wanted is Array:
+		server_mods = wanted
+		found = _server_set(wanted, found)
 
 	available.clear()
 	for id in found:
@@ -74,7 +89,7 @@ func load_all() -> void:
 			available.append(found[id])
 	available.sort_custom(func(a, b): return a.id < b.id)
 	for id in Settings.disabled_mods:
-		if found.has(id) and id != CORE_ID:
+		if found.has(id) and id != CORE_ID and server_mods.is_empty():
 			print("Mod %s is turned off" % id)
 			found.erase(id)
 
@@ -407,6 +422,105 @@ func asset_path(mod_id: String, rel: String) -> String:
 ## installed mods are only ever read as raw data.
 static func is_builtin(path: String) -> bool:
 	return path.begins_with("res://")
+
+
+# --- A server's mods ------------------------------------------------------------
+
+## "id@version#fingerprint" of a loaded mod (what players compare when joining).
+static func entry_of(m: Dictionary) -> String:
+	return "%s@%s#%s" % [m.id, m.get("version", ""), m.get("hash", "")]
+
+
+static func entry_id(entry: String) -> String:
+	return entry.get_slice("@", 0)
+
+
+static func entry_hash(entry: String) -> String:
+	return entry.get_slice("#", entry.get_slice_count("#") - 1)
+
+
+## Where a mod downloaded from a server is kept.
+static func cache_dir(entry: String) -> String:
+	return SERVER_DIR.path_join("%s_%s" % [entry_id(entry), entry_hash(entry)])
+
+
+## The list given with --server-mods (base64 of a JSON list), or null.
+static func server_mods_option():
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--server-mods="):
+			var list = JSON.parse_string(Marshalls.base64_to_utf8(a.trim_prefix("--server-mods=")))
+			if list is Array and list.all(func(e): return e is String):
+				return list
+			push_error("Bad --server-mods option; loading the usual mods")
+	return null
+
+
+static func encode_list(entries: Array) -> String:
+	return Marshalls.utf8_to_base64(JSON.stringify(entries))
+
+
+var _fingerprints := {}  # folder -> fingerprint, for local_copy
+
+
+## A folder here holding exactly the mod `entry` (same id and files): one the
+## player installed (or a built-in one) or one downloaded before; "" if none.
+func local_copy(entry: String) -> String:
+	var id := entry_id(entry)
+	var roots: Array[String] = [BUILTIN_DIR.path_join(id), USER_DIR.path_join(id), cache_dir(entry)]
+	for dir in [UNZIP_DIR, SERVER_DIR]:
+		if not DirAccess.dir_exists_absolute(dir):
+			continue
+		for sub in DirAccess.get_directories_at(dir):
+			roots.append(dir.path_join(sub))
+	for root in roots:
+		var manifest := root.path_join("mod.json")
+		if not FileAccess.file_exists(manifest):
+			continue
+		var m = JSON.parse_string(FileAccess.get_file_as_string(manifest))
+		if not m is Dictionary or m.get("id") != id:
+			continue
+		if not _fingerprints.has(root):
+			_fingerprints[root] = fingerprint(root)
+		if _fingerprints[root] == entry_hash(entry):
+			return root
+	return ""
+
+
+## The mods to load for a server's list: each from a local copy with the same
+## files; the player's other mods are left out.
+func _server_set(wanted: Array, scanned: Dictionary) -> Dictionary:
+	var out := {}
+	for entry in wanted:
+		var root := local_copy(entry)
+		if root == "":
+			push_error("The server's mod %s isn't here" % entry)
+		elif scanned.has(entry_id(entry)) and scanned[entry_id(entry)].path == root:
+			out[entry_id(entry)] = scanned[entry_id(entry)]
+		else:
+			_add_found(root, out)
+	if not out.has(CORE_ID) and scanned.has(CORE_ID):
+		out[CORE_ID] = scanned[CORE_ID]  # (the server would refuse a different core anyway)
+	print("Playing with the server's mods: ", out.keys())
+	return out
+
+
+## Restarts the game with these launch options after `--` (the same project
+## folder and engine options).
+func restart(user_args: Array) -> void:
+	var args := OS.get_cmdline_args()
+	if not "--path" in args:
+		args = PackedStringArray(["--path", ProjectSettings.globalize_path("res://")]) + args
+	args.append("--")
+	args.append_array(PackedStringArray(user_args))
+	OS.set_restart_on_exit(true, args)
+	(Engine.get_main_loop() as SceneTree).quit()
+
+
+## Launch options without the ones that pick what to play (for a restart).
+static func plain_user_args() -> Array:
+	return Array(OS.get_cmdline_user_args()).filter(func(a: String):
+		return a.trim_prefix("--").get_slice("=", 0) not in ["join", "port", "name", "server-mods",
+				"world", "host", "seed", "mode", "bench", "notice"])
 
 
 ## A short hash of every file in a mod folder (names and contents), so players

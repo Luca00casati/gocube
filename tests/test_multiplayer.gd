@@ -554,3 +554,86 @@ func test_inventory_kept_by_name() -> void:
 	check(await wait_until(func(): return again._player.health == Player.MAX_HEALTH - 6, 5), "and its health")
 	client = again
 	_end()
+
+
+func _write(path: String, text: String) -> void:
+	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_string(text)
+	f.close()
+
+
+## A joining player without one of the host's mods is offered it; once they
+## agree they download it (checked against its fingerprint) into the server
+## mod cache and the game would restart with exactly the host's mods. They
+## aren't let in before. The host serves only its own mods, never core.
+func test_server_mods_are_offered_and_downloaded() -> void:
+	var root := "user://_test_srvmods/srvmod"
+	_write(root.path_join("mod.json"), '{"id": "srvmod", "version": "1.0", "content": ["c.json"], "entry": "main.gd"}')
+	_write(root.path_join("c.json"), '{"blocks": {"glow": {"color": "#ffee00"}}}')
+	_write(root.path_join("main.gd"), "func init_mod(r):\n\tr.register_item(\"spark\", {})\n")
+	var big := PackedByteArray()
+	big.resize(Session.MOD_PART * 2 + 123)  # more than one part
+	for i in big.size():
+		big[i] = randi() % 256  # (incompressible: several parts)
+	var f := FileAccess.open(root.path_join("textures/noise.bin"), FileAccess.WRITE) if DirAccess.make_dir_recursive_absolute(root.path_join("textures")) == OK else null
+	f.store_buffer(big)
+	f.close()
+	var entry := "srvmod@1.0#" + ModLoader.fingerprint(root)
+	var cache := ModLoader.cache_dir(entry)
+	ModLoader._remove_dir(cache)
+
+	var port := 25000 + randi() % 5000
+	host = _start("Host", {"world_name": "_test_mp_host", "net_mode": "host", "port": port,
+			"player_name": "Host", "new_seed": 4242})
+	if not await wait_until(func(): return host._loading == null and host._player != null, 30):
+		check(false, "the host's world loaded")
+		_end()
+		return
+	var hs: Session = host._session
+	hs.my_mods.append(entry)
+	hs.my_mods.sort()
+	hs._mod_paths[entry] = root
+	client = _start("Client", {"net_mode": "client", "join_address": "127.0.0.1", "port": port,
+			"player_name": "Client"})
+	client._args["no-restart"] = "1"
+	var cs: Session = client._session
+	check(await wait_until(func(): return client.mods_dialog != null, 10), "the player is asked about the host's mods")
+	if client.mods_dialog == null:
+		_end()
+		return
+	check("srvmod@1.0" in client.mods_dialog.dialog_text, "the dialog names the mod to download")
+	check(hs._peers.is_empty() and not cs._welcomed, "not let in yet")
+	var core_entry: String = hs.my_mods.filter(func(e): return e.begins_with("core@"))[0]
+	# Asking for things the host doesn't serve gets nothing.
+	cs._downloads = {core_entry: {"parts": -1, "data": PackedByteArray()}, "nosuch@1#abc": {"parts": -1, "data": PackedByteArray()}}
+	for bad in [[core_entry, 0], ["nosuch@1#abc", 0], [entry, -1], [entry, 999], [5, 0], [entry, "0"]]:
+		cs._request_mod_part.rpc_id(1, bad[0], bad[1])
+	await frames(20)
+	check(cs._downloads.values().all(func(d): return d.data.is_empty()), "core and unknown mods aren't served")
+	check(not cs._ended, "and the client is still connected")
+	cs._downloads = {}
+
+	client.accept_server_mods()
+	check(await wait_until(func(): return not client.restart_args.is_empty(), 15), "downloaded, ready to restart")
+	check_eq(ModLoader.local_copy(entry), cache, "the mod is in the server mod cache")
+	check_eq(FileAccess.get_file_as_bytes(cache.path_join("textures/noise.bin")), big, "every byte arrived")
+	var args: Array = client.restart_args
+	check("--join=127.0.0.1" in args and "--port=%d" % port in args and "--name=Client" in args, "it rejoins: %s" % [args])
+	var list_arg: String = args.filter(func(a): return a.begins_with("--server-mods="))[0]
+	check_eq(JSON.parse_string(Marshalls.base64_to_utf8(list_arg.trim_prefix("--server-mods="))), hs.my_mods,
+			"with exactly the host's mods")
+	check(hs._peers.is_empty(), "still not in the host's game")
+
+	# After the restart: exactly the host's set, from the cache, not the player's others.
+	var scanned := {"core": ModLoader.mods[0], "othermod": {"id": "othermod", "path": "user://mods/othermod"}}
+	var set := ModLoader._server_set(hs.my_mods, scanned)
+	check_eq(set.keys().size(), 2, "core and srvmod only")
+	check_eq(set.get("srvmod", {}).get("path", ""), cache, "srvmod from the cache")
+	# A damaged download is thrown away.
+	var bad_entry := "srvmod@1.0#000000000000"
+	check(Session._unpack_mod(bad_entry, hs._mod_zip(entry)) != "", "files that don't match the fingerprint are refused")
+	check(not DirAccess.dir_exists_absolute(ModLoader.cache_dir(bad_entry)), "and not kept")
+	_end()
+	ModLoader._remove_dir(cache)
+	ModLoader._remove_dir("user://_test_srvmods")

@@ -30,10 +30,14 @@ forward it on the router for play over the internet). The host's machine runs th
 and saves it. World generation is deterministic, so joining players generate the
 terrain themselves from the seed; only edits travel over the network.
 
-- Everyone must have the **same mods**: same ids, versions and files (each mod gets a
-  fingerprint of its files, so two different builds with the same version don't pass). Mods are
-  never downloaded from the server, so mismatched players are refused with a list of what
-  differs.
+- Everyone plays with the **same mods**: same ids, versions and files (each mod gets a
+  fingerprint of its files, so two different builds with the same version don't pass). A
+  player whose mods differ is asked whether to take the server's: the ones they lack are
+  downloaded (checked against their fingerprints, at most 64 MB) into
+  `user://mods/.server/<id>_<fingerprint>/`, and the game restarts and joins again with
+  exactly the server's mods. Their own mods stay installed and come back when they leave
+  (the game restarts once more). Downloads are kept, so the next join needs none. Mods are
+  sandboxed (see [Sandbox](#sandbox)); a different base game (`core`) is still refused.
 - On join the host sends the seed, its block id table and every edited chunk; after
   that each edit is sent as (position, block). A player who hasn't loaded that chunk
   asks the host for the whole chunk.

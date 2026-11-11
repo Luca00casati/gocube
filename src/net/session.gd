@@ -21,10 +21,20 @@ extends Node
 ##     food) and sends it; a break happens no sooner than the block's mining
 ##     time after the client said it started (start_mining)
 ##
-## Mods are NOT sent over the network: both sides must have the same mods
-## installed (mod scripts run unsandboxed, so never auto-download them).
+## Mods: both sides must play with the same mods (id, version and files).
+## A player whose mods differ is offered the host's: after they agree
+## (mods_offered), they download the ones they lack (in parts, checked against
+## the fingerprint) and the game restarts with exactly the host's mods
+## (mods_ready, ModLoader.restart). Mods are sandboxed (see mod_sandbox.gd);
+## a different core (another game version) is still refused.
 
 signal welcomed(info: Dictionary)  # client: host accepted us, build the world
+## Client: the host plays with other mods. `missing`: {entry: bytes} to download
+## (may be empty: we have them all). Answer with download_mods() or leave().
+signal mods_offered(missing: Dictionary)
+signal mods_progress(done: int, total: int)  # client: bytes downloaded so far
+## Client: every mod of the host's list is here: restart with `entries`.
+signal mods_ready(entries: Array)
 signal ended(reason: String)       # client: connection failed / rejected / lost
 ## Another player changed a block (for sounds): old and new block index.
 signal remote_edit(position: Vector3i, old_block: int, new_block: int)
@@ -56,7 +66,7 @@ const Avatar := preload("res://src/player/avatar.gd")
 const Player := preload("res://src/player/player.gd")
 const Vitals := preload("res://src/net/vitals.gd")
 
-const PROTOCOL := 7
+const PROTOCOL := 8
 const DEFAULT_PORT := 24680
 const MAX_PLAYERS := 8
 const STATE_INTERVAL := 0.05       # seconds between position updates (20 Hz)
@@ -139,6 +149,17 @@ const MINE_SLACK := 0.8
 const MINE_LAG := 0.1
 const NAME_LENGTH := 16
 const MAX_MODS := 256             # longest mod list accepted in a hello
+const MOD_PART := 60000           # bytes per message of a mod download
+const MAX_MOD_DOWNLOAD := 64 << 20  # most bytes of mods a player downloads to join
+const MOD_PARTS_PER_SECOND := 80.0  # host: parts sent to one player per second at most
+
+## This game's mods ("id@version#fingerprint") and, for the host, their folders.
+var my_mods: Array = mod_list()
+var _mod_paths := {}
+var _offered := {}    # host: peer id -> {tokens, time}, players we offered our mods to
+var _zips := {}       # host: entry -> the mod folder zipped (made once)
+var _host_mods: Array = []  # client: the host's mod list, when offered
+var _downloads := {}  # client: entry -> {parts, data: PackedByteArray, size}
 
 
 # --- Setup / teardown ----------------------------------------------------------
@@ -203,9 +224,14 @@ func player_count() -> int:
 ## "id@version#fingerprint" of every loaded mod: two players can only play
 ## together with exactly the same mods (the fingerprint covers their files).
 static func mod_list() -> Array:
-	var mods := ModLoader.mods.map(func(m): return "%s@%s#%s" % [m.id, m.get("version", ""), m.get("hash", "")])
+	var mods := ModLoader.mods.map(ModLoader.entry_of)
 	mods.sort()
 	return mods
+
+
+func _init() -> void:
+	for m in ModLoader.mods:
+		_mod_paths[ModLoader.entry_of(m)] = m.path
 
 
 func _end(reason: String) -> void:
@@ -218,7 +244,7 @@ func _end(reason: String) -> void:
 # --- Client side ---------------------------------------------------------------
 
 func _on_connected() -> void:
-	_hello.rpc_id(1, PROTOCOL, mod_list(), player_name)
+	_hello.rpc_id(1, PROTOCOL, my_mods, player_name)
 
 
 func _on_connection_failed() -> void:
@@ -239,6 +265,94 @@ func _welcome(info: Dictionary) -> void:
 @rpc("authority", "call_remote", "reliable")
 func _rejected(reason: String) -> void:
 	_end(reason)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _offer_mods(entries: Array, sizes: Dictionary) -> void:
+	if not is_client() or not entries.all(func(e): return e is String and e.length() <= 200) \
+			or entries.size() > MAX_MODS:
+		return
+	if entries == ModLoader.server_mods:
+		_end("Still not the server's mods after restarting with them; check the log.")
+		return
+	_host_mods = entries
+	var missing := {}
+	var total := 0
+	for entry in entries:
+		if ModLoader.entry_id(entry) == ModLoader.CORE_ID or ModLoader.local_copy(entry) != "":
+			continue
+		if not ModLoader._id_regex.search(ModLoader.entry_id(entry)) or not ModLoader.entry_hash(entry).is_valid_hex_number():
+			_end("The server sent a bad mod list.")
+			return
+		missing[entry] = int(sizes.get(entry, 0))
+		total += missing[entry]
+	if total > MAX_MOD_DOWNLOAD:
+		_end("The server's mods are too big to download (%d MB)." % (total >> 20))
+		return
+	mods_offered.emit(missing)
+
+
+## Client: the player agreed to the host's mods: fetch what's missing (then
+## mods_ready).
+func download_mods() -> void:
+	for entry in _host_mods:
+		if ModLoader.entry_id(entry) != ModLoader.CORE_ID and ModLoader.local_copy(entry) == "":
+			_downloads[entry] = {"parts": -1, "data": PackedByteArray()}
+			_request_mod_part.rpc_id(1, entry, 0)
+	if _downloads.is_empty():
+		mods_ready.emit(_host_mods)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _mod_part(entry: String, part: int, parts: int, data: PackedByteArray) -> void:
+	if not is_client() or not _downloads.has(entry):
+		return
+	var d: Dictionary = _downloads[entry]
+	if d.parts == -1:
+		d.parts = parts
+	if part != d.data.size() / MOD_PART or parts != d.parts or parts * MOD_PART > MAX_MOD_DOWNLOAD + MOD_PART \
+			or (part < parts - 1 and data.size() != MOD_PART):
+		_end("A mod download from the server went wrong.")
+		return
+	d.data.append_array(data)
+	var done := 0
+	for e in _downloads:
+		done += _downloads[e].data.size()
+	mods_progress.emit(done, done + _downloads.values().reduce(func(acc, x):
+		return acc + (0 if x.parts == -1 else maxi(0, x.parts * MOD_PART - x.data.size())), 0))
+	if part < parts - 1:
+		_request_mod_part.rpc_id(1, entry, part + 1)
+		return
+	var problem := _unpack_mod(entry, d.data)
+	if problem != "":
+		_end("The server's mod %s: %s" % [ModLoader.entry_id(entry), problem])
+		return
+	d.done = true
+	if _downloads.values().all(func(x): return x.get("done", false)):
+		mods_ready.emit(_host_mods)
+
+
+## Puts a downloaded mod zip in the server mod cache; "" or what's wrong.
+static func _unpack_mod(entry: String, data: PackedByteArray) -> String:
+	var dir := ModLoader.cache_dir(entry)
+	DirAccess.make_dir_recursive_absolute(ModLoader.SERVER_DIR)
+	var zip := dir + ".zip"
+	var f := FileAccess.open(zip, FileAccess.WRITE)
+	if f == null:
+		return "can't write " + zip
+	f.store_buffer(data)
+	f.close()
+	var problem := ModLoader.unzip_mod(zip, dir)
+	DirAccess.remove_absolute(zip)
+	if problem == "":
+		var m = JSON.parse_string(FileAccess.get_file_as_string(dir.path_join("mod.json")))
+		if not m is Dictionary or m.get("id") != ModLoader.entry_id(entry):
+			problem = "its mod.json doesn't match"
+		elif ModLoader.fingerprint(dir) != ModLoader.entry_hash(entry):
+			problem = "its files don't match its fingerprint"
+	if problem != "":
+		ModLoader._remove_dir(dir)
+	return problem
 
 
 ## Clients ask the host to change a block; the host validates and applies it.
@@ -377,11 +491,13 @@ func _hello(protocol: int, mods: Array, requested_name: String) -> void:
 		mods = []
 	elif protocol != PROTOCOL:
 		reason = "Game version mismatch (server protocol %d, yours %d)." % [PROTOCOL, protocol]
-	elif mods != mod_list():
-		var mine := mod_list()
-		reason = "Your mods don't match the server's (after # is a fingerprint of the mod's files).\n" \
-				+ "Only on the server, or different there: %s\nOnly yours, or different: %s" % [
-				", ".join(mine.filter(func(x): return x not in mods)), ", ".join(mods.filter(func(x): return x not in mine))]
+	elif mods != my_mods:
+		var core := func(list: Array): return list.filter(func(e): return ModLoader.entry_id(e) == ModLoader.CORE_ID)
+		if core.call(mods) != core.call(my_mods):
+			reason = "Game version mismatch (the base game's files differ from the server's)."
+		else:
+			_offer(id)
+			return
 	if reason != "":
 		print("Rejected peer %d: %s" % [id, reason])
 		_rejected.rpc_id(id, reason)
@@ -546,12 +662,80 @@ func _allow(id: int, kind: String) -> bool:
 	return true
 
 
+## Host: a player with other mods may download ours (see _request_mod_part).
+func _offer(id: int) -> void:
+	var sizes := {}
+	for entry in my_mods:
+		if ModLoader.entry_id(entry) != ModLoader.CORE_ID:
+			sizes[entry] = _mod_zip(entry).size()
+	_offered[id] = {"tokens": MOD_PARTS_PER_SECOND, "time": _now()}
+	print("Peer %d has other mods; offering ours" % id)
+	_offer_mods.rpc_id(id, my_mods, sizes)
+
+
+## One of our mods' folder as a zip (the same files its fingerprint covers).
+func _mod_zip(entry: String) -> PackedByteArray:
+	if _zips.has(entry):
+		return _zips[entry]
+	var root: String = _mod_paths.get(entry, "")
+	var tmp := ModLoader.USER_DIR.path_join(".outgoing_%d.zip" % get_instance_id())
+	var zip := ZIPPacker.new()
+	var data := PackedByteArray()
+	if root != "" and zip.open(tmp) == OK:
+		for rel in ModLoader._files_under(root, ""):
+			zip.start_file(rel)
+			zip.write_file(FileAccess.get_file_as_bytes(root.path_join(rel)))
+			zip.close_file()
+		zip.close()
+		data = FileAccess.get_file_as_bytes(tmp)
+		DirAccess.remove_absolute(tmp)
+	_zips[entry] = data
+	return data
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_mod_part(entry, part) -> void:
+	var id := multiplayer.get_remote_sender_id()
+	if not is_host() or not _offered.has(id) or not entry is String or not part is int:
+		return
+	if not entry in my_mods or ModLoader.entry_id(entry) == ModLoader.CORE_ID:
+		return
+	var o: Dictionary = _offered[id]  # rate limit (token bucket)
+	var now := _now()
+	o.tokens = minf(MOD_PARTS_PER_SECOND, o.tokens + (now - o.time) * MOD_PARTS_PER_SECOND)
+	o.time = now
+	if o.tokens < 1.0:
+		if o.get("waiting", 0) < MAX_MODS:  # answered a little later (a flood is dropped)
+			o.waiting = o.get("waiting", 0) + 1
+			get_tree().create_timer(0.1).timeout.connect(func():
+				if _offered.has(id):
+					o.waiting -= 1
+					_request_mod_part_later(id, entry, part))
+		return
+	o.tokens -= 1.0
+	_send_mod_part(id, entry, part)
+
+
+func _request_mod_part_later(id: int, entry: String, part: int) -> void:
+	if id in multiplayer.get_peers():
+		_send_mod_part(id, entry, part)
+
+
+func _send_mod_part(id: int, entry: String, part: int) -> void:
+	var data := _mod_zip(entry)
+	var parts := maxi(1, ceili(data.size() / float(MOD_PART)))
+	if part < 0 or part >= parts:
+		return
+	_mod_part.rpc_id(id, entry, part, parts, data.slice(part * MOD_PART, (part + 1) * MOD_PART))
+
+
 func _kick(id: int) -> void:
 	if is_host() and id in multiplayer.get_peers():
 		multiplayer.multiplayer_peer.disconnect_peer(id)
 
 
 func _on_peer_disconnected(id: int) -> void:
+	_offered.erase(id)
 	if not _peers.has(id):
 		return
 	print("%s left" % _peers[id].name)
@@ -1101,7 +1285,7 @@ func _process_step(delta: float) -> void:
 		for n in _placements.keys():
 			if now - float(_placements[n].time) > EDIT_PENDING_SECONDS * 6.0:
 				_placements.erase(n)  # no answer at all: the connection is gone
-	if is_client() and not _welcomed and not _ended \
+	if is_client() and not _welcomed and not _ended and _host_mods.is_empty() \
 			and Time.get_ticks_msec() - _connect_started > CONNECT_TIMEOUT_MS:
 		_end("Connection timed out.")
 		return

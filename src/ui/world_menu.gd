@@ -7,6 +7,7 @@ extends Control
 static var notice := ""
 ## Command-line options start the game only once, not every time we return here.
 static var _cli_used := false
+static var _notice_used := false
 
 var _name_edit: LineEdit
 var _notice: Label
@@ -35,6 +36,14 @@ func _ready() -> void:
 		_cli_used = true
 		_start_game.call_deferred({"use_cmdline": true})  # main reads the options itself
 		return
+	if not ModLoader.server_mods.is_empty():
+		# Back from a server's game: restart with the player's own mods.
+		ModLoader.restart(ModLoader.plain_user_args() + ["--notice=" + Marshalls.utf8_to_base64(notice)])
+		return
+	for a in args:
+		if a.begins_with("--notice=") and not _notice_used:
+			_notice_used = true
+			notice = Marshalls.base64_to_utf8(a.trim_prefix("--notice="))
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_build_ui()
 	_refresh()
