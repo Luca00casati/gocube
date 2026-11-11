@@ -13,11 +13,29 @@ class_name ModSandbox
 ##   - after a dot, a method or property of the value types or the mod API
 ##     (ALLOWED_MEMBERS), or a constant (ALL_CAPS).
 ## So no `self`, `load`, classes (OS, FileAccess, ...), autoloads, nodes,
-## `call`/`set`, `new`, `await`, annotations or inner classes. The script must
-## extend RefCounted (the default).
+## `call`/`set`, `new`, `await`, annotations, inner classes or lambdas. The
+## script must extend RefCounted (the default).
 ##
-## What it can't stop: a mod that loops forever or fills memory hangs or
-## crashes the game while it loads (remove the mod to recover).
+## Time and memory limits: instrument() adds a check of the clock and of the
+## memory in use at the start of every loop body and function (which is why
+## their bodies must be on lines of their own, and why there are no lambdas or
+## map/filter/sort_custom, which could call code without a check). Once
+## time_limit_ms have passed, or the script uses memory_limit more bytes than
+## when it started, every loop stops and every function returns at once, so
+## the mod soon finishes; the loader then undoes it (stopped_by). Recursion is
+## refused outright. A single call that asks for a huge amount of memory at
+## once (say "x".repeat(1 << 40)) isn't caught by these checks: that is why
+## installed mods run in a process of their own (mod_runner.gd), where it can
+## only crash that process.
+##
+## Nothing a script can do depends on the time or chance (no clock, no random
+## numbers), so a mod's registrations depend only on its files and what was
+## registered before it: the loader keeps them (ModLoader.RESULTS_DIR).
+
+## Time a mod has to load (tests lower it).
+static var time_limit_ms := 5000
+## Memory a mod may use while it loads, in bytes.
+static var memory_limit := 256 << 20
 
 const KEYWORDS := ["if", "elif", "else", "for", "while", "match", "when", "break", "continue",
 	"pass", "return", "var", "const", "func", "static", "and", "or", "not", "in", "is", "as",
@@ -60,8 +78,8 @@ const ALLOWED_MEMBERS := [
 	# Array, Dictionary and the packed arrays
 	"append", "append_array", "push_back", "push_front", "pop_back", "pop_front", "pop_at",
 	"insert", "erase", "remove_at", "clear", "size", "is_empty", "has", "has_all", "sort",
-	"sort_custom", "reverse", "slice", "duplicate", "map", "filter", "reduce", "any", "all",
-	"front", "back", "resize", "fill", "bsearch", "pick_random", "shuffle", "keys", "values",
+	"reverse", "slice", "duplicate",
+	"front", "back", "resize", "fill", "bsearch", "keys", "values",
 	"get", "merge", "merged", "get_or_add", "find_key",
 	# vectors and colours
 	"x", "y", "z", "w", "r", "g", "b", "a", "h", "s", "v", "r8", "g8", "b8", "a8",
@@ -93,7 +111,7 @@ static func check(source: String) -> String:
 		allowed_members[n] = true
 	var seen_code := false
 	for i in tokens.size():
-		var t: Array = tokens[i]  # [kind, text, line]
+		var t: Array = tokens[i]  # [kind, text, line, offset]
 		if t[0] != "id":
 			if t[0] == "op":
 				seen_code = true
@@ -108,12 +126,165 @@ static func check(source: String) -> String:
 		if i > 0 and tokens[i - 1][1] == "extends":
 			continue  # RefCounted, checked above
 		seen_code = true
+		if name.begins_with("__"):
+			return where + "names starting with __ are reserved"
+		if not after_dot and name in ["while", "for", "func"]:
+			var starts_line: bool = i == 0 or tokens[i - 1][2] < t[2] or tokens[i - 1][1] == "static"
+			if name == "func" and (i + 1 >= tokens.size() or tokens[i + 1][0] != "id" or not starts_line):
+				return where + "lambdas aren't available to mods; write a named function"
+			var colon := _header_end(tokens, i)
+			if colon == -1 or colon + 1 >= tokens.size():
+				return where + "can't find the end of this `%s`" % name
+			if tokens[colon + 1][2] == tokens[colon][2]:
+				return where + "put the body of this `%s` on lines of its own" % name
 		if after_dot:
 			if not allowed_members.has(name) and not _is_constant(name):
 				return where + "`.%s` isn't available to mods (for dictionary keys use d[\"%s\"])" % [name, name]
 		elif not allowed_globals.has(name) and not declared.has(name) and not _is_constant_global(name):
 			return where + "`%s` isn't available to mods" % name
+	return _recursion_problem(tokens)
+
+
+## Functions calling themselves, directly or through others, are refused: a
+## mod's functions can only be called by name (no lambdas or `call`), so the
+## calls in its text are all of them. (Deep recursion would overflow the stack
+## before the time limit could stop it.)
+static func _recursion_problem(tokens: Array) -> String:
+	var calls := {}  # function -> {functions it calls}
+	var lines := {}
+	var current := ""
+	for i in tokens.size():
+		var t: Array = tokens[i]
+		if t[0] != "id" or (i > 0 and tokens[i - 1][1] == "."):
+			continue
+		if t[1] == "func" and i + 1 < tokens.size():
+			current = tokens[i + 1][1]
+			calls[current] = calls.get(current, {})
+			lines[current] = t[2]
+		elif current != "" and i + 1 < tokens.size() and tokens[i + 1][1] == "(" and not (i > 0 and tokens[i - 1][1] == "func"):
+			calls[current][t[1]] = true
+	var state := {}  # 1 visiting, 2 done
+	for f in calls:
+		var cycle := _cycle_from(f, calls, state)
+		if cycle != "":
+			return "line %d: `%s` calls itself (%s); recursion isn't available to mods" % [lines[f], f, cycle]
 	return ""
+
+
+static func _cycle_from(f: String, calls: Dictionary, state: Dictionary) -> String:
+	if state.get(f, 0) == 2 or not calls.has(f):
+		return ""
+	if state.get(f, 0) == 1:
+		return f
+	state[f] = 1
+	for g in calls[f]:
+		var c := _cycle_from(g, calls, state)
+		if c != "":
+			return f + " -> " + c
+	state[f] = 2
+	return ""
+
+
+## Index of the ":" ending the header of the while/for/func at token i, or -1
+## (the first one outside brackets: a func's parameters are inside its
+## parentheses; a for's loop variable may have a type, so after its `in`).
+static func _header_end(tokens: Array, i: int) -> int:
+	var depth := 0
+	var after: bool = tokens[i][1] != "for"
+	for k in range(i + 1, tokens.size()):
+		var t: Array = tokens[k]
+		if t[0] == "op" and t[1] in ["(", "[", "{"]:
+			depth += 1
+		elif t[0] == "op" and t[1] in [")", "]", "}"]:
+			depth -= 1
+			if depth < 0:
+				return -1
+		elif depth == 0:
+			if t[0] == "id" and t[1] == "in":
+				after = true
+			elif t[0] == "op" and t[1] == ":" and after:
+				return k
+	return -1
+
+
+## `source` (which passed check()) with the time limit added: a clock check
+## at the start of every loop body and function. Lines move down by a few.
+static func instrument(source: String) -> String:
+	var tokens: Array = _tokenize(source)
+	var inserts := []  # [offset, text]
+	for i in tokens.size():
+		var t: Array = tokens[i]
+		if t[0] != "id" or not t[1] in ["while", "for", "func"] or (i > 0 and tokens[i - 1][1] == "."):
+			continue
+		var colon := _header_end(tokens, i)
+		var body: Array = tokens[colon + 1]
+		var line_start := source.rfind("\n", body[3]) + 1
+		var indent := source.substr(line_start, body[3] - line_start)
+		var stop := "break" if t[1] != "func" else "return" + _return_value(tokens, i, colon)
+		inserts.append([line_start, "%sif __over(): %s\n" % [indent, stop]])
+	# The clock, first thing in the script (static variables start in order).
+	var top := 0
+	if not tokens.is_empty() and tokens[0][1] == "extends":
+		top = source.find("\n", tokens[1][3])
+		top = source.length() if top == -1 else top + 1
+	inserts.append([top, ("static var __deadline_ms: int = Time.get_ticks_msec() + %d\n" % time_limit_ms)
+			+ ("static var __memory_cap: int = OS.get_static_memory_usage() + %d\n" % memory_limit)
+			+ "static var __stopped := \"\"\n"
+			+ "static func __over() -> bool: __stopped = __stopped if __stopped != \"\" else \"time\" if Time.get_ticks_msec() > __deadline_ms else \"memory\" if OS.get_static_memory_usage() > __memory_cap else \"\"; return __stopped != \"\"\n"])
+	inserts.sort_custom(func(a, b): return a[0] > b[0])
+	var out := source
+	if top == source.length() and not source.ends_with("\n"):
+		out += "\n"
+	for ins in inserts:
+		out = out.insert(ins[0], ins[1])
+	return out
+
+
+## What an instrumented function returns when time is up: nothing, or an
+## empty value of its declared type.
+static func _return_value(tokens: Array, i: int, colon: int) -> String:
+	var type := ""
+	var arrow := false
+	for j in range(i, colon):
+		if arrow:
+			type += tokens[j][1]
+		elif tokens[j][1] == "-" and tokens[j + 1][1] == ">":
+			arrow = true
+	type = type.trim_prefix(">")
+	if type == "" or type == "void":
+		return ""
+	if type == "Variant":
+		return " null"
+	if type.begins_with("Array"):
+		return " []"
+	if type.begins_with("Dictionary"):
+		return " {}"
+	return " %s()" % type
+
+
+## Whether a value is plain data (what JSON has, plus numbers and vectors): no
+## objects or callables, which could reach back into a mod.
+static func is_plain(v) -> bool:
+	match typeof(v):
+		TYPE_OBJECT, TYPE_CALLABLE, TYPE_SIGNAL, TYPE_RID:
+			return false
+		TYPE_ARRAY:
+			return v.all(is_plain)
+		TYPE_DICTIONARY:
+			return v.keys().all(is_plain) and v.values().all(is_plain)
+	return true
+
+
+## What stopped a script made from instrument(): "time", "memory" or "" (nothing).
+static func stopped_by(script: GDScript) -> String:
+	return str(script.get("__stopped"))
+
+
+## Why a mod was stopped, for the log and the Mods screen.
+static func stop_message(mod_id: String, why: String) -> String:
+	if why == "memory":
+		return "Mod '%s': used more than %d MB while loading; undoing the mod" % [mod_id, memory_limit >> 20]
+	return "Mod '%s': took longer than %.1f s to load (stuck in a loop?); undoing the mod" % [mod_id, time_limit_ms / 1000.0]
 
 
 static func _is_constant(name: String) -> bool:
@@ -125,7 +296,7 @@ static func _is_constant_global(name: String) -> bool:
 	return name.begins_with("TYPE_") and _is_constant(name)
 
 
-## Splits GDScript source into [kind, text, line] tokens: "id", "op", "str",
+## Splits GDScript source into [kind, text, line, offset] tokens: "id", "op", "str",
 ## "num". Comments and line breaks are dropped. Returns a String on a problem.
 static func _tokenize(src: String):
 	var out := []
@@ -144,6 +315,7 @@ static func _tokenize(src: String):
 			while i < n and src[i] != "\n":
 				i += 1
 		elif c == "\"" or c == "'" or ((c == "r" or c == "&" or c == "^") and i + 1 < n and (src[i + 1] == "\"" or src[i + 1] == "'")):
+			var tok_start := i
 			var raw := c == "r"
 			if c != "\"" and c != "'":
 				i += 1
@@ -168,12 +340,12 @@ static func _tokenize(src: String):
 						return "line %d: unterminated string" % start_line
 					line += 1
 				i += 1
-			out.append(["str", "", start_line])
+			out.append(["str", "", start_line, tok_start])
 		elif _is_ident_start(code):
 			var s := i
 			while i < n and (_is_ident_start(src.unicode_at(i)) or _is_digit(src.unicode_at(i))):
 				i += 1
-			out.append(["id", src.substr(s, i - s), line])
+			out.append(["id", src.substr(s, i - s), line, s])
 		elif _is_digit(code) or (c == "." and i + 1 < n and _is_digit(src.unicode_at(i + 1))
 				and not (out.size() > 0 and (out[-1][0] in ["id", "str", "num"] or out[-1][1] in [")", "]", "}"]))):
 			var s := i
@@ -196,13 +368,13 @@ static func _tokenize(src: String):
 						i += 1
 			if i < n and _is_ident_start(src.unicode_at(i)):
 				return "line %d: bad number" % line
-			out.append(["num", src.substr(s, i - s), line])
+			out.append(["num", src.substr(s, i - s), line, s])
 		elif code > 127:
 			return "line %d: only ASCII letters are allowed outside strings and comments" % line
 		elif c == "$" or c == "@" or c == "`":
 			return "line %d: `%s` isn't available to mods" % [line, c]
 		else:
-			out.append(["op", c, line])
+			out.append(["op", c, line, i])
 			i += 1
 	return out
 

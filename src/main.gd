@@ -249,7 +249,7 @@ func _on_mods_offered(missing: Dictionary) -> void:
 	_set_loading_text("The server plays with other mods")
 	var text := "This server plays with other mods than yours.\n\n"
 	if missing.is_empty():
-		text += "You have them all already."
+		text += "You already have all of them."
 	else:
 		text += "To download:\n"
 		for entry in missing:

@@ -11,7 +11,7 @@ func init_mod(registry) -> bool:
 		var id: String = registry.register_block(name + "_wool", {"color": COLORS[name], "hardness": 0.8})
 		made += 1
 		print("made %s" % id, " ", "load('x')")
-	var sizes := range(3).map(func(i: int) -> int: return i * 2)
+	var sizes := double([0, 1, 2])
 	var stone: Dictionary = registry.get_block("core:stone")
 	var hardness: float = stone.get("hardness", 1.0) * 1.5e0 + 0x10 + .5
 	registry.register_item("dust", {"color": Color(0.5, 0.5, 0.5).to_html(), "stack": maxi(sizes.size(), 1)})
@@ -20,7 +20,16 @@ func init_mod(registry) -> bool:
 		_: return false
 	for k in 2:
 		made += k
+	while made < 3:
+		made += 1
 	return made == 3 and hardness > 0 and Vector3.UP.y == 1 and TYPE_INT == typeof(1)
+
+
+static func double(list: Array) -> Array[int]:
+	var out: Array[int] = []
+	for i: int in list:
+		out.append(i * 2)
+	return out
 """
 
 
@@ -60,6 +69,14 @@ func test_escapes_are_refused() -> void:
 		"var x = Expression.new()",
 		"var d = {}; d.free()",
 		"var x = super.init_mod(registry)",
+		"var f = func(): return 1",                       # lambdas (could run unchecked)
+		"var f = func g():\n\t\tpass",
+		"[1].map(init_mod)",
+		"var a = [2, 1]; a.sort_custom(init_mod)",
+		"var __timed_out = false",                        # the time limit's own names
+		"__over()",
+		"while true: pass",                               # bodies on lines of their own
+		"for i in 3: pass",
 	]:
 		var problem := ModSandbox.check(body % bad)
 		check(problem != "", "refused: %s" % bad)
@@ -78,6 +95,10 @@ func test_escapes_are_refused() -> void:
 		"func init_mod(r):\n\tvar ОS = 1\n",                             # a look-alike letter (Cyrillic O)
 		"func init_mod(r):\n\tvar s = \"unterminated\n",
 		"var x = 1\nextends RefCounted\n",                               # extends after code
+		"func f(): return 1\n",
+		"func f(n):\n\treturn f(n - 1)\n",                               # recursion
+		"func a(n):\n\treturn b(n)\nfunc b(n):\n\treturn a(n)\n",
+		"static var __deadline_ms = 0\n",
 	]:
 		check(ModSandbox.check(bad) != "", "refused: %s" % bad.c_escape())
 
@@ -148,10 +169,10 @@ func test_refused_mod_runs_nothing() -> void:
 
 func test_definitions_must_be_plain_data() -> void:
 	var root := "user://_test_lambda"
-	_write(root.path_join("main.gd"), "func init_mod(r):\n\tr.register_block(\"a\", {\"on_use\": func(): return 1})\n\tr.register_block(\"b\", {\"list\": [r]})\n")
+	_write(root.path_join("main.gd"), "func init_mod(r):\n\tr.register_block(\"a\", {\"api\": r})\n\tr.register_block(\"b\", {\"list\": [r.register_block]})\n")
 	expect_error("isn't plain data")
 	check(_load_test_mod("lambda", root, "main.gd"), "loads")
-	check(not Registry.blocks.has("lambda:a") and not Registry.blocks.has("lambda:b"), "callables and objects aren't registered")
+	check(not Registry.blocks.has("lambda:a") and not Registry.blocks.has("lambda:b"), "objects and callables aren't registered")
 	ModLoader.mods = ModLoader.mods.filter(func(m): return m.id != "lambda")
 	ModLoader._remove_dir(root)
 
@@ -176,3 +197,94 @@ func test_mod_files_stay_in_the_mod_and_are_read_raw() -> void:
 	check_eq(BlockAtlas._load_image(dir.path_join("evil.png")), null, "a .png with a remap isn't loaded as a resource")
 	check(not FileAccess.file_exists(marker), "no script ran")
 	ModLoader._remove_dir(dir)
+
+
+## A mod stuck in loops is stopped once its time is up, and undone.
+func test_stuck_mod_is_stopped_and_undone() -> void:
+	var root := "user://_test_stuck"
+	_write(root.path_join("main.gd"), """extends RefCounted
+
+func spin(n: int) -> int:
+	while n > 0:
+		n += 1
+	return n
+
+func init_mod(registry) -> bool:
+	registry.register_block("before_the_loop")
+	var n := 0
+	while true:
+		n += 1
+	spin(1)
+	for i in 1 << 60:
+		n += i
+	return true
+""")
+	var limit := ModSandbox.time_limit_ms
+	ModSandbox.time_limit_ms = 300
+	expect_error("Mod 'stuck': took longer")
+	var t := Time.get_ticks_msec()
+	check(not _load_test_mod("stuck", root, "main.gd"), "refused")
+	var took := Time.get_ticks_msec() - t
+	ModSandbox.time_limit_ms = limit
+	check(took < 2000, "stopped soon after its time was up (%d ms)" % took)
+	check(not Registry.blocks.has("stuck:before_the_loop"), "what it registered is undone")
+	ModLoader._remove_dir(root)
+
+
+func test_instrumented_scripts_keep_working() -> void:
+	var s := GDScript.new()
+	s.source_code = ModSandbox.instrument(OK_SCRIPT)
+	check_eq(s.reload(), OK, "compiles")
+	check_eq(s.double([1, 2]), [2, 4] as Array[int], "typed functions still return their values")
+	var spaces := "func init_mod(r):\n    for i in 2:\n        r.register_block(\"x\")\n"
+	check_eq(ModSandbox.check(spaces), "", "space-indented script")
+	s = GDScript.new()
+	s.source_code = ModSandbox.instrument(spaces)
+	check_eq(s.reload(), OK, "keeps its indentation")
+
+
+## Installed mods run in a process of their own: one that asks for all the
+## memory there is only takes that process down; one that grows bit by bit
+## is stopped at its memory limit. The game goes on either way.
+func test_memory_hungry_mods_are_stopped() -> void:
+	var root := "user://_test_hungry"
+	_write(root.path_join("main.gd"), "func init_mod(registry):\n\tregistry.register_block(\"first\")\n\tvar s := \"x\".repeat(1 << 29)\n\tregistry.register_block(\"after\", {\"n\": s.length()})\n")
+	expect_error("Mod 'hungry'")
+	check(not _load_test_mod("hungry", root, "main.gd"), "a mod asking for gigabytes at once is refused (its process crashed, not the game)")
+	check(not Registry.blocks.has("hungry:first") and not Registry.blocks.has("hungry:after"), "and nothing of it stays")
+	ModLoader._remove_dir(root)
+
+	root = "user://_test_growing"
+	_write(root.path_join("main.gd"), "func init_mod(registry):\n\tregistry.register_block(\"first\")\n\tvar s := \"x\"\n\twhile true:\n\t\ts += s\n")
+	expect_error("Mod 'growing': used more than")
+	check(not _load_test_mod("growing", root, "main.gd"), "a mod whose memory keeps growing is stopped")
+	check(not Registry.blocks.has("growing:first"), "and undone")
+	ModLoader._remove_dir(root)
+
+
+## An installed mod's registrations are kept: the next start (same files,
+## same mods before it) needs no process.
+func test_isolated_results_are_reused() -> void:
+	var root := "user://_test_reuse"
+	_write(root.path_join("main.gd"), "func init_mod(registry):\n\tvar stone: Dictionary = registry.get_block(\"core:stone\")\n\tregistry.register_block(\"twin\", {\"color\": stone.get(\"color\", \"#000000\")})\n\tregistry.register_item(\"bit\")\n\tvar own: Dictionary = registry.get_item(\"bit\")\n\tregistry.register_item(\"seen\", {\"name\": own.get(\"id\", \"\")})\n")
+	ModLoader._remove_dir(ModLoader.RESULTS_DIR)
+	var t := Time.get_ticks_msec()
+	check(_load_test_mod("reuse", root, "main.gd"), "loads")
+	var first := Time.get_ticks_msec() - t
+	check_eq(Registry.blocks.get("reuse:twin", {}).get("color"), Registry.blocks["core:stone"].get("color", "#000000"),
+			"get_block sees what's registered (from the game, in the mod's process)")
+	check_eq(Registry.items.get("reuse:seen", {}).get("name"), "reuse:bit", "and what the mod itself registered")
+	for id in ["reuse:twin"]:
+		Registry.blocks.erase(id)
+	for id in ["reuse:bit", "reuse:seen"]:
+		Registry.items.erase(id)
+	ModLoader.mods = ModLoader.mods.filter(func(m): return m.id != "reuse")
+	t = Time.get_ticks_msec()
+	check(_load_test_mod("reuse", root, "main.gd"), "loads again")
+	var second := Time.get_ticks_msec() - t
+	check(second < first / 3 and Registry.items.has("reuse:seen"), "from the kept result (%d ms, then %d ms)" % [first, second])
+	Registry.blocks.erase("reuse:twin")
+	for id in ["reuse:bit", "reuse:seen"]:
+		Registry.items.erase(id)
+	ModLoader.mods = ModLoader.mods.filter(func(m): return m.id != "reuse")
+	ModLoader._remove_dir(root)

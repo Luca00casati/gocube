@@ -121,3 +121,35 @@ func test_mod_fingerprints() -> void:
 	f.close()
 	check(ModLoader.fingerprint(root) != first, "a changed file changes it")
 	ModLoader._remove_dir(root)
+
+
+## The Mods part of the settings screen: what each mod is, why one didn't
+## load, and the mods downloaded from servers (which can be deleted).
+func test_mods_screen_and_server_cache() -> void:
+	var cached := ModLoader.SERVER_DIR.path_join("fake_0123456789ab")
+	DirAccess.make_dir_recursive_absolute(cached)
+	var f := FileAccess.open(cached.path_join("mod.json"), FileAccess.WRITE)
+	f.store_string('{"id": "fake"}')
+	f.close()
+	var cache := ModLoader.server_cache()
+	check(cache.any(func(c): return c.name == "fake_0123456789ab" and c.size == 14), "the cache lists it with its size")
+	check_eq(ModLoader.origin({"path": "res://mods/core"}), "built-in", "built-in")
+	check_eq(ModLoader.origin({"path": ModLoader.UNZIP_DIR + "/x"}), "zip", "from a zip")
+	check_eq(ModLoader.origin({"path": "user://mods/x"}), "folder", "a folder")
+	ModLoader.problems["_test_broken"] = "Invalid mod.json: _test_broken"
+	var screen := SettingsScreen.new()
+	add(screen)
+	await frames(2)
+	var texts := screen.find_children("*", "Label", true, false).map(func(l): return l.text)
+	check(texts.has("Mods") and texts.has("Downloaded from servers"), "the Mods part is shown")
+	check(texts.has("Invalid mod.json: _test_broken"), "with why a mod didn't load")
+	check(texts.any(func(t): return t.begins_with("1 mod(s)") or t.contains("mod(s),")), "and the downloaded mods: %s" % [texts])
+	var delete: Button = screen.find_children("*", "Button", true, false).filter(func(b): return b.text == "Delete them")[0]
+	check(not delete.disabled, "they can be deleted")
+	delete.pressed.emit()
+	check(not DirAccess.dir_exists_absolute(ModLoader.SERVER_DIR), "deleted")
+	ModLoader.server_mods = ["core@x#y"]
+	check(not ModLoader.clear_server_cache(), "not while playing with a server's mods")
+	ModLoader.server_mods = []
+	ModLoader.problems.erase("_test_broken")
+	screen.queue_free()

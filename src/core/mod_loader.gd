@@ -60,6 +60,8 @@ var instances: Dictionary = {}
 ## Playing with a server's mods (launched with --server-mods): its mod list
 ## ("id@version#fingerprint" each); empty otherwise.
 var server_mods: Array = []
+## Why mods didn't load this time: mod id (or folder / zip name) -> reason.
+var problems := {}
 
 var _id_regex := RegEx.create_from_string("^[a-z0-9_]+$")
 var _loading: Dictionary = {}  # manifest of the mod currently being loaded
@@ -98,7 +100,7 @@ func load_all() -> void:
 		var deps: Array = found[id].get("dependencies", [])
 		var broken_dep = deps.filter(func(d): return failed.has(d))
 		if not broken_dep.is_empty():
-			push_error("Skipping mod '%s': dependency '%s' failed to load" % [id, broken_dep[0]])
+			_fail(id, "Skipping mod '%s': dependency '%s' failed to load" % [id, broken_dep[0]])
 			failed[id] = true
 		elif not _load_mod(found[id]):
 			failed[id] = true
@@ -132,7 +134,7 @@ func _scan_zips(dir: String, found: Dictionary) -> void:
 		var out := UNZIP_DIR.path_join(file.get_basename())
 		var problem := unzip_mod(zip, out)
 		if problem != "":
-			push_error("Mod zip %s: %s; skipping it" % [zip, problem])
+			_fail(zip.get_file(), "Mod zip %s: %s; skipping it" % [zip, problem])
 			continue
 		_add_found(out, found)
 
@@ -203,10 +205,10 @@ func _add_found(root: String, found: Dictionary) -> void:
 	var m = json.data if json.parse(FileAccess.get_file_as_string(manifest_path)) == OK else null
 	var problem := manifest_problem(m, root)
 	if problem != "":
-		push_error("Invalid mod.json (%s), skipping it: %s" % [problem, manifest_path])
+		_fail(root.get_file(), "Invalid mod.json (%s), skipping it: %s" % [problem, manifest_path])
 		return
 	if int(m.get("api_version", 1)) > API_VERSION:
-		push_error("Mod '%s' needs a newer game (mod API %d, this game has %d); skipping it"
+		_fail(m.id, "Mod '%s' needs a newer game (mod API %d, this game has %d); skipping it"
 				% [m.id, int(m.api_version), API_VERSION])
 		return
 	if found.has(m.id):
@@ -218,7 +220,7 @@ func _add_found(root: String, found: Dictionary) -> void:
 		var data = JSON.parse_string(FileAccess.get_file_as_string(path))
 		var why := content_problem(data)
 		if why != "":
-			push_error("Mod '%s': content file %s %s; skipping the mod" % [m.id, rel, why])
+			_fail(m.id, "Mod '%s': content file %s %s; skipping the mod" % [m.id, rel, why])
 			return
 		content.append(data)
 	m.path = root
@@ -301,7 +303,7 @@ func _visit(id: String, found: Dictionary, state: Dictionary, order: Array) -> b
 			return false
 		-1: return false
 	if not found.has(id):
-		push_error("Missing mod '%s'%s" % [id, " (it's turned off)" if id in Settings.disabled_mods else ""])
+		_fail(id, "Missing mod '%s'%s" % [id, " (it's turned off)" if id in Settings.disabled_mods else ""])
 		state[id] = -1
 		return false
 	state[id] = 1
@@ -310,7 +312,7 @@ func _visit(id: String, found: Dictionary, state: Dictionary, order: Array) -> b
 		deps = [CORE_ID] + deps
 	for dep in deps:
 		if not _visit(dep, found, state, order):
-			push_error("Skipping mod '%s': dependency '%s' unavailable" % [id, dep])
+			_fail(id, "Skipping mod '%s': dependency '%s' unavailable" % [id, dep])
 			state[id] = -1
 			return false
 	state[id] = 2
@@ -328,20 +330,10 @@ func _load_mod(m: Dictionary) -> bool:
 		_register_content(data)
 	var ok := true
 	if m.has("entry"):
-		var script := compile_entry(m.path.path_join(m.entry), m.id)
-		if script == null:
-			push_error("Mod '%s': could not load entry script %s; undoing the mod" % [m.id, m.entry])
+		var problem := _run_entry(m) if is_builtin(m.path) else _run_entry_isolated(m)
+		if problem != "":
+			_fail(m.id, problem)
 			ok = false
-		else:
-			var inst = script.new()
-			var api := GoCubeModApi.new()
-			api._set_handler(_api_call)
-			if inst.has_method("init_mod") and inst.init_mod(api) == false:
-				push_error("Mod '%s': init_mod gave up; undoing the mod" % m.id)
-				ok = false
-			else:
-				instances[m.id] = inst
-			api._set_handler(Callable())  # the API only works while the mod loads
 	Registry._end_mod()
 	_loading = {}
 	m.erase("_content")
@@ -354,19 +346,131 @@ func _load_mod(m: Dictionary) -> bool:
 	return true
 
 
+## Runs a built-in mod's entry script here (it ships with the game). Returns
+## "" or why the mod failed.
+func _run_entry(m: Dictionary) -> String:
+	var script := compile_entry(m.path.path_join(m.entry), m.id)
+	if script == null:
+		return "Mod '%s': could not load entry script %s; undoing the mod" % [m.id, m.entry]
+	var inst = script.new()
+	var api := GoCubeModApi.new()
+	api._set_handler(_api_call)
+	var gave_up: bool = inst.has_method("init_mod") and inst.init_mod(api) == false
+	api._set_handler(Callable())  # the API only works while the mod loads
+	var stopped := ModSandbox.stopped_by(script)
+	if stopped != "":
+		return ModSandbox.stop_message(m.id, stopped)
+	if gave_up:
+		return "Mod '%s': init_mod gave up; undoing the mod" % m.id
+	instances[m.id] = inst
+	return ""
+
+
+## Results of installed mods' entry scripts, by mod files + what was
+## registered before them (see mod_runner.gd).
+const RESULTS_DIR := "user://mods/.results"
+const RUN_DIR := "user://mods/.run"
+## Most memory the process running a mod may have (Linux, with prlimit).
+const RUNNER_ADDRESS_SPACE := 2 << 30
+## Time for the process to start, on top of the mod's own time limit.
+const RUNNER_START_GRACE_MS := 5000
+
+
+## Runs an installed mod's entry script in a Godot process of its own
+## (mod_runner.gd), which sends back what the mod registered; that is then
+## registered here. Whatever the script does (fill all memory, crash), the
+## game keeps running. Returns "" or why the mod failed.
+func _run_entry_isolated(m: Dictionary) -> String:
+	var path: String = m.path.path_join(m.entry)
+	if not FileAccess.file_exists(path):
+		return "Mod '%s': could not load entry script %s; undoing the mod" % [m.id, m.entry]
+	var problem := ModSandbox.check(FileAccess.get_file_as_string(path))
+	if problem != "":
+		return "Mod '%s': %s %s; mods may only use the mod API (see mod_sandbox.gd)" % [m.id, m.entry, problem]
+	var snapshot := {"blocks": Registry.blocks, "items": Registry.items}
+	var key := _hash_text("v1|%s|%s|%s|%d|%d" % [fingerprint(m.path), var_to_str(snapshot), m.entry,
+			ModSandbox.time_limit_ms, ModSandbox.memory_limit])
+	var cached := RESULTS_DIR.path_join(key + ".bin")
+	var result = null
+	if FileAccess.file_exists(cached):
+		result = bytes_to_var(FileAccess.get_file_as_bytes(cached))  # (never objects)
+	if not result is Dictionary:
+		result = _run_runner(m, path, snapshot)
+		if result.get("problem", "") == "" and result.get("stopped", "") == "":
+			DirAccess.make_dir_recursive_absolute(RESULTS_DIR)
+			var f := FileAccess.open(cached, FileAccess.WRITE)
+			if f:
+				f.store_buffer(var_to_bytes(result))
+	for e in result.get("errors", []):
+		push_error("Mod '%s': %s" % [m.id, e])
+	if result.get("problem", "") != "":
+		return "Mod '%s': %s; undoing the mod" % [m.id, result.problem]
+	if result.get("stopped", "") != "":
+		return ModSandbox.stop_message(m.id, result.stopped)
+	for call in result.get("calls", []):
+		if call is Array and call.size() == 3 and call[0] is String and call[1] is String and call[2] is Dictionary:
+			_api_call(call[0], call[1], call[2])
+	if result.get("gave_up", false):
+		return "Mod '%s': init_mod gave up; undoing the mod" % m.id
+	return ""
+
+
+func _run_runner(m: Dictionary, path: String, snapshot: Dictionary) -> Dictionary:
+	DirAccess.make_dir_recursive_absolute(RUN_DIR)
+	var input := RUN_DIR.path_join("%s_%d.in" % [m.id, OS.get_process_id()])
+	var output := input.get_basename() + ".out"
+	DirAccess.remove_absolute(output)
+	var f := FileAccess.open(input, FileAccess.WRITE)
+	f.store_buffer(var_to_bytes({"id": m.id, "script": path, "snapshot": snapshot, "out": output,
+			"time_limit_ms": ModSandbox.time_limit_ms, "memory_limit": ModSandbox.memory_limit}))
+	f.close()
+	var exe := OS.get_executable_path()
+	var args := PackedStringArray(["--headless", "--path", ProjectSettings.globalize_path("res://"),
+			"-s", "res://src/core/mod_runner.gd", "--", ProjectSettings.globalize_path(input)])
+	if OS.get_name() == "Linux" and FileAccess.file_exists("/usr/bin/prlimit"):
+		args = PackedStringArray(["--as=%d" % RUNNER_ADDRESS_SPACE, "--", exe]) + args
+		exe = "/usr/bin/prlimit"
+	var started := Time.get_ticks_msec()
+	var pid := OS.create_process(exe, args)
+	if pid == -1:
+		return {"problem": "couldn't start a process to run it"}
+	var waited := false
+	while OS.is_process_running(pid):
+		if Time.get_ticks_msec() - started > ModSandbox.time_limit_ms + RUNNER_START_GRACE_MS:
+			OS.kill(pid)
+			waited = true
+			break
+		OS.delay_msec(5)
+	DirAccess.remove_absolute(input)
+	var result = bytes_to_var(FileAccess.get_file_as_bytes(output)) if FileAccess.file_exists(output) else null
+	DirAccess.remove_absolute(output)
+	if waited:
+		return {"stopped": "time"}
+	if not result is Dictionary:
+		return {"problem": "its script crashed while loading (asked for too much memory?)"}
+	return result
+
+
+static func _hash_text(text: String) -> String:
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	ctx.update(text.to_utf8_buffer())
+	return ctx.finish().hex_encode().left(24)
+
+
 ## Reads a mod's entry script, checks it with ModSandbox and compiles it from
 ## that same text (not through load(), which could pick up something other
 ## than the checked source). Returns null, with the reason logged, if refused.
-static func compile_entry(path: String, mod_id: String) -> GDScript:
+func compile_entry(path: String, mod_id: String) -> GDScript:
 	if not FileAccess.file_exists(path):
 		return null
 	var source := FileAccess.get_file_as_string(path)
 	var problem := ModSandbox.check(source)
 	if problem != "":
-		push_error("Mod '%s': %s %s; mods may only use the mod API (see mod_sandbox.gd)" % [mod_id, path.get_file(), problem])
+		_fail(mod_id, "Mod '%s': %s %s; mods may only use the mod API (see mod_sandbox.gd)" % [mod_id, path.get_file(), problem])
 		return null
 	var script := GDScript.new()
-	script.source_code = source
+	script.source_code = ModSandbox.instrument(source)
 	if script.reload() != OK or not script.can_instantiate():
 		return null
 	return script
@@ -377,10 +481,10 @@ static func compile_entry(path: String, mod_id: String) -> GDScript:
 func _api_call(kind: String, id: String, def: Dictionary) -> Variant:
 	match kind:
 		"get_block":
-			return Registry.blocks.get(id, {}).duplicate(true)
+			return Registry.blocks.get(Registry._qualify(id), {}).duplicate(true)
 		"get_item":
-			return Registry.items.get(id, {}).duplicate(true)
-	if not _is_plain(def):
+			return Registry.items.get(Registry._qualify(id), {}).duplicate(true)
+	if not ModSandbox.is_plain(def):
 		push_error("Mod '%s': %s '%s' holds something that isn't plain data; not registered" % [_loading.get("id"), kind, id])
 		return ""
 	match kind:
@@ -392,17 +496,6 @@ func _api_call(kind: String, id: String, def: Dictionary) -> Variant:
 		"biome": return Registry.register_biome(id, def)
 		"sound_set": return Registry.register_sound_set(id, def)
 	return ""
-
-
-static func _is_plain(v) -> bool:
-	match typeof(v):
-		TYPE_OBJECT, TYPE_CALLABLE, TYPE_SIGNAL, TYPE_RID:
-			return false
-		TYPE_ARRAY:
-			return v.all(_is_plain)
-		TYPE_DICTIONARY:
-			return v.keys().all(_is_plain) and v.values().all(_is_plain)
-	return true
 
 
 ## The file `rel` of mod `mod_id` (or of another mod, as "othermod:path"), or
@@ -422,6 +515,56 @@ func asset_path(mod_id: String, rel: String) -> String:
 ## installed mods are only ever read as raw data.
 static func is_builtin(path: String) -> bool:
 	return path.begins_with("res://")
+
+
+## Logs why a mod didn't load and keeps the first reason for the Mods screen.
+func _fail(key: String, message: String) -> void:
+	push_error(message)
+	if not problems.has(key):
+		problems[key] = message
+
+
+## Where a found mod comes from: "built-in", "zip" or "folder".
+static func origin(m: Dictionary) -> String:
+	var path: String = m.get("path", "")
+	if path.begins_with("res://"):
+		return "built-in"
+	if path.begins_with(UNZIP_DIR):
+		return "zip"
+	return "folder"
+
+
+## Total size in bytes of the files under a folder (hidden ones too).
+static func folder_size(root: String) -> int:
+	var total := 0
+	var d := DirAccess.open(root)
+	if d == null:
+		return 0
+	d.include_hidden = true
+	for f in d.get_files():
+		total += FileAccess.get_size(root.path_join(f))
+	for sub in d.get_directories():
+		total += folder_size(root.path_join(sub))
+	return total
+
+
+## Mods downloaded from servers: [{entry folder name, path, size}].
+static func server_cache() -> Array:
+	var out := []
+	if DirAccess.dir_exists_absolute(SERVER_DIR):
+		for sub in DirAccess.get_directories_at(SERVER_DIR):
+			var path := SERVER_DIR.path_join(sub)
+			out.append({"name": sub, "path": path, "size": folder_size(path)})
+	return out
+
+
+## Deletes the downloaded server mods (not while playing with them).
+func clear_server_cache() -> bool:
+	if not server_mods.is_empty():
+		return false
+	_remove_dir(SERVER_DIR)
+	_fingerprints.clear()
+	return true
 
 
 # --- A server's mods ------------------------------------------------------------

@@ -414,8 +414,11 @@ Players drop the `.zip` into `user://mods/` (Linux:
 outside the mod's folder are refused. Godot `.pck` packs are not loaded
 (they could carry any code): zip the mod folder instead.
 
-Players can turn mods off under **Settings → Mods** (saved in `settings.cfg`; takes effect on
-the next start). A mod that depends on one that's turned off is skipped as well.
+**Settings → Mods** lists every mod found: where it comes from (built-in, folder or zip), its
+size, whether it loaded and, if not, why (a bad `mod.json`, refused by the sandbox, too slow,
+a missing dependency). Mods can be turned off there (saved in `settings.cfg`; takes effect on
+the next start); a mod that depends on one that's turned off is skipped as well. It also opens
+the mods folder and shows the mods downloaded from servers, which it can delete.
 
 ### Sandbox
 Mods are **sandboxed**, so a mod can't touch your files, the network or the rest of the game:
@@ -425,8 +428,19 @@ Mods are **sandboxed**, so a mod can't touch your files, the network or the rest
   its own functions and variables, numbers, strings, arrays, dictionaries, vectors and colours,
   the math and string functions and `print`; it must extend `RefCounted` (the default). No
   engine classes (`OS`, `FileAccess`, ...), autoloads, nodes, `load`/`preload`, `self`,
-  `call`/`set`, `.new()`, `await`, annotations or inner classes. Read dictionary keys with
-  `d["key"]` or `d.get("key")`, not `d.key`.
+  `call`/`set`, `.new()`, `await`, annotations, inner classes, lambdas or recursion (and so
+  no `map`/`filter`/`sort_custom`: write a loop). Loop and function bodies go on lines of their
+  own. Read dictionary keys with `d["key"]` or `d.get("key")`, not `d.key`.
+- **Time and memory limits**: the game adds a check at the start of every loop body and
+  function; a mod still loading after 5 s, or using more than 256 MB, is stopped and undone
+  (with the reason in the log and on the Mods screen).
+- **Own process**: installed mods' scripts run in a Godot process of their own
+  (`src/core/mod_runner.gd`; on Linux capped at 2 GB with `prlimit`), which sends back what the
+  mod registered. A mod that asks for gigabytes in one call, or hits any engine error, only
+  takes that process down and is refused; the game goes on. Scripts can't use the clock or
+  random numbers, so the result depends only on the mod's files and the mods before it: it is
+  kept (`user://mods/.results/`) and the next start needs no process. Built-in mods (`core`)
+  run in the game itself.
 - `init_mod(registry)` gets a `GoCubeModApi`, a native object with only `register_block`,
   `register_item`, `register_recipe`, `register_ore`, `register_tree`, `register_biome`,
   `register_sound_set`, `get_block(id)` and `get_item(id)` (copies), and only while the mod
@@ -435,8 +449,6 @@ Mods are **sandboxed**, so a mod can't touch your files, the network or the rest
   only as PNG / WAV data, never through Godot's resource loader (a resource can carry a
   script).
 
-What it can't stop: a mod that loops forever or fills memory hangs the game while it loads;
-remove the mod to recover.
 
 ## License
 GoCube is **source-available**: you may build it yourself and play your own build for free

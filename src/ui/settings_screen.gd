@@ -212,20 +212,27 @@ func _update_labels() -> void:
 		_key_buttons[action].text = name + ("  (also used!)" if clash else "")
 
 
-## Mods: one checkbox per mod found (the base game always loads).
+## Mods: one checkbox per mod found (the base game always loads), where it
+## comes from, its size and whether it loaded (or why not); the mods
+## downloaded from servers, which can be cleared.
 func _add_mods(box: VBoxContainer) -> void:
 	var title := _label("Mods")
 	title.add_theme_font_size_override("font_size", 18)
 	box.add_child(title)
+	var open := Button.new()
+	open.text = "Open the mods folder"
+	open.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	open.pressed.connect(func():
+		DirAccess.make_dir_recursive_absolute(ModLoader.USER_DIR)
+		OS.shell_open(ProjectSettings.globalize_path(ModLoader.USER_DIR)))
+	box.add_child(open)
 	if ModLoader.available.is_empty():
-		var none := _label("No mods installed. Put mod folders or .zip files in user://mods.")
-		none.modulate = Color(1, 1, 1, 0.6)
-		none.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		box.add_child(none)
-		return
+		box.add_child(_dim("No mods installed. Put mod folders or .zip files in the mods folder."))
+	var loaded := ModLoader.mods.map(func(m): return m.id)
 	for m in ModLoader.available:
-		var check := CheckBox.new()
 		var id: String = m.id
+		var row := HBoxContainer.new()
+		var check := CheckBox.new()
 		check.text = "%s %s" % [m.get("name", id), m.get("version", "")]
 		check.tooltip_text = "%s · %s" % [id, m.path]
 		check.button_pressed = not id in Settings.disabled_mods
@@ -233,11 +240,58 @@ func _add_mods(box: VBoxContainer) -> void:
 			Settings.disabled_mods.erase(id)
 			if not on:
 				Settings.disabled_mods.append(id))
-		box.add_child(check)
-	var note := _label("Turning mods on or off takes effect the next time the game starts.")
-	note.modulate = Color(1, 1, 1, 0.6)
-	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	box.add_child(note)
+		row.add_child(check)
+		var status := "loaded" if id in loaded else "turned off" if id in Settings.disabled_mods \
+				else "not used with this server" if not ModLoader.server_mods.is_empty() else "didn't load"
+		var info := _dim("%s · %s · %s" % [ModLoader.origin(m), String.humanize_size(ModLoader.folder_size(m.path)), status])
+		info.autowrap_mode = TextServer.AUTOWRAP_OFF
+		row.add_child(info)
+		box.add_child(row)
+		if ModLoader.problems.has(id):
+			box.add_child(_problem(ModLoader.problems[id]))
+	var known := ModLoader.available.map(func(m): return m.id) + [ModLoader.CORE_ID]
+	for key in ModLoader.problems:
+		if not key in known:  # (a mod.json or zip that couldn't be read)
+			box.add_child(_problem(ModLoader.problems[key]))
+	box.add_child(_dim("Turning mods on or off takes effect the next time the game starts."))
+
+	var cache := ModLoader.server_cache()
+	var sub := _label("Downloaded from servers")
+	box.add_child(sub)
+	var total := 0
+	for c in cache:
+		total += c.size
+	var cache_row := HBoxContainer.new()
+	var cache_info := _dim("%d mod(s), %s" % [cache.size(), String.humanize_size(total)] if not cache.is_empty() else "None")
+	cache_info.tooltip_text = "\n".join(cache.map(func(c): return c.name))
+	cache_info.autowrap_mode = TextServer.AUTOWRAP_OFF
+	cache_row.add_child(cache_info)
+	var clear := Button.new()
+	clear.text = "Delete them"
+	clear.disabled = cache.is_empty() or not ModLoader.server_mods.is_empty()
+	if not ModLoader.server_mods.is_empty():
+		clear.tooltip_text = "In use: you're playing with a server's mods."
+	clear.pressed.connect(func():
+		if ModLoader.clear_server_cache():
+			cache_info.text = "None"
+			clear.disabled = true)
+	cache_row.add_child(clear)
+	box.add_child(cache_row)
+	box.add_child(_dim("A server's mods are downloaded again if you join it later."))
+
+
+static func _dim(text: String) -> Label:
+	var l := _label(text)
+	l.modulate = Color(1, 1, 1, 0.6)
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	return l
+
+
+static func _problem(text: String) -> Label:
+	var l := _label(text)
+	l.add_theme_color_override("font_color", Color(1.0, 0.5, 0.45))
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	return l
 
 
 static func _row(grid: GridContainer, left: Control, right: Control) -> void:

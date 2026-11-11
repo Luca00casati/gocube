@@ -38,7 +38,8 @@ func _ready() -> void:
 		return
 	if not ModLoader.server_mods.is_empty():
 		# Back from a server's game: restart with the player's own mods.
-		ModLoader.restart(ModLoader.plain_user_args() + ["--notice=" + Marshalls.utf8_to_base64(notice)])
+		ModLoader.restart(ModLoader.plain_user_args()
+				+ (["--notice=" + Marshalls.utf8_to_base64(notice)] if notice != "" else []))
 		return
 	for a in args:
 		if a.begins_with("--notice=") and not _notice_used:
