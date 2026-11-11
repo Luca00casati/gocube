@@ -85,6 +85,12 @@ func click(pos: Vector3i, slot: int, held: Dictionary) -> Dictionary:
 
 
 func _process(delta: float) -> void:
+	var t := FrameProfiler.begin()
+	_process_step(delta)
+	FrameProfiler.add(&"furnaces", t)
+
+
+func _process_step(delta: float) -> void:
 	_timer += delta
 	if _timer < TICK:
 		return

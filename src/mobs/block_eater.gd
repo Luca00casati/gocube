@@ -194,6 +194,12 @@ func drops(rng: RandomNumberGenerator) -> Array:
 
 
 func _process(delta: float) -> void:
+	var t := FrameProfiler.begin()
+	_process_step(delta)
+	FrameProfiler.add(&"mobs", t)
+
+
+func _process_step(delta: float) -> void:
 	if world and world.remote:
 		# Client: follow the host smoothly.
 		var t := 1.0 - exp(-12.0 * delta)

@@ -264,6 +264,12 @@ func _unhandled_input(event: InputEvent) -> void:
 # --- Movement --------------------------------------------------------------------------
 
 func _physics_process(delta: float) -> void:
+	var t := FrameProfiler.begin()
+	_physics_process_step(delta)
+	FrameProfiler.add(&"player", t)
+
+
+func _physics_process_step(delta: float) -> void:
 	if autopilot:
 		global_position += -camera.global_basis.z * BENCH_SPEED * delta
 		return
@@ -497,6 +503,12 @@ func _unstuck() -> void:
 # --- Building ----------------------------------------------------------------------------
 
 func _process(delta: float) -> void:
+	var t := FrameProfiler.begin()
+	_process_step(delta)
+	FrameProfiler.add(&"player", t)
+
+
+func _process_step(delta: float) -> void:
 	if autopilot or world == null:
 		return
 	if mining_progress > 0.0:  # the arm keeps swinging while mining

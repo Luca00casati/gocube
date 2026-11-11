@@ -116,6 +116,9 @@ public:
 	bool is_box_free(const godot::Vector3 &position, const godot::Vector3 &size) const;
 	bool is_area_meshed(const godot::AABB &area) const;
 	godot::Dictionary get_stats() const;
+	// The last frame's step on the main thread (for the profiler): its whole
+	// _process, the part spent uploading meshes, and how many it uploaded.
+	godot::Vector3i get_frame_stats() const;
 
 	void _process(double delta) override;
 
@@ -209,6 +212,7 @@ private:
 
 	// Stats.
 	std::atomic<int64_t> _gen_us{ 0 }, _gen_count{ 0 }, _mesh_us{ 0 }, _mesh_count{ 0 }, _light_us{ 0 };
+	int64_t _frame_us = 0, _frame_upload_us = 0, _frame_uploads = 0;
 
 	static int64_t key(const godot::Vector3i &p);
 	godot::Vector3i chunk_of(const godot::Vector3 &p) const;

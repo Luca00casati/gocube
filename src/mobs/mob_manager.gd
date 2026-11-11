@@ -84,10 +84,22 @@ func mobs() -> Array:
 
 
 func _process(_delta: float) -> void:
+	var t := FrameProfiler.begin()
+	_process_step(_delta)
+	FrameProfiler.add(&"mobs", t)
+
+
+func _process_step(_delta: float) -> void:
 	pass  # (each creature lights itself from where it is: World.light_for)
 
 
 func _physics_process(delta: float) -> void:
+	var t := FrameProfiler.begin()
+	_physics_process_step(delta)
+	FrameProfiler.add(&"mobs", t)
+
+
+func _physics_process_step(delta: float) -> void:
 	if world == null or world.remote:
 		return
 	var day: float = day_amount.call() if day_amount.is_valid() else 1.0

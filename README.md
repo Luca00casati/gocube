@@ -105,7 +105,9 @@ RMB place / open a chest or furnace / open or close a door / eat food / till wit
 plant seeds (Shift+RMB places against a chest or door), LMB on a creature attacks it
 (6-block reach), 1-9 / mouse wheel pick a hotbar slot, E inventory and crafting (creative:
 a palette of every block and item), F5 view (first person / from behind / from in front), F3 debug screen (position, chunk, facing, biome, the
-block you look at, chunk timings), Esc pause. Launch option `--mode=creative|survival` for new worlds. All keyboard keys can be
+block you look at, chunk timings), F4 profiler (a graph of frame times and what each frame
+spends its time on: the world engine and mesh uploads, game systems, rendering CPU and GPU,
+with the worst frame of the last second and what took longest in it), Esc pause. Launch option `--mode=creative|survival` for new worlds. All keyboard keys can be
 rebound in **Settings…** (title screen or pause menu), along with view distance, mouse
 sensitivity, frame rate limit, vsync, **master / effects / ambience volume** (each with
 its own audio bus), **smooth lighting** (light blended at block corners

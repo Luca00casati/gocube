@@ -1086,6 +1086,12 @@ func _host_states() -> Dictionary:
 # --- Both sides ----------------------------------------------------------------
 
 func _process(delta: float) -> void:
+	var t := FrameProfiler.begin()
+	_process_step(delta)
+	FrameProfiler.add(&"network", t)
+
+
+func _process_step(delta: float) -> void:
 	if is_client() and not _own_edits.is_empty():
 		var now := _now()
 		for pos in _own_edits.keys():

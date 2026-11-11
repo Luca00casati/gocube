@@ -3,6 +3,7 @@ extends Node3D
 
 const Player := preload("res://src/player/player.gd")
 const WorldMenu := preload("res://src/ui/world_menu.gd")
+const ProfilerOverlay := preload("res://src/ui/profiler_overlay.gd")
 ## Height of the terrain band that must be meshed before the loading screen
 ## hides; horizontally it covers the whole view distance, so nothing pops in
 ## and the first mesh uploads (which hitch) happen behind the loading screen.
@@ -27,6 +28,7 @@ var use_cmdline := false
 var _args := {}
 var _fps_label: Label
 var _debug_label: Label   # F3
+var _profiler: ProfilerOverlay  # F4
 var _crosshair: Control
 var _debug_timer := 0.0
 var _loading: Control
@@ -367,6 +369,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_F3:
 		_debug_label.visible = not _debug_label.visible
 		_fps_label.visible = not _debug_label.visible
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_F4 and _profiler:
+		_profiler.toggle()
 		get_viewport().set_input_as_handled()
 		return
 	if _player and not _loading and not get_tree().paused and _inventory_screen == null \
@@ -812,6 +816,12 @@ func _update_first_night() -> void:
 
 
 func _process(_delta: float) -> void:
+	var t := FrameProfiler.begin()
+	_process_step(_delta)
+	FrameProfiler.add(&"game", t)
+
+
+func _process_step(_delta: float) -> void:
 	_update_sleep(_delta)
 	if _world.engine and _player:
 		_update_first_night()
@@ -917,6 +927,9 @@ func _add_hud() -> void:
 	_debug_label.add_theme_color_override("font_outline_color", Color.BLACK)
 	_debug_label.add_theme_font_size_override("font_size", 14)
 	hud.add_child(_debug_label)
+	_profiler = ProfilerOverlay.new()
+	_profiler.world = _world
+	hud.add_child(_profiler)
 	_fps_label = Label.new()
 	_fps_label.position = Vector2(8, 8)
 	hud.add_child(_fps_label)

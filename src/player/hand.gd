@@ -134,6 +134,12 @@ static func swing_pose(t: float) -> Array:
 
 
 func _process(delta: float) -> void:
+	var t := FrameProfiler.begin()
+	_process_step(delta)
+	FrameProfiler.add(&"player", t)
+
+
+func _process_step(delta: float) -> void:
 	if player == null:
 		return
 	visible = not player.dead and not player.autopilot and not player.sleeping and player.view == player.View.FIRST

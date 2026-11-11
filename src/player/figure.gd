@@ -149,6 +149,12 @@ func flash() -> void:
 
 
 func _process(delta: float) -> void:
+	var t := FrameProfiler.begin()
+	_process_step(delta)
+	FrameProfiler.add(&"figures", t)
+
+
+func _process_step(delta: float) -> void:
 	var k := func(rate: float) -> float: return 1.0 - exp(-rate * delta)
 	var target_amount := clampf(move_speed / RUN_SPEED, 0.0, 1.0) if on_floor else 0.0
 	_amount = lerpf(_amount, target_amount, k.call(10.0))

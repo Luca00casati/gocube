@@ -62,6 +62,12 @@ func growing_count() -> int:
 
 
 func _process(delta: float) -> void:
+	var t := FrameProfiler.begin()
+	_process_step(delta)
+	FrameProfiler.add(&"plants", t)
+
+
+func _process_step(delta: float) -> void:
 	if not _check.is_empty():
 		var cells := _check.keys()
 		_check.clear()

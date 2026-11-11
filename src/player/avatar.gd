@@ -94,6 +94,12 @@ func _dress(look: Dictionary) -> void:
 
 
 func _process(delta: float) -> void:
+	var t := FrameProfiler.begin()
+	_process_step(delta)
+	FrameProfiler.add(&"figures", t)
+
+
+func _process_step(delta: float) -> void:
 	if follow:
 		# Smooth between the 20 Hz network updates; the speed comes from how
 		# far the figure moves.

@@ -84,6 +84,12 @@ func _build_model() -> void:
 
 
 func _process(delta: float) -> void:
+	var t := FrameProfiler.begin()
+	_process_step(delta)
+	FrameProfiler.add(&"mobs", t)
+
+
+func _process_step(delta: float) -> void:
 	if world and world.remote:
 		var t := 1.0 - exp(-12.0 * delta)
 		position = position.lerp(target_position, t)

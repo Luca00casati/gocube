@@ -205,6 +205,12 @@ static func _extruded_mesh(icon: Texture2D) -> ArrayMesh:
 
 
 func _physics_process(delta: float) -> void:
+	var t := FrameProfiler.begin()
+	_physics_process_step(delta)
+	FrameProfiler.add(&"drops", t)
+
+
+func _physics_process_step(delta: float) -> void:
 	_age += delta
 	if remote:
 		_follow_host(delta)

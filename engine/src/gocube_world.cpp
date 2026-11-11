@@ -1062,6 +1062,7 @@ void GoCubeWorld::_process(double delta) {
 	if (!_started) {
 		return;
 	}
+	const int64_t frame_start = now_us();
 	const Vector3i center = chunk_of(_viewer);
 	if (center.x != _last_viewer_chunk.x || center.z != _last_viewer_chunk.z) {
 		_last_viewer_chunk = center;
@@ -1115,12 +1116,22 @@ void GoCubeWorld::_process(double delta) {
 
 	// Upload meshes within the frame budget, nearest-queued first.
 	const int64_t start = now_us();
+	int uploads = 0;
 	while (!_uploads.empty() &&
 			(_uploads.front().urgent || (now_us() - start) < int64_t(_upload_budget_ms * 1000.0f))) {
 		Result r = std::move(_uploads.front());
 		_uploads.pop_front();
 		upload(r);
+		uploads++;
 	}
+	const int64_t end = now_us();
+	_frame_us = end - frame_start;
+	_frame_upload_us = end - start;
+	_frame_uploads = uploads;
+}
+
+Vector3i GoCubeWorld::get_frame_stats() const {
+	return Vector3i(int32_t(_frame_us), int32_t(_frame_upload_us), int32_t(_frame_uploads));
 }
 
 void GoCubeWorld::update_desired(const Vector3i &center) {
@@ -1310,6 +1321,7 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_chunk_override", "chunk_pos", "bytes"), &GoCubeWorld::set_chunk_override);
 	ClassDB::bind_method(D_METHOD("is_area_meshed", "area"), &GoCubeWorld::is_area_meshed);
 	ClassDB::bind_method(D_METHOD("get_stats"), &GoCubeWorld::get_stats);
+	ClassDB::bind_method(D_METHOD("get_frame_stats"), &GoCubeWorld::get_frame_stats);
 
 	ClassDB::bind_method(D_METHOD("set_view_distance", "blocks"), &GoCubeWorld::set_view_distance);
 	ClassDB::bind_method(D_METHOD("get_view_distance"), &GoCubeWorld::get_view_distance);
