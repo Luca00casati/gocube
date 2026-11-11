@@ -2,10 +2,26 @@
 #include "noise.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 
 namespace gocube {
+
+namespace {
+std::atomic<uint64_t> next_epoch{ 1 };
+
+int64_t column_key(int x, int z) {
+	return (int64_t(x) << 32) ^ int64_t(uint32_t(z));
+}
+} // namespace
+
+void Generator::forget_cached() {
+	_epoch = next_epoch++;
+	std::lock_guard<std::mutex> lock(_columns_mutex);
+	_columns.clear();
+	_columns_order.clear();
+}
 
 void Generator::configure(uint32_t seed, const GeneratorIds &ids, const std::vector<OreKind> &ores,
 		const std::vector<TreeKind> &trees) {
@@ -13,10 +29,12 @@ void Generator::configure(uint32_t seed, const GeneratorIds &ids, const std::vec
 	_ids = ids;
 	_ores = ores;
 	_trees = trees;
+	forget_cached();
 }
 
 void Generator::set_biomes(const std::vector<BiomeKind> &biomes) {
 	_biomes = biomes;
+	forget_cached();
 }
 
 // The biome used when none are configured (worlds from before biomes): the
@@ -177,17 +195,17 @@ bool Generator::lake_at(int x, int z, int &level, int &bottom, int *bank) const 
 	const int ccx = cell_floor(x), ccz = cell_floor(z);
 	for (int cz = ccz - 1; cz <= ccz + 1; cz++) {
 		for (int cx = ccx - 1; cx <= ccx + 1; cx++) {
-			int px, pz;
-			float radius;
-			if (!lake_spot(cx, cz, px, pz, radius)) {
+			const LakeCell cell = lake_cell(cx, cz);
+			if (!cell.spot) {
 				continue;
 			}
-			const float dx = float(x - px), dz = float(z - pz);
+			const float radius = cell.radius;
+			const float dx = float(x - cell.px), dz = float(z - cell.pz);
 			const float dist = std::sqrt(dx * dx + dz * dz);
 			if (dist > lake_reach(radius)) {
 				continue; // cheap test first
 			}
-			const int lv = lake_level(cx, cz, px, pz, radius);
+			const int lv = cell.level;
 			if (lv == INT32_MIN) {
 				continue;
 			}
@@ -207,18 +225,101 @@ bool Generator::lake_at(int x, int z, int &level, int &bottom, int *bank) const 
 	return false;
 }
 
+Generator::LakeCell Generator::compute_lake_cell(int cx, int cz) const {
+	LakeCell c;
+	c.spot = lake_spot(cx, cz, c.px, c.pz, c.radius);
+	if (c.spot) {
+		c.level = lake_level(cx, cz, c.px, c.pz, c.radius);
+	}
+	return c;
+}
+
+Generator::LakeCell Generator::lake_cell(int cx, int cz) const {
+	struct Cache {
+		const Generator *owner = nullptr;
+		uint64_t epoch = 0;
+		std::unordered_map<int64_t, LakeCell> cells;
+	};
+	static thread_local Cache cache;
+	if (cache.owner != this || cache.epoch != _epoch || cache.cells.size() > 4096) {
+		cache.owner = this;
+		cache.epoch = _epoch;
+		cache.cells.clear();
+	}
+	const int64_t k = column_key(cx, cz);
+	auto it = cache.cells.find(k);
+	if (it != cache.cells.end()) {
+		return it->second;
+	}
+	const LakeCell c = compute_lake_cell(cx, cz);
+	cache.cells.emplace(k, c);
+	return c;
+}
+
+std::shared_ptr<const Generator::Columns> Generator::columns(int ox, int oz) const {
+	const int64_t k = column_key(ox, oz);
+	{
+		std::lock_guard<std::mutex> lock(_columns_mutex);
+		auto it = _columns.find(k);
+		if (it != _columns.end()) {
+			return it->second;
+		}
+	}
+	auto c = std::make_shared<Columns>();
+	c->min_h = 1 << 30;
+	c->max_h = -(1 << 30);
+	for (int z = 0; z < CHUNK; z++) {
+		for (int x = 0; x < CHUNK; x++) {
+			const int i = z * CHUNK + x;
+			int biome_index;
+			int h = column(ox + x, oz + z, biome_index);
+			int level, bottom, bank;
+			c->lake_level[i] = INT32_MIN;
+			c->lake_bank[i] = false;
+			if (lake_at(ox + x, oz + z, level, bottom, &bank)) {
+				c->lake_level[i] = level;
+				h = bottom;
+			} else {
+				h = std::max(h, bank); // a lake's bank
+				c->lake_bank[i] = bank != INT32_MIN;
+			}
+			c->heights[i] = h;
+			c->biomes[i] = biome_index;
+			c->min_h = std::min(c->min_h, h);
+			c->max_h = std::max(c->max_h, std::max(h, c->lake_level[i]));
+		}
+	}
+	std::lock_guard<std::mutex> lock(_columns_mutex);
+	if (_columns.emplace(k, c).second) {
+		_columns_order.push_back(k);
+		if (_columns_order.size() > COLUMN_CACHE) {
+			_columns.erase(_columns_order.front());
+			_columns_order.pop_front();
+		}
+	}
+	return c;
+}
+
 bool Generator::is_cave(int x, int y, int z) const {
+	Noise3Cell cells[3];
+	return is_cave(x, y, z, cells);
+}
+
+// Called for every block underground, nearby ones one after another (see
+// generate): each noise keeps its lattice cell's hashes.
+bool Generator::is_cave(int x, int y, int z, Noise3Cell *cells) const {
+	Noise3Cell &cell_a = cells[0], &cell_b = cells[1], &cell_c = cells[2];
 	const float s = 1.0f / CAVE_PERIOD;
 	const float ys = y * CAVE_Y_SQUASH * s;
-	const float a = noise3(x * s, ys, z * s, _seed + 101u);
-	const float b = noise3(x * s, ys, z * s, _seed + 202u);
-	if (std::fabs(a) + std::fabs(b) < CAVE_WIDTH) {
+	const float a = noise3(x * s, ys, z * s, _seed + 101u, cell_a);
+	// (|a| alone too wide already: no tunnel, whatever b is)
+	if (std::fabs(a) < CAVE_WIDTH && std::fabs(a) + std::fabs(noise3(x * s, ys, z * s, _seed + 202u, cell_b)) < CAVE_WIDTH) {
 		return true;
 	}
 	// Big caverns deep down (new worlds).
 	if (!_biomes.empty() && y < CAVERN_MAX_Y) {
 		const float c = 1.0f / CAVERN_PERIOD;
-		const float n = noise3(x * c, y * 1.5f * c, z * c, _seed + 404u);
+		const float n = noise3(x * c, y * 1.5f * c, z * c, _seed + 404u, cell_c);
 		const float fade = std::clamp((CAVERN_MAX_Y - y) / 14.0f, 0.0f, 1.0f);
 		return n * fade > 0.36f;
 	}
@@ -280,33 +381,13 @@ void Generator::generate(ChunkData &chunk, int ox, int oy, int oz) const {
 	chunk = ChunkData();
 	const bool v2 = !_biomes.empty();
 
-	// Column heights, lakes and biomes for this chunk.
-	int heights[CHUNK_AREA];
-	int lake_level[CHUNK_AREA]; // INT_MIN: no lake
-	bool lake_bank[CHUNK_AREA]; // right next to a lake: no cave may open it
-	int biomes[CHUNK_AREA];
-	int min_h = 1 << 30, max_h = -(1 << 30);
-	for (int z = 0; z < CHUNK; z++) {
-		for (int x = 0; x < CHUNK; x++) {
-			const int i = z * CHUNK + x;
-			int biome_index;
-			int h = column(ox + x, oz + z, biome_index);
-			int level, bottom, bank;
-			lake_level[i] = INT32_MIN;
-			lake_bank[i] = false;
-			if (lake_at(ox + x, oz + z, level, bottom, &bank)) {
-				lake_level[i] = level;
-				h = bottom;
-			} else {
-				h = std::max(h, bank); // a lake's bank
-				lake_bank[i] = bank != INT32_MIN;
-			}
-			heights[i] = h;
-			biomes[i] = biome_index;
-			min_h = std::min(min_h, h);
-			max_h = std::max(max_h, std::max(h, lake_level[i]));
-		}
-	}
+	// Column heights, lakes and biomes for this chunk (shared with the chunks above and below).
+	const std::shared_ptr<const Columns> cols = columns(ox, oz);
+	const int *heights = cols->heights;
+	const int *lake_level = cols->lake_level;
+	const bool *lake_bank = cols->lake_bank;
+	const int *biomes = cols->biomes;
+	const int min_h = cols->min_h, max_h = cols->max_h;
 
 	const int top_y = oy + CHUNK - 1;
 	const int tree_room = v2 ? 18 : 12;
@@ -323,6 +404,7 @@ void Generator::generate(ChunkData &chunk, int ox, int oy, int oz) const {
 		return;
 	}
 
+	Noise3Cell cave_cells[3];
 	for (int z = 0; z < CHUNK; z++) {
 		for (int x = 0; x < CHUNK; x++) {
 			const int i = z * CHUNK + x;
@@ -361,7 +443,7 @@ void Generator::generate(ChunkData &chunk, int ox, int oy, int oz) const {
 					b = _ids.stone;
 				}
 				// Caves: on land columns, or deep under the sea floor, not too deep.
-				if (d <= 0 && wy > cave_min && (caves_allowed_column || wy < h - 5) && is_cave(wx, wy, wz)) {
+				if (d <= 0 && wy > cave_min && (caves_allowed_column || wy < h - 5) && is_cave(wx, wy, wz, cave_cells)) {
 					b = v2 && wy <= LAVA_LEVEL && _ids.lava ? _ids.lava : AIR;
 				}
 				if (b != AIR) {

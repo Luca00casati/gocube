@@ -1049,6 +1049,7 @@ func _set_loading_text(text: String) -> void:
 
 ## Flies forward for 20 s, logging FPS each second and frame-time stats at the end.
 func _run_bench() -> void:
+	_profiler.toggle()  # its per-system averages are printed at the end
 	var start := Time.get_ticks_msec()
 	var worst := 0.0
 	var hitches := 0
@@ -1066,6 +1067,10 @@ func _run_bench() -> void:
 			_bench_samples.append(Engine.get_frames_per_second())
 	var avg := frames / ((Time.get_ticks_msec() - start) / 1000.0)
 	print("BENCH avg_fps=%.1f worst_frame_ms=%.0f hitches_over_33ms=%d fps_samples=%s" % [avg, worst, hitches, Array(_bench_samples).map(func(f): return int(f))])
+	print("BENCH ms_per_frame ", _profiler.averages_text())
+	var st: Dictionary = _world.engine.get_stats()
+	print("BENCH per_chunk_ms generate=%.2f light=%.2f mesh=%.2f workers=%d" % [st.get("generate_ms_avg", 0.0),
+			st.get("light_ms_avg", 0.0), st.get("mesh_ms_avg", 0.0), int(st.get("workers", 0))])
 	get_tree().quit()
 
 

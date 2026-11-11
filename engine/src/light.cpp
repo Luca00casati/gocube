@@ -1,5 +1,7 @@
 #include "light.h"
 
+#include <algorithm>
+
 namespace gocube {
 
 namespace {
@@ -34,6 +36,44 @@ void flood(std::vector<uint8_t> &light, std::vector<int32_t> &queue, const std::
 	}
 }
 
+// Whether the region around chunk_y is all open sky (see compute_light).
+bool open_sky(const ChunkData *const chunks[27], const ColumnTops *const tops[9], int chunk_y,
+		const std::vector<BlockInfo> &blocks) {
+	const BlockId count = static_cast<BlockId>(blocks.size());
+	for (int dy = -1; dy <= 1; dy++) {
+		for (int dz = -1; dz <= 1; dz++) {
+			for (int dx = -1; dx <= 1; dx++) {
+				const ChunkData *c = chunks[neighbourhood_index(dx, dy, dz)];
+				if (!c) {
+					if (dy < 0) {
+						return false; // below the world: solid
+					}
+					continue; // above it: air
+				}
+				if (!c->uniform || c->uniform_value >= count) {
+					return false;
+				}
+				const BlockInfo &b = blocks[c->uniform_value];
+				if (b.opaque || b.emit > 0) {
+					return false;
+				}
+			}
+		}
+	}
+	const int bottom = chunk_y * CHUNK - LightRegion::MARGIN; // world y of the region's lowest cells
+	for (int i = 0; i < 9; i++) {
+		if (!tops[i]) {
+			continue;
+		}
+		for (int16_t top : *tops[i]) {
+			if (top >= bottom) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
 } // namespace
 
 void compute_light(LightRegion &out, const ChunkData *const chunks[27], const ColumnTops *const tops[9],
@@ -41,6 +81,15 @@ void compute_light(LightRegion &out, const ChunkData *const chunks[27], const Co
 	constexpr int S = LightRegion::SIZE;
 	constexpr int M = LightRegion::MARGIN;
 	constexpr int N = S * S * S;
+	// Open sky (the common case above the land): nothing opaque or glowing in
+	// the whole neighbourhood and every column's top below the region, so
+	// sky light is full everywhere and there is no block light to spread.
+	if (open_sky(chunks, tops, chunk_y, blocks)) {
+		out.sky.assign(N, LIGHT_MAX);
+		out.block.assign(N, 0);
+		out.opaque.assign(N, 0);
+		return;
+	}
 	out.sky.assign(N, 0);
 	out.block.assign(N, 0);
 	out.opaque.assign(N, 0);
@@ -54,26 +103,59 @@ void compute_light(LightRegion &out, const ChunkData *const chunks[27], const Co
 		local[r] = l - chunk_offset[r] * CHUNK;
 	}
 
+	// Opaque cells and glowing blocks, one neighbour chunk's part of the region
+	// at a time (a uniform one in whole rows). Region range per chunk offset:
+	// -1: [0, M), 0: [M, M + CHUNK), 1: [M + CHUNK, S).
 	std::vector<int32_t> block_queue;
 	const BlockId count = static_cast<BlockId>(blocks.size());
-	for (int y = 0; y < S; y++) {
-		for (int z = 0; z < S; z++) {
-			for (int x = 0; x < S; x++) {
-				const int i = LightRegion::index(x, y, z);
-				const ChunkData *c = chunks[neighbourhood_index(chunk_offset[x], chunk_offset[y], chunk_offset[z])];
-				if (!c) {
-					opaque[i] = chunk_offset[y] < 0; // below the world: solid; above: air
+	auto lo = [](int o) { return o < 0 ? 0 : (o == 0 ? M : M + CHUNK); };
+	auto hi = [](int o) { return o < 0 ? M : (o == 0 ? M + CHUNK : S); };
+	for (int oy = -1; oy <= 1; oy++) {
+		for (int oz = -1; oz <= 1; oz++) {
+			for (int ox = -1; ox <= 1; ox++) {
+				const ChunkData *c = chunks[neighbourhood_index(ox, oy, oz)];
+				const int x0 = lo(ox), x1 = hi(ox);
+				if (!c || c->uniform) {
+					// Below the world: solid; above it: air.
+					const BlockId id = c ? c->uniform_value : AIR;
+					const bool solid = c ? (id < count && blocks[id].opaque) : oy < 0;
+					const uint8_t emit = c && id < count ? blocks[id].emit : 0;
+					if (!solid && emit == 0) {
+						continue; // (already clear)
+					}
+					for (int y = lo(oy); y < hi(oy); y++) {
+						for (int z = lo(oz); z < hi(oz); z++) {
+							const int row = LightRegion::index(x0, y, z);
+							if (solid) {
+								std::fill(opaque.begin() + row, opaque.begin() + row + (x1 - x0), uint8_t(1));
+							}
+							if (emit > 0) {
+								for (int i = row; i < row + (x1 - x0); i++) {
+									out.block[i] = emit;
+									block_queue.push_back(i);
+								}
+							}
+						}
+					}
 					continue;
 				}
-				const BlockId id = c->get(local[x], local[y], local[z]);
-				if (id >= count) {
-					continue;
-				}
-				const BlockInfo &b = blocks[id];
-				opaque[i] = b.opaque;
-				if (b.emit > 0) {
-					out.block[i] = b.emit;
-					block_queue.push_back(i);
+				for (int y = lo(oy); y < hi(oy); y++) {
+					for (int z = lo(oz); z < hi(oz); z++) {
+						const BlockId *src = &c->blocks[ChunkData::index(local[x0], local[y], local[z])];
+						int i = LightRegion::index(x0, y, z);
+						for (int x = x0; x < x1; x++, i++, src++) {
+							const BlockId id = *src;
+							if (id >= count) {
+								continue;
+							}
+							const BlockInfo &b = blocks[id];
+							opaque[i] = b.opaque;
+							if (b.emit > 0) {
+								out.block[i] = b.emit;
+								block_queue.push_back(i);
+							}
+						}
+					}
 				}
 			}
 		}

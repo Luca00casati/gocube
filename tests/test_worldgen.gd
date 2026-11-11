@@ -131,3 +131,36 @@ func test_no_tall_grass_in_new_worlds() -> void:
 				if id in ["core:bluebell", "core:sunpetal"]:
 					flowers += 1
 	check(flowers > 0, "flowers still grow (%d)" % flowers)
+
+
+## Every block and light value of a few chunks, as a short fingerprint.
+func _fingerprint(w: World) -> String:
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	for cx in range(-1, 2):
+		for cz in range(-1, 2):
+			for cy in range(-3, 4):
+				ctx.update(w.engine.get_chunk_bytes(Vector3i(cx, cy, cz)))
+	var light := PackedVector2Array()
+	for x in range(-16, 16, 2):
+		for z in range(-16, 16, 2):
+			for y in range(-20, 60, 2):
+				light.append(w.engine.light_at(Vector3(x + 0.5, y + 0.5, z + 0.5)))
+	ctx.update(light.to_byte_array())
+	return ctx.finish().hex_encode().left(16)
+
+
+## Worlds generate exactly as they always have: unedited chunks are generated
+## again each time a world is opened, so any change in what comes out (an
+## optimization, say) would shift caves, ore and light in worlds already
+## played. If the generator really must change, that's a new GENERATOR_VERSION
+## (old worlds keep theirs) and new fingerprints here.
+func test_generation_never_changes() -> void:
+	var w := await make_world(777)
+	check_eq(_fingerprint(w), NEW_WORLD_FINGERPRINT, "a new world (seed 777) is generated as before")
+	var legacy := await _legacy_world()
+	check_eq(_fingerprint(legacy), LEGACY_WORLD_FINGERPRINT, "a world from before biomes (seed 4242) too")
+
+
+const NEW_WORLD_FINGERPRINT := "6965053e54ddd54a"
+const LEGACY_WORLD_FINGERPRINT := "f62d6b1fb6791b17"

@@ -36,6 +36,9 @@ var _worst := {}
 var _footer: PackedStringArray = []
 var _workers_timer := 0.0
 var _workers := ""
+## Every frame's times summed since it was shown, and how many (for --bench).
+var totals := {}
+var total_frames := 0
 
 
 func _ready() -> void:
@@ -54,6 +57,8 @@ func toggle() -> void:
 	FrameProfiler.on = visible
 	FrameProfiler.take()
 	_history.clear()
+	totals = {}
+	total_frames = 0
 	RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), visible)
 
 
@@ -78,6 +83,9 @@ func _process(delta: float) -> void:
 	row.render_gpu = RenderingServer.viewport_get_measured_render_time_gpu(rid)
 	row.rest = maxf(0.0, row.frame - scripts - row.world - row.render_cpu)
 	_history.append(row)
+	total_frames += 1
+	for k in row:
+		totals[k] = float(totals.get(k, 0.0)) + float(row[k])
 	if _history.size() > HISTORY:
 		_history.pop_front()
 	_text_timer -= delta
@@ -120,6 +128,14 @@ func _summarize() -> void:
 			Performance.get_monitor(Performance.OBJECT_NODE_COUNT)])
 	_footer.append("%d chunk meshes uploaded in the last second · video memory %.0f MB" % [
 			uploads, Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0])
+
+
+## Average ms per frame of each row since shown, as "key=ms" (for --bench).
+func averages_text() -> String:
+	var parts := PackedStringArray()
+	for k in ["frame"] + ROWS.map(func(r): return r[0]):
+		parts.append("%s=%.2f" % [k, float(totals.get(k, 0.0)) / maxi(total_frames, 1)])
+	return " ".join(parts)
 
 
 ## The system that took longest in a frame (not rendering), as "name 12.3 ms".

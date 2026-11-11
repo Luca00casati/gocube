@@ -95,7 +95,8 @@ Launch options (after `--`): `--world=NAME` skip the menu and load or create tha
 `--seed=N` seed for a new world (random otherwise), `--time=0..1` time of day (0 midnight,
 0.25 sunrise, 0.5 noon, 0.75 sunset), `--day-length=SECONDS` (default 86400: real time), `--view=N` view distance (default 128), `--no-shadows`
 (no sun shadows, whatever Settings says), `--bench`
-(fly forward 20 s and print FPS stats), `--profile-startup` (time each startup step and list slow frames),
+(fly forward 20 s and print FPS stats, the F4 profiler's average time per system, and the
+workers' time per chunk), `--profile-startup` (time each startup step and list slow frames),
 `--threads=N` chunk worker threads (default: cores − 1, at most 8; also `worker_threads` in
 settings.cfg: fewer leaves CPU for other programs but loads chunks slower). Try `--rendering-method gl_compatibility` on old GPUs.
 

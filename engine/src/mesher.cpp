@@ -410,6 +410,15 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 					const BlockId nid = sample(chunk, neighbours, blocks, x + d.dx, y + d.dy, z + d.dz, solid_fallback);
 					const BlockInfo *n = nid < count ? &blocks[nid] : nullptr;
 					const bool n_opaque = n && n->opaque;
+					// Hidden faces first (most are): no light to work out for them.
+					// Fluids: one connected surface, with faces only towards what
+					// isn't fluid (and can be seen through). Opaque faces are hidden
+					// by opaque neighbours; see-through blocks (e.g. glass) also hide
+					// faces against the same block.
+					if (info.fluid ? (nid != AIR && (!n || n->fluid || n->opaque))
+								   : (n_opaque || (!info.opaque && nid == id))) {
+						continue;
+					}
 					CornerLight cl;
 					const int fx = x + d.dx, fy = y + d.dy, fz = z + d.dz; // the cell in front of the face
 					for (int c = 0; c < 4; c++) {
@@ -427,23 +436,14 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 						}
 					}
 					if (info.fluid) {
-						// One connected surface: faces only towards what isn't fluid
-						// (and can be seen through), with each top corner at the
-						// height shared by the fluid cells around it (see fluid_tops).
-						if (nid != AIR && (!n || n->fluid || n->opaque)) {
-							continue;
-						}
+						// Each top corner at the height shared by the fluid cells
+						// around it (see fluid_tops).
 						if (!tops_done) {
 							fluid_tops(chunk, neighbours, hood, blocks, x, y, z, solid_fallback, tops);
 							tops_done = true;
 						}
 						emit_face(fluid, d, x, y, z, atlas, info.tiles[f], cl, 1.0f, 0, tops);
 					} else {
-						// Opaque faces are hidden by opaque neighbours; see-through
-						// blocks (e.g. glass) also hide faces against the same block.
-						if (n_opaque || (!info.opaque && nid == id)) {
-							continue;
-						}
 						if (info.emit > 0) {
 							for (int c = 0; c < 4; c++) { // glowing blocks are lit by themselves
 								cl.block[c] = info.emit / float(LIGHT_MAX);

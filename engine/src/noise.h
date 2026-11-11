@@ -93,6 +93,53 @@ inline float noise3(float x, float y, float z, uint32_t seed) {
 	return mixf(mixf(x00, x10, v), mixf(x01, x11, v), w) * 0.95f;
 }
 
+// noise3 for many nearby points (cave noise: lattice cells span dozens of
+// blocks): keeps the last cell's corner hashes. Same result as noise3.
+struct Noise3Cell {
+	int32_t ix = 0, iy = 0, iz = 0;
+	uint32_t seed = 0;
+	bool valid = false;
+	uint32_t h[8];
+	int8_t g[8] = { -1 }; // gradient per corner (h % 12), -1: not yet
+};
+
+inline float noise3(float x, float y, float z, uint32_t seed, Noise3Cell &cell) {
+	const float fx = std::floor(x), fy = std::floor(y), fz = std::floor(z);
+	const int32_t ix = static_cast<int32_t>(fx), iy = static_cast<int32_t>(fy), iz = static_cast<int32_t>(fz);
+	if (!cell.valid || cell.ix != ix || cell.iy != iy || cell.iz != iz || cell.seed != seed) {
+		for (int i = 0; i < 8; i++) {
+			cell.h[i] = hash_point(ix + (i & 1), iy + ((i >> 1) & 1), iz + ((i >> 2) & 1), seed);
+		}
+		cell.ix = ix;
+		cell.iy = iy;
+		cell.iz = iz;
+		cell.seed = seed;
+		cell.valid = true;
+		cell.g[0] = -1;
+	}
+	const float dx = x - fx, dy = y - fy, dz = z - fz;
+	// grad3 without its branches: the same sums (only a zero's sign may differ).
+	static constexpr float G[12][3] = {
+		{ 1, 1, 0 }, { -1, 1, 0 }, { 1, -1, 0 }, { -1, -1, 0 },
+		{ 1, 0, 1 }, { -1, 0, 1 }, { 1, 0, -1 }, { -1, 0, -1 },
+		{ 0, 1, 1 }, { 0, -1, 1 }, { 0, 1, -1 }, { 0, -1, -1 },
+	};
+	if (cell.g[0] < 0) {
+		for (int i = 0; i < 8; i++) {
+			cell.g[i] = int8_t(cell.h[i] % 12u);
+		}
+	}
+	float c[8];
+	for (int i = 0; i < 8; i++) {
+		const float *g = G[cell.g[i]];
+		c[i] = g[0] * (dx - (i & 1)) + g[1] * (dy - ((i >> 1) & 1)) + g[2] * (dz - ((i >> 2) & 1));
+	}
+	const float u = smooth5(dx), v = smooth5(dy), w = smooth5(dz);
+	const float x00 = mixf(c[0], c[1], u), x10 = mixf(c[2], c[3], u);
+	const float x01 = mixf(c[4], c[5], u), x11 = mixf(c[6], c[7], u);
+	return mixf(mixf(x00, x10, v), mixf(x01, x11, v), w) * 0.95f;
+}
+
 // Fractal sum normalised to roughly [-1, 1].
 inline float fbm2(float x, float y, uint32_t seed, int octaves) {
 	float sum = 0.0f, amp = 1.0f, norm = 0.0f;

@@ -4,9 +4,16 @@
 
 #include "chunk.h"
 
+#include <cstdint>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace gocube {
+
+struct Noise3Cell; // noise.h
 
 // Terrain blocks the base shape is made of.
 struct GeneratorIds {
@@ -111,8 +118,34 @@ private:
 	bool lake_spot(int cx, int cz, int &px, int &pz, float &radius) const;
 	int lake_level(int cx, int cz, int px, int pz, float radius) const;
 
+	// One lake cell, worked out once (per worker thread): whether a lake was
+	// rolled there, where, how big, and its level (INT32_MIN: none after all).
+	struct LakeCell {
+		bool spot = false;
+		int px = 0, pz = 0;
+		float radius = 0.0f;
+		int level = INT32_MIN;
+	};
+	LakeCell lake_cell(int cx, int cz) const;
+	LakeCell compute_lake_cell(int cx, int cz) const;
+
+	// Heights, lakes and biomes of a chunk's 32 x 32 columns, shared by the
+	// chunks stacked above each other there (kept for the latest COLUMN_CACHE).
+	struct Columns {
+		int heights[CHUNK_AREA];
+		int lake_level[CHUNK_AREA]; // INT32_MIN: no lake
+		bool lake_bank[CHUNK_AREA]; // right next to a lake: no cave may open it
+		int biomes[CHUNK_AREA];
+		int min_h, max_h;
+	};
+	static constexpr size_t COLUMN_CACHE = 256;
+	std::shared_ptr<const Columns> columns(int ox, int oz) const;
+	void forget_cached();
+
 public:
 	bool is_cave(int x, int y, int z) const;
+	// The same, keeping each noise's lattice cell in `cells` (3) between calls.
+	bool is_cave(int x, int y, int z, Noise3Cell *cells) const;
 	// Trees whose leaves may reach columns [x0, x1) x [z0, z1).
 	void trees_near(int x0, int z0, int x1, int z1, std::vector<Tree> &out) const;
 
@@ -131,6 +164,10 @@ private:
 	std::vector<OreKind> _ores;
 	std::vector<TreeKind> _trees;
 	std::vector<BiomeKind> _biomes;
+	uint64_t _epoch = 0; // changes with every configure (cached results from before don't count)
+	mutable std::mutex _columns_mutex;
+	mutable std::unordered_map<int64_t, std::shared_ptr<const Columns>> _columns;
+	mutable std::deque<int64_t> _columns_order;
 
 	void climate(int x, int z, float &temperature, float &humidity) const;
 	const BiomeKind &biome(int index) const;
