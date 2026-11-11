@@ -37,6 +37,7 @@ struct BlockInfo {
 	bool solid = false;   // collides
 	bool opaque = false;  // hides neighbour faces, blocks skylight
 	bool fluid = false;   // drawn on the transparent fluid surface
+	bool cutout = false;  // textures with see-through pixels: drawn on the cutout surface
 	uint8_t emit = 0;     // block light it gives off (0..15)
 	uint8_t fluid_level = 8; // fluids: 8 = source (full), 1..7 = flowing (lower surface)
 	bool random_rotation = false; // top/bottom texture turned 0/90/180/270 degrees by position

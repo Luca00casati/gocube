@@ -42,7 +42,8 @@ public:
 	// Setup, before start(). blocks[i] = {solid, opaque, fluid, tiles: PackedInt32Array(6)}.
 	void configure_blocks(const godot::TypedArray<godot::Dictionary> &blocks);
 	void set_atlas_layout(int cols, int rows, int cell, const godot::Vector2i &face_offset);
-	void set_materials(const godot::Ref<godot::Material> &terrain, const godot::Ref<godot::Material> &fluid);
+	void set_materials(const godot::Ref<godot::Material> &terrain, const godot::Ref<godot::Material> &fluid,
+			const godot::Ref<godot::Material> &cutout = godot::Ref<godot::Material>());
 	// ids: terrain blocks {stone, dirt, grass, sand, water}.
 	// ores: [{block, replaces, min_y, max_y, veins_per_chunk, min_size, max_size, salt}]
 	// trees: [{log, leaves, min_trunk, max_trunk, chance}]
@@ -71,6 +72,15 @@ public:
 	int effective_worker_threads() const;
 	void set_smooth_lighting(bool enabled);
 	bool get_smooth_lighting() const;
+	// Block shadows (see MeshOptions::sun_shadows) and where the sun is:
+	// radians above the eastern horizon (0 sunrise, PI/2 noon, PI sunset).
+	// Shadows follow it in steps of SUN_STEP_DEGREES; each step remeshes the
+	// loaded chunks. Below the horizon the last step stays.
+	static constexpr int SUN_STEP_DEGREES = 2;
+	void set_block_shadows(bool enabled);
+	bool get_block_shadows() const;
+	void set_sun_angle(float radians);
+	float get_sun_angle() const;
 	void set_upload_budget_ms(float ms);
 	float get_upload_budget_ms() const;
 
@@ -101,10 +111,17 @@ public:
 	// Sky and block light (0..1 each) in the block at a world position, as
 	// last lit for drawing; (1, 0) where nothing is known yet.
 	godot::Vector2 light_at(const godot::Vector3 &position) const;
+	// Light from torches held in hand, spread block by block like placed
+	// light (one level less per block, stopped by opaque blocks) through the
+	// size^3 blocks from `origin`. lights: (x, y, z, level). Returns a light
+	// level 0..15 per block, index (y * size + z) * size + x.
+	godot::PackedByteArray held_light(const godot::Vector3i &origin, int size, const godot::PackedVector4Array &lights) const;
 	void set_shadow_chunks(int chunks);
 	int get_shadow_chunks() const;
 	// The fluid surface's vertices in the chunk at chunk_pos, in world
 	// coordinates (for tests).
+	// Centres of the faces in a block's shadow (block shadows), world positions.
+	godot::PackedVector3Array shaded_faces(const godot::Vector3i &chunk_pos) const;
 	godot::PackedVector3Array fluid_vertices(const godot::Vector3i &chunk_pos) const;
 	// Moves a box (feet at `position`, size = width x height x depth) by `motion`
 	// against solid blocks, one axis at a time. With step_height > 0 it climbs
@@ -161,7 +178,7 @@ private:
 		godot::Vector3i pos;
 		std::shared_ptr<const ChunkData> data;
 		std::array<int8_t, CHUNK_AREA> local_tops{};
-		Surface opaque, fluid;
+		Surface opaque, cutout, fluid;
 		std::shared_ptr<const std::vector<uint8_t>> light; // mesh jobs: see Chunk::light
 		uint32_t version = 0;
 		uint32_t serial = 0;
@@ -172,11 +189,14 @@ private:
 	std::vector<BlockInfo> _blocks;
 	AtlasLayout _atlas;
 	std::atomic<bool> _smooth_lighting{ false };
+	std::atomic<bool> _block_shadows{ false };
+	std::atomic<int> _sun_step{ 45 }; // SUN_STEP_DEGREES steps above the eastern horizon
+	void remesh_all();
 	int _worker_threads = 0; // 0 = automatic
 	static constexpr int MAX_WORKERS = 64;
 	static constexpr int AUTO_WORKERS = 8;
 	Generator _generator;
-	godot::Ref<godot::Material> _terrain_material, _fluid_material;
+	godot::Ref<godot::Material> _terrain_material, _fluid_material, _cutout_material;
 	int _view_distance = 128;
 	// Only chunks within this many chunks (sideways) of the viewer cast sun
 	// shadows (-1: all): drawing every chunk into the shadow map is costly.

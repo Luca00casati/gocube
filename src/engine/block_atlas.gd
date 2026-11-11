@@ -40,7 +40,10 @@ func _init() -> void:
 			for face in ["side", "side", "top", "bottom", "side", "side"]:
 				tiles.append(_face_tile(def, face, int(def.get("texture_turns", 0)) if face == "top" else 0))
 			_icon_tiles[id] = tiles[0]  # the side face shows best as a flat icon
-		var entry := {"solid": solid, "opaque": opaque, "fluid": fluid, "tiles": tiles,
+		var cutout := false  # has see-through pixels: drawn with chunk_cutout.gdshader
+		for t in tiles:
+			cutout = cutout or (t < _tiles.size() and _tiles[t].detect_alpha() != Image.ALPHA_NONE)
+		var entry := {"solid": solid, "opaque": opaque, "fluid": fluid, "tiles": tiles, "cutout": cutout,
 				"light": int(def.get("light", 0)), "fluid_level": int(def.get("level", 8)),
 				"random_rotation": bool(def.get("random_rotation", false)),
 				"tint": bool(def.get("tint", false))}

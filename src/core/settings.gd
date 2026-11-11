@@ -10,6 +10,9 @@ signal changed
 const PATH := "user://settings.cfg"
 const VIEW_DISTANCES := [64, 96, 128, 160, 192, 256]
 const FPS_LIMITS := [30, 60, 120, 144, 0]  # 0 = unlimited
+## The 3D world is drawn at this fraction of the window's size and stretched
+## to fit (the menus and HUD stay sharp): less uses much less GPU.
+const RENDER_SCALES := [1.0, 0.85, 0.75, 0.5]
 
 ## Rebindable actions: name -> [label, default key].
 const ACTIONS := {
@@ -31,7 +34,13 @@ var mouse_sensitivity := 0.003
 var max_fps := 0
 var vsync := true
 var smooth_lighting := true  # corner shading (ambient occlusion) and soft light
-var shadows := true          # the sun casts shadows (costs some frame time)
+## Sun shadows: "smooth" (Godot's shadow map, near the player: costs GPU
+## time), "blocks" (whole block faces in sun or shadow, worked out by the
+## engine as the sun moves: nearly free for the GPU, out to the view
+## distance) or "off".
+const SHADOW_MODES := ["blocks", "smooth", "off"]
+var shadow_mode := "blocks"
+var render_scale := 1.0      # one of RENDER_SCALES
 ## Threads generating and meshing chunks: 0 = automatic (cores - 1, at most 8).
 ## Only in settings.cfg (or --threads=N): fewer leaves CPU for other programs.
 var worker_threads := 0
@@ -52,7 +61,12 @@ func _ready() -> void:
 	max_fps = int(config.get_value("settings", "max_fps", max_fps))
 	vsync = bool(config.get_value("settings", "vsync", vsync))
 	smooth_lighting = bool(config.get_value("settings", "smooth_lighting", smooth_lighting))
-	shadows = bool(config.get_value("settings", "shadows", shadows))
+	# Before shadow_mode there was only on / off ("shadows").
+	var old_mode := "blocks" if bool(config.get_value("settings", "shadows", true)) else "off"
+	shadow_mode = str(config.get_value("settings", "shadow_mode", old_mode))
+	if not shadow_mode in SHADOW_MODES:
+		shadow_mode = "blocks"
+	render_scale = clampf(float(config.get_value("settings", "render_scale", render_scale)), 0.25, 1.0)
 	clock_24h = bool(config.get_value("settings", "clock_24h", clock_24h))
 	worker_threads = clampi(int(config.get_value("settings", "worker_threads", worker_threads)), 0, 64)
 	master_volume = float(config.get_value("settings", "master_volume", master_volume))
@@ -71,6 +85,9 @@ func apply() -> void:
 	_set_bus_volume("Master", master_volume)
 	_set_bus_volume("Effects", effects_volume)
 	_set_bus_volume("Ambience", ambience_volume)
+	var root := get_tree().root
+	root.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
+	root.scaling_3d_scale = render_scale
 	if DisplayServer.get_name() != "headless":
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED if vsync else DisplayServer.VSYNC_DISABLED)
 	for action in ACTIONS:
@@ -89,7 +106,10 @@ func save() -> void:
 	config.set_value("settings", "max_fps", max_fps)
 	config.set_value("settings", "vsync", vsync)
 	config.set_value("settings", "smooth_lighting", smooth_lighting)
-	config.set_value("settings", "shadows", shadows)
+	config.set_value("settings", "shadow_mode", shadow_mode)
+	if config.has_section_key("settings", "shadows"):
+		config.erase_section_key("settings", "shadows")
+	config.set_value("settings", "render_scale", render_scale)
 	config.set_value("settings", "clock_24h", clock_24h)
 	config.set_value("settings", "worker_threads", worker_threads)
 	config.set_value("settings", "master_volume", master_volume)

@@ -32,3 +32,15 @@ func test_green_blocks_are_tinted() -> void:
 		check(atlas.block_table[Registry.block_index(id)].get("tint", false), id + " is tinted")
 	for id in ["core:dirt", "core:stone", "core:sand"]:
 		check(not atlas.block_table[Registry.block_index(id)].get("tint", false), id + " is not")
+
+
+## Blocks whose textures have see-through pixels are drawn with the cutout
+## shader (the only one that discards pixels); the rest, leaves too, with the
+## plain one.
+func test_see_through_blocks_are_cutout() -> void:
+	Registry.assign_block_ids()
+	var atlas := BlockAtlas.new()
+	for id in ["core:wheat_0", "core:glass", "core:torch", "core:ladder"]:
+		check(atlas.block_table[Registry.block_index(id)].get("cutout", false), id + " is cutout")
+	for id in ["core:dirt", "core:stone", "core:grass", "core:planks", "core:leaves"]:
+		check(not atlas.block_table[Registry.block_index(id)].get("cutout", true), id + " is not")

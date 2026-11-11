@@ -1,5 +1,8 @@
 #include "mesher.h"
 
+#include <algorithm>
+#include <climits>
+#include <cmath>
 #include <cstdlib>
 
 namespace gocube {
@@ -221,6 +224,59 @@ void corner_light(const LightRegion &light, int fx, int fy, int fz, int ua, int 
 	ao = 1.0f - 0.24f * occluders;
 }
 
+// Whether the sun reaches the cell (cx, cy, cz) (chunk-local): a line from the
+// cell's centre towards the sun, stepped block by block, meets no opaque block.
+// Inside the light region every block is checked; above it, each column's
+// topmost block (mountains, tall trees further up). Past the region's sides
+// nothing is known, and the sun gets through. max_top: the highest column top
+// around (INT_MAX if unknown): above it nothing can be in the way.
+bool sun_reaches(const LightRegion &light, const MeshOptions &o, int max_top, int cx, int cy, int cz) {
+	if (light.sky_at(cx, cy, cz) == 0) {
+		return false; // closed in: no sky, no sun
+	}
+	constexpr int LO = -LightRegion::MARGIN, HI = CHUNK + LightRegion::MARGIN - 1;
+	const int step_x = o.sun_x > 0.0f ? 1 : -1;
+	const float dt_x = std::abs(o.sun_x) > 1e-6f ? 1.0f / std::abs(o.sun_x) : 1e30f;
+	const float dt_y = 1.0f / o.sun_y;
+	float t_x = 0.5f * dt_x, t_y = 0.5f * dt_y; // to the next cell boundary
+	int x = cx, y = cy;
+	const int oz = cz < 0 ? -1 : (cz >= CHUNK ? 1 : 0);
+	for (int i = 0; i < 1024; i++) {
+		if (t_x < t_y) {
+			x += step_x;
+			t_x += dt_x;
+		} else {
+			y++;
+			t_y += dt_y;
+		}
+		if (x < LO || x > HI || o.origin_y + y > max_top) {
+			return true;
+		}
+		if (y <= HI) {
+			if (light.opaque_at(x, y, cz)) {
+				return false;
+			}
+			continue;
+		}
+		const int ox = x < 0 ? -1 : (x >= CHUNK ? 1 : 0);
+		const ColumnTops *t = o.tops ? o.tops[(oz + 1) * 3 + (ox + 1)] : nullptr;
+		if (!t) {
+			return true;
+		}
+		if (o.origin_y + y <= (*t)[(cz - oz * CHUNK) * CHUNK + (x - ox * CHUNK)]) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// Sets the alpha of the vertices from `first` on (see Surface::colors).
+void set_alpha(Surface &s, size_t first, float alpha) {
+	for (size_t v = first; v < s.colors.size() / 4; v++) {
+		s.colors[v * 4 + 3] = alpha;
+	}
+}
+
 } // namespace
 
 namespace {
@@ -375,7 +431,7 @@ void fluid_tops(const ChunkData &c, const ChunkData *const nb[FACE_COUNT], const
 
 void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_COUNT],
 		const ChunkData *const hood[27], const std::vector<BlockInfo> &blocks, const AtlasLayout &atlas, const LightRegion *light,
-		const MeshOptions &options, Surface &opaque, Surface &fluid) {
+		const MeshOptions &options, Surface &opaque_out, Surface &cutout_out, Surface &fluid) {
 	if (chunk.uniform && chunk.uniform_value == AIR) {
 		return;
 	}
@@ -390,6 +446,18 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 		}
 	}
 
+	const bool shadows = options.sun_shadows && light;
+	int max_top = INT_MIN;
+	for (int i = 0; shadows && i < 9; i++) {
+		if (!options.tops || !options.tops[i]) {
+			max_top = INT_MAX;
+			break;
+		}
+		for (int16_t t : *options.tops[i]) {
+			max_top = std::max(max_top, int(t));
+		}
+	}
+
 	for (int y = 0; y < CHUNK; y++) {
 		for (int z = 0; z < CHUNK; z++) {
 			for (int x = 0; x < CHUNK; x++) {
@@ -398,9 +466,14 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 					continue;
 				}
 				const BlockInfo &info = blocks[id];
+				Surface &opaque = info.cutout ? cutout_out : opaque_out;
 				if (info.shape != SHAPE_CUBE) {
+					const size_t first = opaque.colors.size() / 4;
 					emit_shape(opaque, table, info, id, x, y, z, blocks, atlas, light,
 							[&](int nx, int ny, int nz) { return sample(chunk, neighbours, blocks, nx, ny, nz, solid_fallback); });
+					if (shadows && !sun_reaches(*light, options, max_top, x, y, z)) {
+						set_alpha(opaque, first, 0.75f); // shaped blocks: one shadow for the whole block
+					}
 					continue;
 				}
 				float tops[4];
@@ -443,6 +516,10 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 							tops_done = true;
 						}
 						emit_face(fluid, d, x, y, z, atlas, info.tiles[f], cl, 1.0f, 0, tops);
+						if (shadows && d.dx * options.sun_x + d.dy * options.sun_y > 0.0f
+								&& !sun_reaches(*light, options, max_top, fx, fy, fz)) {
+							set_alpha(fluid, fluid.colors.size() / 4 - 4, 0.75f);
+						}
 					} else {
 						if (info.emit > 0) {
 							for (int c = 0; c < 4; c++) { // glowing blocks are lit by themselves
@@ -454,11 +531,12 @@ void mesh_chunk(const ChunkData &chunk, const ChunkData *const neighbours[FACE_C
 								? block_rotation(options.origin_x + x, options.origin_y + y, options.origin_z + z)
 								: 0;
 						emit_face(opaque, d, x, y, z, atlas, info.tiles[f], cl, 1.0f, rot);
-						if (info.tint) {
-							// Vertex colour alpha 0.5 marks faces whose green varies (see chunk.gdshader).
-							for (int c = 1; c <= 4; c++) {
-								opaque.colors[opaque.colors.size() - 4 * c + 3] = 0.5f;
-							}
+						// Faces turned away from the sun get none anyway (chunk.gdshaderinc).
+						const bool shadowed = shadows && d.dx * options.sun_x + d.dy * options.sun_y > 0.0f
+								&& !sun_reaches(*light, options, max_top, fx, fy, fz);
+						if (info.tint || shadowed) {
+							set_alpha(opaque, opaque.colors.size() / 4 - 4,
+									1.0f - (info.tint ? 0.5f : 0.0f) - (shadowed ? 0.25f : 0.0f));
 						}
 					}
 				}

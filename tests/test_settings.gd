@@ -102,3 +102,31 @@ func test_night_is_dark_and_close() -> void:
 	check(day.environment.fog_depth_end <= DayCycle.NIGHT_FOG_END + 0.5, "midnight: the dark closes in (%.0f)" % day.environment.fog_depth_end)
 	check(day.haze_color().get_luminance() < 0.03, "midnight: a nearly black haze")
 	check(day.daylight() <= 0.03, "midnight: the sky gives almost no light (%.2f)" % day.daylight())
+
+
+func test_render_scale_applies_and_saves() -> void:
+	var before := Settings.render_scale
+	Settings.render_scale = 0.5
+	Settings.apply()
+	check_eq(Settings.get_tree().root.scaling_3d_scale, 0.5, "the world is drawn at half size")
+	Settings.save()
+	var cfg := ConfigFile.new()
+	cfg.load(Settings.PATH)
+	check_eq(float(cfg.get_value("settings", "render_scale")), 0.5, "render scale saved")
+	Settings.render_scale = before
+	Settings.apply()
+	Settings.save()
+	check_eq(Settings.get_tree().root.scaling_3d_scale, before, "and back")
+
+
+func test_shadow_mode_saves() -> void:
+	var before: String = Settings.shadow_mode
+	for mode in Settings.SHADOW_MODES:
+		Settings.shadow_mode = mode
+		Settings.save()
+		var cfg := ConfigFile.new()
+		cfg.load(Settings.PATH)
+		check_eq(str(cfg.get_value("settings", "shadow_mode")), mode, "shadow mode %s saved" % mode)
+		check(not cfg.has_section_key("settings", "shadows"), "the old on/off key is gone")
+	Settings.shadow_mode = before
+	Settings.save()

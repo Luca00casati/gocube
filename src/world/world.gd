@@ -37,6 +37,7 @@ var remote := false
 var view_distance := DEFAULT_VIEW_DISTANCE
 var atlas: BlockAtlas
 var terrain_material: ShaderMaterial
+var cutout_material: ShaderMaterial  # blocks with see-through pixels
 var fluid_material: ShaderMaterial
 ## Block index -> true, for fluid blocks (swimming, underwater view).
 var fluid_ids := {}
@@ -132,6 +133,9 @@ func _make_engine(distance: int, world_seed: int, generator: int = GENERATOR_VER
 	terrain_material = ShaderMaterial.new()
 	terrain_material.shader = preload("res://src/engine/chunk.gdshader")
 	terrain_material.set_shader_parameter("albedo_texture", ImageTexture.create_from_image(atlas.atlas))
+	cutout_material = ShaderMaterial.new()
+	cutout_material.shader = preload("res://src/engine/chunk_cutout.gdshader")
+	cutout_material.set_shader_parameter("albedo_texture", terrain_material.get_shader_parameter("albedo_texture"))
 	fluid_material = ShaderMaterial.new()
 	fluid_material.shader = preload("res://src/engine/chunk_fluid.gdshader")
 	fluid_material.set_shader_parameter("albedo_texture", terrain_material.get_shader_parameter("albedo_texture"))
@@ -145,7 +149,7 @@ func _make_engine(distance: int, world_seed: int, generator: int = GENERATOR_VER
 	engine.worker_threads = worker_threads if worker_threads >= 0 else Settings.worker_threads
 	engine.configure_blocks(atlas.block_table)
 	engine.set_atlas_layout(atlas.cols, atlas.rows, BlockAtlas.CELL, BlockAtlas.FACE_OFFSET)
-	engine.set_materials(terrain_material, fluid_material)
+	engine.set_materials(terrain_material, fluid_material, cutout_material)
 	var ids := {}
 	for key in ["stone", "dirt", "grass", "sand", "water", "lava", "ice"]:
 		ids[key] = maxi(0, Registry.block_index("core:" + key))
@@ -326,10 +330,22 @@ func set_chunk(chunk_pos: Vector3i, bytes: PackedByteArray) -> void:
 ## Light for things that aren't terrain (creatures, players, dropped and held
 ## items, the first-person hand), worked out like the terrain shader does:
 ## sky light (times `sky_light`: day, night, moonlight), placed lights, and
-## torches players hold (`hand_lights`). Both are set by the game each frame.
+## torches players hold (set_hand_lights). Both are set by the game each frame.
 var sky_light := Color.WHITE
 var hand_lights: Array = []  # Vector4(x, y, z, level)
 const BLOCK_LIGHT_COLOR := Color(1.0, 0.85, 0.62)
+
+## Torches in hand light the blocks around them like placed ones: one level
+## less per block, stopped by walls (GoCubeWorld.held_light), in a cube of
+## HAND_LIGHT_SIZE blocks around the viewer (moved in steps of
+## HAND_LIGHT_STEP blocks, so walking doesn't spread it again every block). The terrain shaders read it
+## from hand_light_texture (one light level per block face).
+const HAND_LIGHT_SIZE := 48
+const HAND_LIGHT_STEP := 8
+var hand_light_texture: ImageTexture3D
+var hand_light_origin := Vector3i.ZERO
+var _hand_volume := PackedByteArray()
+var _hand_key := []  # what the volume was worked out for: lights' blocks and levels, world revision
 
 
 ## Each light level is 80% as bright as the one above; level 0 is dark.
@@ -337,13 +353,55 @@ static func light_curve(level01: float) -> float:
 	return 0.0 if level01 <= 0.0 else pow(0.8, 15.0 - level01 * 15.0)
 
 
+## Sets the torches held in hand (Vector4(x, y, z, level)) and spreads their
+## light, around `viewer` (null: the first light), when they moved to another
+## block, the viewer moved a step or the world changed. Returns whether
+## hand_light_texture changed.
+func set_hand_lights(lights: Array, viewer = null) -> bool:
+	hand_lights = lights
+	var half := HAND_LIGHT_SIZE / 2
+	if viewer == null:  # the first light, or where the cube already is
+		viewer = Vector3(lights[0].x, lights[0].y, lights[0].z) if not lights.is_empty() \
+				else Vector3(hand_light_origin + Vector3i(half, half, half))
+	var origin := Vector3i((viewer / HAND_LIGHT_STEP).round()) * HAND_LIGHT_STEP - Vector3i(half, half, half)
+	var key := [revision, origin]
+	for l in lights:
+		key.append(Vector4i(floori(l.x), floori(l.y), floori(l.z), int(l.w)))
+	if key == _hand_key or engine == null:
+		return false
+	_hand_key = key
+	hand_light_origin = origin
+	_hand_volume = engine.held_light(hand_light_origin, HAND_LIGHT_SIZE, PackedVector4Array(lights)) \
+			if not lights.is_empty() else PackedByteArray()
+	var slices: Array[Image] = []
+	var area := HAND_LIGHT_SIZE * HAND_LIGHT_SIZE
+	for y in HAND_LIGHT_SIZE:
+		var bytes := _hand_volume.slice(y * area, (y + 1) * area) if not _hand_volume.is_empty() else PackedByteArray()
+		bytes.resize(area)  # the level itself: the shader reads r * 255
+		slices.append(Image.create_from_data(HAND_LIGHT_SIZE, HAND_LIGHT_SIZE, false, Image.FORMAT_R8, bytes))
+	if hand_light_texture == null:
+		hand_light_texture = ImageTexture3D.new()
+		hand_light_texture.create(Image.FORMAT_R8, HAND_LIGHT_SIZE, HAND_LIGHT_SIZE, HAND_LIGHT_SIZE, false, slices)
+	else:
+		hand_light_texture.update(slices)
+	return true
+
+
+## Held-torch light level (0..15) of the block at `at`.
+func hand_light_at(at: Vector3) -> int:
+	if _hand_volume.is_empty():
+		return 0
+	var p := Vector3i(at.floor()) - hand_light_origin
+	if p.x < 0 or p.y < 0 or p.z < 0 or p.x >= HAND_LIGHT_SIZE or p.y >= HAND_LIGHT_SIZE or p.z >= HAND_LIGHT_SIZE:
+		return 0
+	return _hand_volume[(p.y * HAND_LIGHT_SIZE + p.z) * HAND_LIGHT_SIZE + p.x]
+
+
 ## The light at `at` (never below `least`, so things stay faintly visible).
 func light_for(at: Vector3, least := 0.0) -> Color:
 	var l: Vector2 = engine.light_at(at) if engine else Vector2(1, 0)
 	var sky := sky_light * light_curve(l.x)
-	var block := light_curve(l.y)
-	for h in hand_lights:
-		block = maxf(block, light_curve(clampf(h.w - at.distance_to(Vector3(h.x, h.y, h.z)), 0.0, 15.0) / 15.0))
+	var block := light_curve(maxf(l.y, hand_light_at(at) / 15.0))
 	var blk := BLOCK_LIGHT_COLOR * block
 	return Color(maxf(maxf(sky.r, blk.r), least), maxf(maxf(sky.g, blk.g), least), maxf(maxf(sky.b, blk.b), least))
 

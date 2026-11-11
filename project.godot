@@ -15,5 +15,6 @@ Settings="*res://src/core/settings.gd"
 
 [rendering]
 
+driver/depth_prepass/enable=false
 lights_and_shadows/directional_shadow/size=2048
 lights_and_shadows/directional_shadow/soft_shadow_filter_quality=0

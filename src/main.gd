@@ -263,7 +263,8 @@ func _apply_settings() -> void:
 		_world.engine.smooth_lighting = Settings.smooth_lighting
 		var sun := get_node_or_null("Sun") as DirectionalLight3D
 		if sun:
-			sun.shadow_enabled = Settings.shadows and not _args.has("no-shadows")
+			sun.shadow_enabled = Settings.shadow_mode == "smooth" and not _args.has("no-shadows")
+		_world.engine.block_shadows = Settings.shadow_mode == "blocks" and not _args.has("no-shadows")
 		if not _args.has("view"):
 			_world.set_view_distance(Settings.view_distance)
 		_set_fog_range()
@@ -286,7 +287,8 @@ func _start_day(time: float, day_length: float) -> void:
 	_apply_settings()
 	if not Settings.changed.is_connected(_apply_settings):
 		Settings.changed.connect(_apply_settings)
-	_day.materials = [_world.terrain_material, _world.fluid_material]
+	_day.materials = [_world.terrain_material, _world.cutout_material, _world.fluid_material]
+	_day.engine = _world.engine
 	_day.time = fposmod(time, 1.0)
 	_day.day_length = maxf(10.0, day_length)
 	_day.apply()
@@ -508,16 +510,14 @@ func _update_hand_light() -> void:
 			others.sort_custom(func(a, b): return Vector3(a.x, a.y, a.z).distance_squared_to(c) \
 					< Vector3(b.x, b.y, b.z).distance_squared_to(c))
 		lights.append_array(others.slice(0, MAX_HAND_LIGHTS - lights.size()))
-	_world.hand_lights = lights  # creatures, players and items are lit by them too
 	_world.sky_light = _day.sky_color()
-	var packed := PackedVector4Array(lights)
-	packed.resize(MAX_HAND_LIGHTS)
-	for m in [_world.terrain_material, _world.fluid_material]:
+	var changed := _world.set_hand_lights(lights, _cam.global_position if _cam else null)  # creatures, players and items are lit by them too
+	for m in [_world.terrain_material, _world.cutout_material, _world.fluid_material]:
 		if m:
 			m.set_shader_parameter("hand_light_count", lights.size())
-			if not lights.is_empty():
-				m.set_shader_parameter("hand_lights", packed)
-
+			if changed:
+				m.set_shader_parameter("hand_light_volume", _world.hand_light_texture)
+				m.set_shader_parameter("hand_light_origin", Vector3(_world.hand_light_origin))
 
 func _debug_text() -> String:
 	if _player == null or _world.engine == null:
@@ -884,7 +884,7 @@ static func _lan_addresses() -> PackedStringArray:
 func _add_environment() -> void:
 	var sun := DirectionalLight3D.new()
 	sun.name = "Sun"
-	# Shadows near the player (Settings → Sun shadows; --no-shadows turns them
+	# Smooth shadows near the player (Settings → Sun shadows; --no-shadows turns them
 	# off): one map out to 40 blocks, cast by the chunks around the player
 	# (GoCubeWorld.shadow_chunks). Cheap enough for integrated GPUs: on an
 	# Intel Haswell ~54 FPS with them against 60 without (2 splits out to 80

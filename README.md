@@ -99,6 +99,10 @@ Launch options (after `--`): `--world=NAME` skip the menu and load or create tha
 workers' time per chunk), `--profile-startup` (time each startup step and list slow frames),
 `--threads=N` chunk worker threads (default: cores − 1, at most 8; also `worker_threads` in
 settings.cfg: fewer leaves CPU for other programs but loads chunks slower). Try `--rendering-method gl_compatibility` on old GPUs.
+The depth prepass is off (project.godot): chunks hide few pixels behind each other, so
+drawing them twice cost more GPU time than it saved (about 1.5 ms per frame on an Intel
+Haswell GPU). Only blocks with see-through pixels use a shader that discards pixels
+(`chunk_cutout.gdshader`); a discarding shader on every block cost about 2 ms more.
 
 Controls: WASD walk, Space jump (and swim up in water), Ctrl sprint, Shift sneak, F toggle flying (Space/Shift
 up/down; fly down onto the ground to land), mouse look, hold LMB mine / LMB break (creative),
@@ -112,8 +116,13 @@ with the worst frame of the last second and what took longest in it), Esc pause.
 rebound in **Settings…** (title screen or pause menu), along with view distance, mouse
 sensitivity, frame rate limit, vsync, **master / effects / ambience volume** (each with
 its own audio bus), **smooth lighting** (light blended at block corners
-with soft corner shading, instead of the classic flat look; on by default) and **sun
-shadows** (on by default; about 10% of the frame rate on an integrated GPU). Settings are saved in
+with soft corner shading, instead of the classic flat look; on by default), **sun
+shadows** (*blocks*, the default: each block face is either in the sun or in a block's
+shadow, worked out by the engine as it meshes chunks, out to the view distance and nearly
+free for the GPU, following the sun in 2° steps; *smooth*: Godot's shadow map out to 40
+blocks, about 25% of the GPU's time on an integrated GPU; or *off*) and **render
+scale** (100 / 85 / 75 / 50%: the world is drawn at that fraction of the window's resolution
+and stretched, the menus and HUD stay sharp; 50% roughly halves the GPU's work). Settings are saved in
 `user://settings.cfg`.
 
 ## Survival and creative
@@ -178,7 +187,7 @@ respawn, you're back at the world spawn. The bed is saved with your player.
 **Building**: torches (coal + stick; light 13, on floors and walls), slabs and stairs
 (stone, cobblestone, planks), wooden doors (right click opens both halves), fences,
 ladders (climb with Space or by walking into them; no fall damage), glass (smelt sand).
-Torches, ladders, doors and plants pop off when what holds them goes. Holding a torch (any block with `"light"`) lights the world around you as you walk, and other players see your light (and the torch in your hand) in multiplayer.
+Torches, ladders, doors and plants pop off when what holds them goes. Holding a torch (any block with `"light"`) lights the world around you as you walk, block by block like a placed torch (one level less per block, and not through walls), and other players see your light (and the torch in your hand) in multiplayer.
 
 **Creative**: every block in the inventory, instant breaking, nothing is used up. Worlds from before game modes are creative.
 

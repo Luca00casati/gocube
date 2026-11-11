@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <climits>
 #include <cstring>
 
 using namespace godot;
@@ -78,6 +79,7 @@ void GoCubeWorld::configure_blocks(const TypedArray<Dictionary> &blocks) {
 		b.solid = d.get("solid", false);
 		b.opaque = d.get("opaque", false);
 		b.fluid = d.get("fluid", false);
+		b.cutout = d.get("cutout", false);
 		b.emit = static_cast<uint8_t>(std::clamp(int(d.get("light", 0)), 0, LIGHT_MAX));
 		b.fluid_level = static_cast<uint8_t>(std::clamp(int(d.get("fluid_level", 8)), 1, 8));
 		b.random_rotation = d.get("random_rotation", false);
@@ -110,9 +112,10 @@ void GoCubeWorld::set_atlas_layout(int cols, int rows, int cell, const Vector2i 
 	_atlas.face_y = face_offset.y;
 }
 
-void GoCubeWorld::set_materials(const Ref<Material> &terrain, const Ref<Material> &fluid) {
+void GoCubeWorld::set_materials(const Ref<Material> &terrain, const Ref<Material> &fluid, const Ref<Material> &cutout) {
 	_terrain_material = terrain;
 	_fluid_material = fluid;
+	_cutout_material = cutout.is_valid() ? cutout : terrain;
 }
 
 // Biomes for new worlds (call before configure_generator; none = the original
@@ -306,9 +309,40 @@ Vector3 GoCubeWorld::get_viewer_position() const {
 }
 
 void GoCubeWorld::set_smooth_lighting(bool enabled) {
-	if (_smooth_lighting.exchange(enabled) == enabled) {
-		return;
+	if (_smooth_lighting.exchange(enabled) != enabled) {
+		remesh_all();
 	}
+}
+
+void GoCubeWorld::set_block_shadows(bool enabled) {
+	if (_block_shadows.exchange(enabled) != enabled) {
+		remesh_all();
+	}
+}
+
+bool GoCubeWorld::get_block_shadows() const {
+	return _block_shadows.load();
+}
+
+void GoCubeWorld::set_sun_angle(float radians) {
+	const float degrees = radians * 180.0f / float(Math_PI);
+	if (!(degrees > 0.0f && degrees < 180.0f)) {
+		return; // night: keep the last shadows for the morning's first frames
+	}
+	const int last = 180 / SUN_STEP_DEGREES - 1;
+	const int step = std::clamp(int(std::lround(degrees / SUN_STEP_DEGREES)), 1, last);
+	if (_sun_step.exchange(step) != step && _block_shadows.load()) {
+		remesh_all();
+	}
+}
+
+float GoCubeWorld::get_sun_angle() const {
+	return _sun_step.load() * SUN_STEP_DEGREES * float(Math_PI) / 180.0f;
+}
+
+// Every meshed chunk again (light or shadow settings changed), nearest first
+// within the per-frame budget; the old meshes stay until the new ones arrive.
+void GoCubeWorld::remesh_all() {
 	for (auto &kv : _chunks) {
 		if (kv.second.data && kv.second.meshed) {
 			kv.second.mesh_version++;
@@ -566,6 +600,90 @@ PackedVector3Array GoCubeWorld::fluid_vertices(const Vector3i &chunk_pos) const 
 	const Vector3 origin = Vector3(chunk_pos) * float(CHUNK);
 	for (int64_t i = 0; i < out.size(); i++) {
 		out.set(i, out[i] + origin);
+	}
+	return out;
+}
+
+PackedVector3Array GoCubeWorld::shaded_faces(const Vector3i &chunk_pos) const {
+	PackedVector3Array out;
+	auto it = _chunks.find(key(chunk_pos));
+	if (it == _chunks.end() || !it->second.mesh.is_valid()) {
+		return out;
+	}
+	RenderingServer *rs = RenderingServer::get_singleton();
+	const Vector3 origin = Vector3(chunk_pos) * float(CHUNK);
+	for (int surface = 0; surface < rs->mesh_get_surface_count(it->second.mesh); surface++) {
+		if (surface == it->second.fluid_surface) {
+			continue;
+		}
+		const Array arrays = rs->mesh_surface_get_arrays(it->second.mesh, surface);
+		const PackedVector3Array vertices = arrays[RenderingServer::ARRAY_VERTEX];
+		const PackedColorArray colors = arrays[RenderingServer::ARRAY_COLOR];
+		for (int64_t q = 0; q + 3 < vertices.size() && q < colors.size(); q += 4) { // 4 vertices per face
+			const int marks = int(std::lround(colors[q].a * 4.0f));
+			if (marks % 2 == 1) {
+				out.push_back(origin + (vertices[q] + vertices[q + 1] + vertices[q + 2] + vertices[q + 3]) * 0.25f);
+			}
+		}
+	}
+	return out;
+}
+
+PackedByteArray GoCubeWorld::held_light(const Vector3i &origin, int size, const PackedVector4Array &lights) const {
+	PackedByteArray out;
+	size = std::clamp(size, 1, 128);
+	out.resize(int64_t(size) * size * size);
+	uint8_t *vol = out.ptrw();
+	std::memset(vol, 0, out.size());
+	// Whether light passes through the block at a volume position (unloaded: no).
+	const ChunkData *cached = nullptr;
+	Vector3i cached_pos(INT32_MIN, 0, 0);
+	auto passes = [&](int x, int y, int z) {
+		const Vector3i p = origin + Vector3i(x, y, z);
+		const Vector3i c(floor_div(p.x, CHUNK), floor_div(p.y, CHUNK), floor_div(p.z, CHUNK));
+		if (c != cached_pos) {
+			cached_pos = c;
+			auto it = _chunks.find(key(c));
+			cached = it == _chunks.end() ? nullptr : it->second.data.get();
+		}
+		if (!cached) {
+			return c.y > CHUNK_Y_MAX; // above the world: open air
+		}
+		const BlockId id = cached->get(p.x - c.x * CHUNK, p.y - c.y * CHUNK, p.z - c.z * CHUNK);
+		return id >= _blocks.size() || !_blocks[id].opaque;
+	};
+	auto index = [size](int x, int y, int z) { return (y * size + z) * size + x; };
+	std::vector<int32_t> queue;
+	for (int64_t i = 0; i < lights.size(); i++) {
+		const Vector4 l = lights[i];
+		const int x = int(std::floor(l.x)) - origin.x, y = int(std::floor(l.y)) - origin.y, z = int(std::floor(l.z)) - origin.z;
+		const int level = std::clamp(int(l.w), 0, LIGHT_MAX);
+		if (x < 0 || y < 0 || z < 0 || x >= size || y >= size || z >= size || level <= vol[index(x, y, z)]) {
+			continue;
+		}
+		vol[index(x, y, z)] = uint8_t(level);
+		queue.push_back(index(x, y, z));
+	}
+	static const int dirs[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+	for (size_t q = 0; q < queue.size(); q++) {
+		const int i = queue[q];
+		const int x = i % size, z = (i / size) % size, y = i / (size * size);
+		const int next = vol[i] - 1;
+		if (next <= 0) {
+			continue;
+		}
+		for (const auto &d : dirs) {
+			const int nx = x + d[0], ny = y + d[1], nz = z + d[2];
+			if (nx < 0 || ny < 0 || nz < 0 || nx >= size || ny >= size || nz >= size) {
+				continue;
+			}
+			const int n = index(nx, ny, nz);
+			if (vol[n] >= next || !passes(nx, ny, nz)) {
+				continue;
+			}
+			vol[n] = uint8_t(next);
+			queue.push_back(n);
+		}
 	}
 	return out;
 }
@@ -992,10 +1110,15 @@ void GoCubeWorld::worker_loop() {
 			};
 			MeshOptions options;
 			options.smooth_lighting = _smooth_lighting.load();
+			options.sun_shadows = _block_shadows.load();
+			const float sun = _sun_step.load() * SUN_STEP_DEGREES * float(Math_PI) / 180.0f;
+			options.sun_x = std::cos(sun);
+			options.sun_y = std::sin(sun);
+			options.tops = tops;
 			options.origin_x = job.pos.x * CHUNK;
 			options.origin_y = job.pos.y * CHUNK;
 			options.origin_z = job.pos.z * CHUNK;
-			mesh_chunk(*job.self, nb, hood, _blocks, _atlas, &light, options, r.opaque, r.fluid);
+			mesh_chunk(*job.self, nb, hood, _blocks, _atlas, &light, options, r.opaque, r.cutout, r.fluid);
 			auto packed = std::make_shared<std::vector<uint8_t>>(CHUNK * CHUNK * CHUNK);
 			for (int y = 0; y < CHUNK; y++) {
 				for (int z = 0; z < CHUNK; z++) {
@@ -1262,16 +1385,20 @@ void GoCubeWorld::upload(Result &r) {
 	free_chunk_render(c);
 	c.meshed = true;
 	c.light = r.light;
-	if (r.opaque.empty() && r.fluid.empty()) {
+	if (r.opaque.empty() && r.cutout.empty() && r.fluid.empty()) {
 		return;
 	}
 	RenderingServer *rs = RenderingServer::get_singleton();
 	c.mesh = rs->mesh_create();
 	int surface = 0;
-	if (!r.opaque.empty()) {
-		rs->mesh_add_surface_from_arrays(c.mesh, RenderingServer::PRIMITIVE_TRIANGLES, surface_arrays(r.opaque));
-		if (_terrain_material.is_valid()) {
-			rs->mesh_surface_set_material(c.mesh, surface, _terrain_material->get_rid());
+	for (const auto &[s, material] : { std::pair<const Surface *, const Ref<Material> *>{ &r.opaque, &_terrain_material },
+				 { &r.cutout, &_cutout_material } }) {
+		if (s->empty()) {
+			continue;
+		}
+		rs->mesh_add_surface_from_arrays(c.mesh, RenderingServer::PRIMITIVE_TRIANGLES, surface_arrays(*s));
+		if (material->is_valid()) {
+			rs->mesh_surface_set_material(c.mesh, surface, (*material)->get_rid());
 		}
 		surface++;
 	}
@@ -1298,7 +1425,7 @@ void GoCubeWorld::upload(Result &r) {
 void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("configure_blocks", "blocks"), &GoCubeWorld::configure_blocks);
 	ClassDB::bind_method(D_METHOD("set_atlas_layout", "cols", "rows", "cell", "face_offset"), &GoCubeWorld::set_atlas_layout);
-	ClassDB::bind_method(D_METHOD("set_materials", "terrain", "fluid"), &GoCubeWorld::set_materials);
+	ClassDB::bind_method(D_METHOD("set_materials", "terrain", "fluid", "cutout"), &GoCubeWorld::set_materials, DEFVAL(Ref<Material>()));
 	ClassDB::bind_method(D_METHOD("is_chunk_loaded", "chunk_pos"), &GoCubeWorld::is_chunk_loaded);
 	ClassDB::bind_method(D_METHOD("tree_blocks", "kind", "ground"), &GoCubeWorld::tree_blocks);
 	ClassDB::bind_method(D_METHOD("configure_generator", "seed", "ids", "ores", "trees"), &GoCubeWorld::configure_generator);
@@ -1336,6 +1463,14 @@ void GoCubeWorld::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_smooth_lighting", "enabled"), &GoCubeWorld::set_smooth_lighting);
 	ClassDB::bind_method(D_METHOD("get_smooth_lighting"), &GoCubeWorld::get_smooth_lighting);
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "smooth_lighting"), "set_smooth_lighting", "get_smooth_lighting");
+	ClassDB::bind_method(D_METHOD("shaded_faces", "chunk_pos"), &GoCubeWorld::shaded_faces);
+	ClassDB::bind_method(D_METHOD("held_light", "origin", "size", "lights"), &GoCubeWorld::held_light);
+	ClassDB::bind_method(D_METHOD("set_block_shadows", "enabled"), &GoCubeWorld::set_block_shadows);
+	ClassDB::bind_method(D_METHOD("get_block_shadows"), &GoCubeWorld::get_block_shadows);
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "block_shadows"), "set_block_shadows", "get_block_shadows");
+	ClassDB::bind_method(D_METHOD("set_sun_angle", "radians"), &GoCubeWorld::set_sun_angle);
+	ClassDB::bind_method(D_METHOD("get_sun_angle"), &GoCubeWorld::get_sun_angle);
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sun_angle"), "set_sun_angle", "get_sun_angle");
 	ClassDB::bind_method(D_METHOD("set_upload_budget_ms", "ms"), &GoCubeWorld::set_upload_budget_ms);
 	ClassDB::bind_method(D_METHOD("get_upload_budget_ms"), &GoCubeWorld::get_upload_budget_ms);
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "view_distance"), "set_view_distance", "get_view_distance");

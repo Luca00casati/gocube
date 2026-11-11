@@ -153,13 +153,75 @@ func test_light_for_creatures_and_items() -> void:
 	var open := Vector3(0.5, 71, 0.5)
 	var dark: Color = w.light_for(open)
 	check(dark.r < 0.05, "at night, out in the open: dark (%.3f)" % dark.r)
-	w.hand_lights = [Vector4(1.5, 71.5, 0.5, 13.0)]  # someone holding a torch a block away
+	w.set_hand_lights([Vector4(1.5, 71.5, 0.5, 13.0)])  # someone holding a torch a block away
 	var by_torch: Color = w.light_for(open)
 	check(by_torch.r > 0.4, "next to a held torch: bright (%.2f)" % by_torch.r)
 	check(by_torch.r > by_torch.b, "in its warm colour")
 	check(w.light_for(Vector3(20.5, 71, 0.5)).r < 0.05, "far from it: still dark")
-	w.hand_lights = []
+	w.set_hand_lights([])
 	w.set_block(Vector3i(5, 70, 5), Registry.block_index("core:lamp"))
 	var lit := await wait_until(func(): return w.light_for(Vector3(6.5, 70.5, 5.5)).r > 0.5, 5)
 	check(lit, "next to a placed lamp: bright")
 	check(w.light_for(open, 0.07).r >= 0.07, "never below the floor asked for")
+
+
+## Block shadows: a tower on a platform shades whole block faces on the side
+## away from the sun, as long as the tower's shadow; the shadow turns with the
+## sun, and none are marked with block shadows off.
+func test_block_shadows() -> void:
+	const Y := 70  # in the air, above the terrain
+	var w := await make_world(4242, "", 64, Vector3(0.5, Y, 0.5))
+	var stone := Registry.block_index("core:stone")
+	for x in range(-10, 11):
+		for z in range(-3, 4):
+			w.set_block(Vector3i(x, Y, z), stone)
+	for y in range(Y + 1, Y + 9):  # 8 blocks tall
+		w.set_block(Vector3i(0, y, 0), stone)
+	var shaded := func() -> Array:
+		var out := []
+		for cx in [-1, 0]:
+			out.append_array(Array(w.engine.shaded_faces(Vector3i(cx, Y / World.CHUNK_SIZE, 0))))
+		return out
+	var top := func(x: int) -> Vector3:  # the platform's top face at (x, 0)
+		return Vector3(x + 0.5, Y + 1, 0.5)
+
+	w.engine.sun_angle = deg_to_rad(60.0)  # morning: the sun in the east (+x)
+	w.engine.block_shadows = true
+	check(await wait_until(func(): return shaded.call().has(top.call(-2))), "the tower shades the ground west of it")
+	var s: Array = shaded.call()
+	check(s.has(top.call(-4)), "as far as its shadow reaches (8 / tan 60° = 4.6 blocks)")
+	check(not s.has(top.call(-7)), "and no further")
+	check(not s.has(top.call(2)), "the sunny side is lit")
+
+	w.engine.sun_angle = deg_to_rad(120.0)  # afternoon: the sun in the west
+	check(await wait_until(func(): return shaded.call().has(top.call(3)) and not shaded.call().has(top.call(-2))),
+			"the shadow turns with the sun, leaving the morning side")
+
+	w.engine.block_shadows = false
+	check(await wait_until(func(): return shaded.call().is_empty()), "off: nothing is marked")
+
+
+## A held torch lights whole blocks like a placed one: one level less per
+## block, and not through walls (only around them).
+func test_held_light_is_blocky_and_stopped_by_walls() -> void:
+	var w := await make_world(4242, "", 64, Vector3(0.5, 70, 0.5))
+	var torch := [Vector4(1.5, 71.5, 0.5, 13.0)]
+	check(w.set_hand_lights(torch), "the light is spread")
+	check(not w.set_hand_lights([Vector4(1.9, 71.2, 0.7, 13.0)]), "not again while it stays in the same block")
+	check_eq(w.hand_light_at(Vector3(1.5, 71.5, 0.5)), 13, "its own block: the full level")
+	check_eq(w.hand_light_at(Vector3(0.1, 71.9, 0.9)), 12, "the next block: one less, all over it")
+	check_eq(w.hand_light_at(Vector3(4.5, 71.5, 0.5)), 10, "three blocks away: three less")
+	var stone := Registry.block_index("core:stone")
+	for y in range(66, 77):
+		for z in range(-6, 7):
+			w.set_block(Vector3i(3, y, z), stone)  # a wall between
+	check(w.set_hand_lights(torch), "a changed world spreads it again")
+	check(w.hand_light_at(Vector3(4.5, 71.5, 0.5)) < 5, "behind the wall: only what gets around it (%d)" % w.hand_light_at(Vector3(4.5, 71.5, 0.5)))
+	check(w.hand_light_texture != null and w.hand_light_texture.get_depth() == World.HAND_LIGHT_SIZE, "and the shaders get it")
+	# The cube follows the viewer, not the first torch: a torch near us lights
+	# even when the first one in the list is far away.
+	w.set_hand_lights([Vector4(200.5, 71.5, 0.5, 13.0), Vector4(-2.5, 71.5, 0.5, 13.0)], Vector3(0.5, 71.5, 0.5))
+	check_eq(w.hand_light_at(Vector3(-2.5, 71.5, 0.5)), 13, "the torch near the viewer lights")
+	check_eq(w.hand_light_at(Vector3(200.5, 71.5, 0.5)), 0, "the far one is outside the cube")
+	w.set_hand_lights([])
+	check(not w.set_hand_lights([]), "no torches, nothing moved: nothing to do")

@@ -1,7 +1,7 @@
 class_name SettingsScreen
 extends Control
 ## Settings: view distance, mouse sensitivity, FPS limit, vsync, smooth
-## lighting, key bindings and which mods load. Changes apply live and are saved on close.
+## lighting, shadows, render scale, key bindings and which mods load. Changes apply live and are saved on close.
 
 signal closed
 
@@ -97,13 +97,25 @@ func _ready() -> void:
 		Settings.apply())
 	_row(grid, _label("Smooth lighting"), smooth)
 
-	var shadow_box := CheckBox.new()
-	shadow_box.text = "The sun casts shadows (uses more GPU)"
-	shadow_box.button_pressed = Settings.shadows
-	shadow_box.toggled.connect(func(on):
-		Settings.shadows = on
+	var shadow_names := {"blocks": "Blocks (whole faces, cheap)", "smooth": "Smooth (uses more GPU)", "off": "Off"}
+	var shadows := OptionButton.new()
+	for mode in Settings.SHADOW_MODES:
+		shadows.add_item(shadow_names[mode])
+	shadows.selected = maxi(0, Settings.SHADOW_MODES.find(Settings.shadow_mode))
+	shadows.item_selected.connect(func(i):
+		Settings.shadow_mode = Settings.SHADOW_MODES[i]
 		Settings.apply())
-	_row(grid, _label("Sun shadows"), shadow_box)
+	_row(grid, _label("Sun shadows"), shadows)
+
+	var scale := OptionButton.new()
+	for f in Settings.RENDER_SCALES:
+		scale.add_item("%d%%%s" % [roundi(f * 100), " (sharpest)" if f == 1.0 else ""])
+	scale.selected = maxi(0, Settings.RENDER_SCALES.find(Settings.render_scale))
+	scale.tooltip_text = "Draws the world at a lower resolution and stretches it: blurrier, but much less GPU."
+	scale.item_selected.connect(func(i):
+		Settings.render_scale = Settings.RENDER_SCALES[i]
+		Settings.apply())
+	_row(grid, _label("Render scale"), scale)
 
 	for entry in [["Master volume", "master_volume"], ["Effects volume", "effects_volume"],
 			["Ambience volume", "ambience_volume"]]:

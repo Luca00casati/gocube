@@ -37,6 +37,8 @@ const CLOUD_SPEED := Vector2(0.35, 0.12)
 var _cloud_offset := Vector2.ZERO
 var environment: Environment
 var sun: DirectionalLight3D
+## The world engine (GoCubeWorld): told where the sun is, for block shadows.
+var engine: Object
 ## Haze over the distance: Environment depth fog in the horizon's colour. By
 ## day it starts at fog_begin and is thick at fog_end (set from the view
 ## distance); at night it closes in to NIGHT_FOG_* and turns nearly black,
@@ -142,6 +144,8 @@ func apply() -> void:
 		sky_material.set_shader_parameter("dusk", dusk)
 		sky_material.set_shader_parameter("sky_angle", angle)
 		sky_material.set_shader_parameter("cloud_offset", _cloud_offset)
+	if engine:
+		engine.sun_angle = angle  # radians above the eastern horizon
 	if sun:
 		sun.basis = sun_basis
 		sun.light_energy = day
