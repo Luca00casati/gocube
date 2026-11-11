@@ -32,8 +32,8 @@ terrain themselves from the seed; only edits travel over the network.
 
 - Everyone must have the **same mods**: same ids, versions and files (each mod gets a
   fingerprint of its files, so two different builds with the same version don't pass). Mods are
-  never downloaded from the server — mod scripts are unsandboxed — so mismatched players are
-  refused with a list of what differs.
+  never downloaded from the server, so mismatched players are refused with a list of what
+  differs.
 - On join the host sends the seed, its block id table and every edited chunk; after
   that each edit is sent as (position, block). A player who hasn't loaded that chunk
   asks the host for the whole chunk.
@@ -407,12 +407,32 @@ To share it, zip the mod folder (or its contents, with `mod.json` at the top of 
 Players drop the `.zip` into `user://mods/` (Linux:
 `~/.local/share/godot/app_userdata/GoCube/mods/`); the game unpacks it to
 `user://mods/.unzipped/` and unpacks it again only when the zip changes. Files that would land
-outside the mod's folder are refused. Godot `.pck` packs that contain `mods/<id>/...` still work too.
+outside the mod's folder are refused. Godot `.pck` packs are not loaded
+(they could carry any code): zip the mod folder instead.
 
 Players can turn mods off under **Settings → Mods** (saved in `settings.cfg`; takes effect on
 the next start). A mod that depends on one that's turned off is skipped as well.
 
-Mods are **not sandboxed**: only install mods you trust.
+### Sandbox
+Mods are **sandboxed**, so a mod can't touch your files, the network or the rest of the game:
+
+- The entry script is checked before it is compiled (`src/core/mod_sandbox.gd`) and refused,
+  with the line and the name in the log, if it uses anything outside the mod API. It may use
+  its own functions and variables, numbers, strings, arrays, dictionaries, vectors and colours,
+  the math and string functions and `print`; it must extend `RefCounted` (the default). No
+  engine classes (`OS`, `FileAccess`, ...), autoloads, nodes, `load`/`preload`, `self`,
+  `call`/`set`, `.new()`, `await`, annotations or inner classes. Read dictionary keys with
+  `d["key"]` or `d.get("key")`, not `d.key`.
+- `init_mod(registry)` gets a `GoCubeModApi`, a native object with only `register_block`,
+  `register_item`, `register_recipe`, `register_ore`, `register_tree`, `register_biome`,
+  `register_sound_set`, `get_block(id)` and `get_item(id)` (copies), and only while the mod
+  loads. Definitions must be plain data (no objects or functions).
+- Texture and sound paths must stay inside a mod folder, and an installed mod's files are read
+  only as PNG / WAV data, never through Godot's resource loader (a resource can carry a
+  script).
+
+What it can't stop: a mod that loops forever or fills memory hangs the game while it loads;
+remove the mod to recover.
 
 ## License
 GoCube is **source-available**: you may build it yourself and play your own build for free

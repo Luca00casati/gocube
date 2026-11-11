@@ -58,23 +58,18 @@ func _face_tile(def: Dictionary, face: String, turns := 0) -> int:
 	var textures: Dictionary = def.get("textures", {})
 	var rel = textures.get(face, textures.get("all"))
 	if rel != null:
-		var mod_id: String = def.get("mod", "")
-		var path: String = rel
-		if ":" in path:
-			mod_id = path.get_slice(":", 0)
-			path = path.get_slice(":", 1)
-		var full := ModLoader.get_mod_path(mod_id).path_join(path)
+		var full := ModLoader.asset_path(def.get("mod", ""), str(rel))
 		var key := full if turns % 4 == 0 else "%s@%d" % [full, turns % 4]
 		if _tile_index.has(key):
 			return _tile_index[key]
-		var img := _load_image(full)
+		var img := _load_image(full) if full != "" else null
 		if img:
 			if img.get_size() != Vector2i(TILE_SIZE, TILE_SIZE):
 				img.resize(TILE_SIZE, TILE_SIZE, Image.INTERPOLATE_NEAREST)
 			for t in turns % 4:
 				img.rotate_90(CLOCKWISE)
 			return _add(key, img)
-		push_error("Block texture not found: " + full)
+		push_error("Block texture not found: %s (%s)" % [rel, def.get("id", "")])
 	var color: Color = Color.html(def["color"]) if def.has("color") else MISSING_COLOR
 	var key := "#" + color.to_html()
 	if _tile_index.has(key):
@@ -90,13 +85,20 @@ func _add(key: String, img: Image) -> int:
 	return _tiles.size() - 1
 
 
+## Built-in mods' images come through the import system; an installed mod's
+## only as a PNG file (a resource could carry a script, see mod_loader.gd).
 static func _load_image(path: String) -> Image:
 	var img: Image = null
-	if ResourceLoader.exists(path):
+	if path == "":
+		return null
+	if not ModLoader.is_builtin(path):
+		if path.get_extension().to_lower() == "png" and FileAccess.file_exists(path):
+			img = Image.load_from_file(path)
+	elif ResourceLoader.exists(path):
 		var tex := load(path) as Texture2D
 		if tex:
 			img = tex.get_image()
-	if img == null and FileAccess.file_exists(path):
+	elif FileAccess.file_exists(path):
 		img = Image.load_from_file(path)
 	if img == null:
 		return null
@@ -226,7 +228,7 @@ func icon(id: String) -> Texture2D:
 	var shape: String = Registry.blocks.get(id, {}).get("shape", "cube")
 	if Registry.blocks.has(id) and Registry.blocks[id].has("icon"):
 		var def: Dictionary = Registry.blocks[id]
-		img = _load_image(ModLoader.get_mod_path(def.get("mod", "")).path_join(def.icon))
+		img = _load_image(ModLoader.asset_path(def.get("mod", ""), str(def.icon)))
 	elif _icon_tiles.has(id) and shape in ["torch", "ladder", "cross", "door"]:
 		img = _tiles[_icon_tiles[id]]  # flat things show their texture
 	elif _icon_tiles.has(id):
@@ -235,7 +237,7 @@ func icon(id: String) -> Texture2D:
 	else:
 		var def: Dictionary = Registry.items.get(id, {})
 		if def.has("texture"):
-			img = _load_image(ModLoader.get_mod_path(def.get("mod", "")).path_join(def.texture))
+			img = _load_image(ModLoader.asset_path(def.get("mod", ""), str(def.texture)))
 		if img == null:
 			img = Image.create(TILE_SIZE, TILE_SIZE, false, Image.FORMAT_RGBA8)
 			img.fill(Color.html(def.get("color", "#b0a080")))

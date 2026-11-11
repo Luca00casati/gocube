@@ -8,7 +8,8 @@ extends Node
 ##     "dependencies": ["othermod"],        # "core" is implicit
 ##     "content": ["content/blocks.json"],  # data-only content (optional)
 ##     "entry": "main.gd",                  # code entry point (optional): init_mod(registry)
-##                                          # may return false to give up (the mod is undone)
+##                                          # may return false to give up (the mod is undone);
+##                                          # sandboxed, see mod_sandbox.gd
 ##     "api_version": 1                     # modding API it was written for (default 1)
 ##   }
 ##
@@ -16,8 +17,6 @@ extends Node
 ##   res://mods/<id>/          built-in mods (incl. the base game, "core")
 ##   user://mods/*.zip         a zipped mod folder (mod.json at the top of the zip,
 ##                             or inside one folder); unpacked to user://mods/.unzipped/
-##   user://mods/*.pck         resource packs; must contain mods/<id>/..., so they
-##                             mount into res://mods/<id>/
 ##   user://mods/<id>/         unpacked mod folders (handy while developing)
 ##
 ## Every content file is read and checked before anything of a mod is
@@ -28,7 +27,10 @@ extends Node
 ## Mods listed in Settings.disabled_mods are found but not loaded (the Mods
 ## part of the settings screen; takes effect the next time the game starts).
 ##
-## WARNING: mod scripts run unsandboxed with full access to the game and system.
+## Mods are sandboxed: an entry script is checked by ModSandbox before it is
+## compiled and only gets a GoCubeModApi (register_* and get_block/get_item);
+## mod files (textures, sounds) are read as plain PNG/WAV data, never through
+## Godot's resource loader, which could run scripts hidden in a resource.
 
 signal mods_loaded
 
@@ -57,7 +59,9 @@ func load_all() -> void:
 	if Registry.is_frozen():
 		return
 	DirAccess.make_dir_recursive_absolute(USER_DIR)
-	_mount_packs(USER_DIR)
+	for file in DirAccess.get_files_at(USER_DIR):
+		if file.get_extension() == "pck":
+			push_warning("Mod packs (.pck) aren't loaded, they could run any code: zip the mod folder instead (%s)" % file)
 
 	var found := {}
 	_scan(BUILTIN_DIR, found)
@@ -94,15 +98,6 @@ func get_mod_path(mod_id: String) -> String:
 		if m.id == mod_id:
 			return m.path
 	return _loading.get("path", "") if _loading.get("id") == mod_id else ""
-
-
-func _mount_packs(dir: String) -> void:
-	for file in DirAccess.get_files_at(dir):
-		if file.get_extension() == "pck":
-			var path := ProjectSettings.globalize_path(dir.path_join(file))
-			# replace_files=false: a pack can add files but not clobber existing ones.
-			if not ProjectSettings.load_resource_pack(path, false):
-				push_error("Failed to mount mod pack: " + path)
 
 
 func _scan(dir: String, found: Dictionary) -> void:
@@ -318,22 +313,20 @@ func _load_mod(m: Dictionary) -> bool:
 		_register_content(data)
 	var ok := true
 	if m.has("entry"):
-		var script = load(m.path.path_join(m.entry))
-		if not script is Script or not script.can_instantiate():
+		var script := compile_entry(m.path.path_join(m.entry), m.id)
+		if script == null:
 			push_error("Mod '%s': could not load entry script %s; undoing the mod" % [m.id, m.entry])
 			ok = false
 		else:
 			var inst = script.new()
-			if inst is Node:
-				inst.name = m.id
-				add_child(inst)
-			if inst.has_method("init_mod") and inst.init_mod(Registry) == false:
+			var api := GoCubeModApi.new()
+			api._set_handler(_api_call)
+			if inst.has_method("init_mod") and inst.init_mod(api) == false:
 				push_error("Mod '%s': init_mod gave up; undoing the mod" % m.id)
 				ok = false
-				if inst is Node:
-					inst.queue_free()
 			else:
 				instances[m.id] = inst
+			api._set_handler(Callable())  # the API only works while the mod loads
 	Registry._end_mod()
 	_loading = {}
 	m.erase("_content")
@@ -344,6 +337,76 @@ func _load_mod(m: Dictionary) -> bool:
 	mods.append(m)
 	print("Loaded mod %s %s" % [m.id, m.get("version", "")])
 	return true
+
+
+## Reads a mod's entry script, checks it with ModSandbox and compiles it from
+## that same text (not through load(), which could pick up something other
+## than the checked source). Returns null, with the reason logged, if refused.
+static func compile_entry(path: String, mod_id: String) -> GDScript:
+	if not FileAccess.file_exists(path):
+		return null
+	var source := FileAccess.get_file_as_string(path)
+	var problem := ModSandbox.check(source)
+	if problem != "":
+		push_error("Mod '%s': %s %s; mods may only use the mod API (see mod_sandbox.gd)" % [mod_id, path.get_file(), problem])
+		return null
+	var script := GDScript.new()
+	script.source_code = source
+	if script.reload() != OK or not script.can_instantiate():
+		return null
+	return script
+
+
+## What a mod's GoCubeModApi calls. Definitions must be plain data (what JSON
+## has, plus numbers and vectors): no objects or callables reach the game.
+func _api_call(kind: String, id: String, def: Dictionary) -> Variant:
+	match kind:
+		"get_block":
+			return Registry.blocks.get(id, {}).duplicate(true)
+		"get_item":
+			return Registry.items.get(id, {}).duplicate(true)
+	if not _is_plain(def):
+		push_error("Mod '%s': %s '%s' holds something that isn't plain data; not registered" % [_loading.get("id"), kind, id])
+		return ""
+	match kind:
+		"block": return Registry.register_block(id, def)
+		"item": return Registry.register_item(id, def)
+		"recipe": return Registry.register_recipe(id, def)
+		"ore": return Registry.register_ore(id, def)
+		"tree": return Registry.register_tree(id, def)
+		"biome": return Registry.register_biome(id, def)
+		"sound_set": return Registry.register_sound_set(id, def)
+	return ""
+
+
+static func _is_plain(v) -> bool:
+	match typeof(v):
+		TYPE_OBJECT, TYPE_CALLABLE, TYPE_SIGNAL, TYPE_RID:
+			return false
+		TYPE_ARRAY:
+			return v.all(_is_plain)
+		TYPE_DICTIONARY:
+			return v.keys().all(_is_plain) and v.values().all(_is_plain)
+	return true
+
+
+## The file `rel` of mod `mod_id` (or of another mod, as "othermod:path"), or
+## "" when the path would leave the mod's folder or the mod isn't known.
+func asset_path(mod_id: String, rel: String) -> String:
+	if ":" in rel:
+		mod_id = rel.get_slice(":", 0)
+		rel = rel.substr(rel.find(":") + 1)
+	var root := get_mod_path(mod_id)
+	if root == "" or rel == "" or rel.is_absolute_path() or rel.begins_with("/") or "\\" in rel \
+			or ":" in rel or ".." in rel.split("/"):
+		return ""
+	return root.path_join(rel)
+
+
+## Files of built-in mods (res://) go through Godot's import system; files of
+## installed mods are only ever read as raw data.
+static func is_builtin(path: String) -> bool:
+	return path.begins_with("res://")
 
 
 ## A short hash of every file in a mod folder (names and contents), so players

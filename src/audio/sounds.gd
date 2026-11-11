@@ -131,7 +131,7 @@ func _pick(set_id: String, kind: String) -> AudioStream:
 	var files: Array = def.get(kind, [])
 	if files.is_empty():
 		return null
-	var path := ModLoader.get_mod_path(def.get("mod", "")).path_join(files[randi() % files.size()])
+	var path := ModLoader.asset_path(def.get("mod", ""), str(files[randi() % files.size()]))
 	if not _streams.has(path):
 		_streams[path] = _load(path)
 	return _streams[path]
@@ -139,8 +139,12 @@ func _pick(set_id: String, kind: String) -> AudioStream:
 
 ## res:// sounds come through the import system (also in exported games and
 ## mod packs); unpacked user:// mods are read straight from the WAV file.
+## An installed mod's sounds are only read as WAV files (a resource could carry
+## a script, see mod_loader.gd).
 static func _load(path: String) -> AudioStream:
-	if ResourceLoader.exists(path):
+	if path == "":
+		return null
+	if ModLoader.is_builtin(path) and ResourceLoader.exists(path):
 		return load(path) as AudioStream
 	if FileAccess.file_exists(path) and path.get_extension() == "wav":
 		return AudioStreamWAV.load_from_file(path)

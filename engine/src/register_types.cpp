@@ -1,5 +1,6 @@
 // Entry point of the GoCube voxel engine GDExtension.
 #include "gocube_world.h"
+#include "mod_api.h"
 
 #include <gdextension_interface.h>
 #include <godot_cpp/core/class_db.hpp>
@@ -13,6 +14,7 @@ void gocube_register(ModuleInitializationLevel level) {
 		return;
 	}
 	GDREGISTER_CLASS(gocube::GoCubeWorld);
+	GDREGISTER_CLASS(gocube::GoCubeModApi);
 }
 
 void gocube_unregister(ModuleInitializationLevel level) {}
